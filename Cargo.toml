@@ -1,0 +1,24 @@
+[package]
+name = "falkordb-client-rs"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+anyhow = { version = "1.0.83", default-features = false, features = ["std"] }
+log = { version = "0.4.21", default-features = false }
+parking_lot = { version = "0.12.2", default-features = false, features = ["deadlock_detection"] }
+redis = { version = "0.25.3", default-features = false, optional = true }
+tokio = { version = "1.37.0", default-features = false, features = ["rt-multi-thread", "sync"], optional = true }
+thiserror = "1.0.60"
+url-parse = "1.0.8"
+simple_logger = "5.0.0"
+
+[features]
+default = ["redis", "tokio"]
+native-tls = ["redis/tls-native-tls"]
+rustls = ["redis/tls-rustls"]
+tokio = ["dep:tokio", "redis/tokio-comp"]
+tokio-native-tls = ["redis/tokio-native-tls-comp"]
+tokio-rustls = ["redis/tokio-rustls-comp"]
+redis = ["dep:redis"]

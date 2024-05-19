@@ -1,3 +1,8 @@
+/*
+ * Copyright FalkorDB Ltd. 2023 - present
+ * Licensed under the Server Side Public License v1 (SSPLv1).
+ */
+
 use crate::client::FalkorClientImpl;
 use crate::connection::{asynchronous::FalkorAsyncConnection, blocking::FalkorSyncConnection};
 use crate::connection_info::FalkorConnectionInfo;

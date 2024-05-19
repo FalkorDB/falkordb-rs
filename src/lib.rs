@@ -1,3 +1,8 @@
+/*
+ * Copyright FalkorDB Ltd. 2023 - present
+ * Licensed under the Server Side Public License v1 (SSPLv1).
+ */
+
 #[cfg(not(feature = "redis"))]
 compile_error!("The `redis` feature must be enabled.");
 

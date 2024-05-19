@@ -1,3 +1,8 @@
+/*
+ * Copyright FalkorDB Ltd. 2023 - present
+ * Licensed under the Server Side Public License v1 (SSPLv1).
+ */
+
 #[derive(thiserror::Error, Debug)]
 pub enum FalkorDBError {
     #[error("The provided connection info is invalid")]

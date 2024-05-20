@@ -8,31 +8,31 @@ use crate::connection::blocking::{BorrowedSyncConnectionGuard, FalkorSyncConnect
 use crate::error::FalkorDBError;
 use crate::graph::blocking::SyncGraph;
 use crate::value::config::ConfigValue;
-use crate::value::FalkorValue;
 use anyhow::Result;
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
-pub(crate) struct SyncFalkorClient {
+pub struct SyncFalkorClient {
     _inner: FalkorClientImpl,
-    num_connections: u8,
     connection_pool_tx: mpsc::SyncSender<FalkorSyncConnection>,
     connection_pool_rx: mpsc::Receiver<FalkorSyncConnection>,
 }
 
+unsafe impl Sync for SyncFalkorClient {}
+unsafe impl Send for SyncFalkorClient {}
+
 impl SyncFalkorClient {
-    pub(crate) fn create(client: FalkorClientImpl, num_connections: u8) -> Result<Self> {
+    pub(crate) fn create(client: FalkorClientImpl, num_connections: u8) -> Result<Arc<Self>> {
         let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(num_connections as usize);
         for _ in 0..num_connections {
             connection_pool_tx.send(client.get_connection(None)?)?;
         }
 
-        Ok(Self {
+        Ok(Arc::new(Self {
             _inner: client,
-            num_connections,
             connection_pool_tx,
             connection_pool_rx,
-        })
+        }))
     }
 
     pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnectionGuard> {
@@ -73,10 +73,7 @@ impl SyncFalkorClient {
 
     /// This function returns either an [`FVec`] containing the requested key and val,
     /// or an [`FVec`] of [`FVec`]s, each one containing a key and val pair
-    pub fn config_get<T: Into<FalkorValue>>(
-        &self,
-        config_key: T,
-    ) -> Result<HashMap<String, ConfigValue>> {
+    pub fn config_get<T: ToString>(&self, config_key: T) -> Result<HashMap<String, ConfigValue>> {
         let mut conn = self.borrow_connection()?;
 
         Ok(match conn.as_inner()? {
@@ -84,9 +81,11 @@ impl SyncFalkorClient {
             FalkorSyncConnection::Redis(redis_conn) => {
                 use redis::ConnectionLike as _;
 
-                let bulk_data = match redis_conn
-                    .req_command(redis::cmd("GRAPH.CONFIG").arg("GET").arg(config_key.into()))?
-                {
+                let bulk_data = match redis_conn.req_command(
+                    redis::cmd("GRAPH.CONFIG")
+                        .arg("GET")
+                        .arg(config_key.to_string()),
+                )? {
                     redis::Value::Bulk(bulk_data) => bulk_data,
                     _ => return Err(FalkorDBError::InvalidDataReceived.into()),
                 };

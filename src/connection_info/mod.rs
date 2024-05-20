@@ -6,7 +6,7 @@
 use anyhow::Result;
 
 #[derive(Clone)]
-pub(crate) enum FalkorConnectionInfo {
+pub enum FalkorConnectionInfo {
     #[cfg(feature = "redis")]
     Redis(redis::ConnectionInfo),
 }

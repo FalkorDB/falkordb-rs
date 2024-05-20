@@ -6,12 +6,12 @@
 #[cfg(not(feature = "redis"))]
 compile_error!("The `redis` feature must be enabled.");
 
-mod client;
-mod connection;
-mod connection_info;
+pub mod client;
+pub mod connection;
+pub mod connection_info;
 mod error;
-mod graph;
-mod value;
+pub mod graph;
+pub mod value;
 
 #[cfg(feature = "redis")]
 mod redis_ext;
@@ -22,8 +22,9 @@ mod tests {
     use crate::client::blocking::SyncFalkorClient;
     use crate::client::builder::FalkorDBClientBuilder;
     use crate::value::config::ConfigValue;
+    use std::sync::Arc;
 
-    fn create_client() -> SyncFalkorClient {
+    fn create_client() -> Arc<SyncFalkorClient> {
         FalkorDBClientBuilder::new()
             .with_num_connections(4)
             .build()

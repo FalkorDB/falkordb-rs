@@ -9,6 +9,7 @@ use crate::client::FalkorClientImpl;
 use crate::connection_info::FalkorConnectionInfo;
 use crate::error::FalkorDBError;
 use anyhow::Result;
+use std::sync::Arc;
 
 // This doesn't have a default implementation because a specific const char is required
 // and I don't want to leave that up to the user
@@ -49,6 +50,8 @@ where
 }
 
 impl FalkorDBClientBuilder<'S'> {
+    // We wish this to be explicit, and implementing Default is pub
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         FalkorDBClientBuilder {
             connection_info: None,
@@ -59,7 +62,7 @@ impl FalkorDBClientBuilder<'S'> {
         }
     }
 
-    pub fn build(self) -> Result<SyncFalkorClient> {
+    pub fn build(self) -> Result<Arc<SyncFalkorClient>> {
         if self.num_connections < 1 || self.num_connections > 32 {
             return Err(FalkorDBError::InvalidConnectionPoolSize.into());
         }

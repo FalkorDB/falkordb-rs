@@ -5,10 +5,11 @@
 
 use crate::error::FalkorDBError;
 use anyhow::Result;
-use std::fmt::{Debug, Display, Formatter};
+use std::collections::HashMap;
+use std::fmt::Debug;
 
 pub mod config;
-mod query_result;
+pub mod query_result;
 pub mod slowlog_entry;
 
 #[derive(Clone, Debug)]
@@ -19,6 +20,7 @@ pub enum FalkorValue {
     F64(f64),
     FString(String),
     FVec(Vec<FalkorValue>),
+    FMap(HashMap<String, FalkorValue>),
 }
 
 macro_rules! impl_to_falkordb_value {
@@ -41,29 +43,6 @@ impl_to_falkordb_value!(u64, Self::UInt64);
 
 impl_to_falkordb_value!(f32, Self::F64);
 impl_to_falkordb_value!(f64, Self::F64);
-
-impl Display for FalkorValue {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FalkorValue::None => Ok(()),
-            FalkorValue::Int64(val) => Display::fmt(val, f),
-            FalkorValue::UInt64(val) => Display::fmt(val, f),
-            FalkorValue::F64(val) => Display::fmt(val, f),
-            FalkorValue::FString(val) => f.write_fmt(format_args!("\"{val}\"")),
-            FalkorValue::FVec(val) => {
-                f.write_str("[")?;
-                let val_len = val.len() - 1;
-                for (idx, element) in val.iter().enumerate() {
-                    Display::fmt(element, f)?;
-                    if idx < val_len {
-                        f.write_str(",")?;
-                    }
-                }
-                f.write_str("]")
-            }
-        }
-    }
-}
 
 impl TryFrom<&FalkorValue> for i64 {
     type Error = FalkorDBError;

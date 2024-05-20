@@ -3,90 +3,30 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::error::FalkorDBError;
 use crate::value::FalkorValue;
-use anyhow::Result;
+use std::collections::HashMap;
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct QueryResult {
-    raw_stats: Vec<FalkorValue>,
-    header: Vec<FalkorValue>,
-    result_set: Vec<FalkorValue>,
-}
-
-fn filter_stat_only_response(res: &[FalkorValue]) -> Result<Vec<FalkorValue>> {
-    Ok(
-        match match res.len() {
-            0 => return Err(FalkorDBError::InvalidDataReceived.into()),
-            1 => res.first(),
-            _ => res.last(),
-        } {
-            Some(FalkorValue::FVec(val)) => val.clone(),
-            _ => return Err(FalkorDBError::InvalidDataReceived.into()),
-        },
-    )
+    pub(crate) stats: Vec<String>,
+    pub(crate) header: Vec<String>,
+    pub(crate) result_set: Vec<HashMap<String, FalkorValue>>,
 }
 
 impl QueryResult {
-    pub fn from_result(res: FalkorValue) -> Result<Self> {
-        let res = res.into_vec()?;
-        if res.is_empty() {
-            return Err(FalkorDBError::InvalidDataReceived.into());
-        }
+    pub fn stats(&self) -> &[String] {
+        self.stats.as_slice()
+    }
 
-        match res.len() {
-            1 => res.first(),
-            _ => res.last(),
-        };
+    pub fn header(&self) -> &[String] {
+        self.header.as_slice()
+    }
 
-        let header = filter_stat_only_response(res.as_slice())?;
-        if header.is_empty() {
-            return Ok(Default::default());
-        }
+    pub fn result_set(&self) -> &[HashMap<String, FalkorValue>] {
+        self.result_set.as_slice()
+    }
 
-        // let records = res.into_iter().enumerate().skip(1).fold(Vec::with_capacity()) {
-        //
-        // }
-
-        // match res.len() {
-        //     0 => {
-        //         return Err(FalkorDBError::InvalidDataReceived.into());
-        //     }
-        //     1 => {
-        //         return Ok(Self {
-        //             raw_stats: match res.first() {
-        //                 Some(FalkorValue::FString(str_val)) => {
-        //                     panic!("{str_val}"); // Want to catch errors here before release, in case this is actually a possibility
-        //                 }
-        //                 Some(FalkorValue::FVec(vec_val)) => vec_val.clone(),
-        //                 _ => return Err(FalkorDBError::InvalidDataReceived.into()),
-        //             },
-        //             header: vec![],
-        //             result_set: vec![],
-        //         });
-        //     }
-        //     _ => {
-        //         let mut new_result = Self {
-        //             raw_stats: vec![],
-        //             header: match res.first() {
-        //                 Some(FalkorValue::FVec(vec_val)) => {
-        //                     if vec_val.is_empty() {
-        //                         return Ok(Default::default());
-        //                     }
-        //
-        //                     vec_val.clone()
-        //                 }
-        //                 _ => {
-        //                     return Err(FalkorDBError::InvalidDataReceived);
-        //                 }
-        //             },
-        //             result_set: vec![],
-        //         };
-        //     }
-        // }
-
-        Err(FalkorDBError::InvalidDataReceived.into())
-
-        // Ok(new_result)
+    pub fn take(self) -> (Vec<String>, Vec<String>, Vec<HashMap<String, FalkorValue>>) {
+        (self.stats, self.header, self.result_set)
     }
 }

@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
-pub(crate) struct AsyncFalkorClient {
+pub struct AsyncFalkorClient {
     _inner: FalkorClientImpl,
     num_connections: u8,
     connection_pool: Mutex<VecDeque<FalkorAsyncConnection>>,

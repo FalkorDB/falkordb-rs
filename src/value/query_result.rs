@@ -121,7 +121,7 @@ fn query_parse_header(header: FalkorValue) -> Result<Vec<String>> {
         } else {
             item_vec
                 .into_iter()
-                .nth(0)
+                .next()
                 .ok_or(FalkorDBError::ParsingHeader)?
         }
         .into_string()?;

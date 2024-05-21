@@ -8,8 +8,8 @@ use crate::value::FalkorValue;
 
 #[derive(Clone, Debug)]
 pub struct Point {
-    latitude: f64,
-    longitude: f64,
+    pub latitude: f64,
+    pub longitude: f64,
 }
 
 impl Point {

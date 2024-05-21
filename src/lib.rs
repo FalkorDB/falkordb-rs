@@ -16,6 +16,8 @@ pub mod value;
 #[cfg(feature = "redis")]
 mod redis_ext;
 
+pub use error::FalkorDBError;
+
 // Basic tests for now, to be removed in the future and moved to their respective places, currently requires the server to already be up
 #[cfg(test)]
 mod tests {

@@ -4,11 +4,12 @@
  */
 
 use super::FalkorValue;
+use std::collections::HashMap;
 
 pub struct Constraint {
     _type: String,
-    label: String,
-    properties: FalkorValue,
+    pub label: String,
+    properties: HashMap<String, FalkorValue>,
     entity_type: FalkorValue,
     status: String,
 }

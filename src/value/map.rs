@@ -68,7 +68,7 @@ pub(crate) fn parse_map_with_schema(
     );
 
     for item in val_vec {
-        let mut fktv = FKeyTypeVal::try_from(item)?;
+        let fktv = FKeyTypeVal::try_from(item)?;
         id_hashset.insert(fktv.key);
         map_vec.push(fktv);
     }

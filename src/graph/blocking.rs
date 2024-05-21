@@ -230,6 +230,9 @@ impl SyncGraph<'_> {
         let query_res_len = query_res.len();
         Ok(query_res
             .into_iter()
-            .fold(Vec::with_capacity(query_res_len), |acc, it| acc))
+            .fold(Vec::with_capacity(query_res_len), |mut acc, it| {
+                acc.push(it);
+                acc
+            }))
     }
 }

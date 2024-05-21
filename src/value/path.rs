@@ -9,8 +9,8 @@ use crate::value::FalkorValue;
 
 #[derive(Clone, Debug)]
 pub struct Path {
-    nodes: Vec<Node>,
-    relationships: Vec<Edge>,
+    pub nodes: Vec<Node>,
+    pub relationships: Vec<Edge>,
 }
 
 impl Path {

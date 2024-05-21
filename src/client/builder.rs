@@ -102,11 +102,7 @@ impl FalkorDBClientBuilder<'A'> {
         }
     }
 
-    pub async fn build(self) -> Result<AsyncFalkorClient> {
-        if self.num_connections < 1 || self.num_connections > 32 {
-            return Err(FalkorDBError::InvalidConnectionPoolSize.into());
-        }
-
+    pub async fn build(self) -> Result<Arc<AsyncFalkorClient>> {
         let connection_info = self
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
@@ -120,6 +116,6 @@ impl FalkorDBClientBuilder<'A'> {
             .build()?,
         );
 
-        AsyncFalkorClient::create(get_client(connection_info)?, self.num_connections, runtime).await
+        AsyncFalkorClient::create(get_client(connection_info)?, runtime).await
     }
 }

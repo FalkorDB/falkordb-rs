@@ -4,9 +4,10 @@
  */
 
 use crate::client::FalkorClientImpl;
-use crate::connection::blocking::{BorrowedSyncConnectionGuard, FalkorSyncConnection};
+use crate::connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection};
 use crate::error::FalkorDBError;
 use crate::graph::blocking::SyncGraph;
+use crate::graph::schema::GraphSchema;
 use crate::value::config::ConfigValue;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -35,8 +36,8 @@ impl SyncFalkorClient {
         }))
     }
 
-    pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnectionGuard> {
-        Ok(BorrowedSyncConnectionGuard {
+    pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnection> {
+        Ok(BorrowedSyncConnection {
             return_tx: self.connection_pool_tx.clone(),
             conn: Some(self.connection_pool_rx.recv()?),
         })
@@ -51,20 +52,22 @@ impl SyncFalkorClient {
                 use redis::ConnectionLike as _;
                 let res = match redis_conn.req_command(&redis::cmd("GRAPH.LIST"))? {
                     redis::Value::Bulk(data) => data,
-                    _ => {
-                        return Err(FalkorDBError::InvalidDataReceived.into());
-                    }
+                    _ => Err(FalkorDBError::InvalidDataReceived)?,
                 };
 
-                res.iter()
-                    .filter_map(|element| {
-                        if let redis::Value::Data(v) = element {
-                            Some(String::from_utf8_lossy(v.as_slice()).to_string())
-                        } else {
-                            None
+                let mut graph_list = Vec::with_capacity(res.len());
+                for graph in res {
+                    let graph = match graph {
+                        redis::Value::Data(data) => {
+                            Ok(String::from_utf8_lossy(data.as_slice()).to_string())
                         }
-                    })
-                    .collect()
+                        redis::Value::Status(data) => Ok(data),
+                        _ => Err(FalkorDBError::ParsingError),
+                    }?;
+
+                    graph_list.push(graph);
+                }
+                graph_list
             }
         };
 
@@ -103,24 +106,25 @@ impl SyncFalkorClient {
                     };
                 }
 
-                bulk_data
-                    .into_iter()
-                    .flat_map(redis::Value::into_map_iter)
-                    .fold(HashMap::new(), |mut acc, it| {
-                        acc.extend(it.flat_map(|(key, val)| match key {
-                            redis::Value::Status(config_key) => {
-                                Ok((config_key, ConfigValue::try_from(&val)?))
+                let mut config_map = HashMap::with_capacity(bulk_data.len());
+                for raw_map in bulk_data {
+                    for (key, val) in raw_map
+                        .into_map_iter()
+                        .map_err(|_| FalkorDBError::ParsingError)?
+                    {
+                        let key = match key {
+                            redis::Value::Status(config_key) => Ok(config_key),
+                            redis::Value::Data(config_key) => {
+                                Ok(String::from_utf8_lossy(config_key.as_slice()).to_string())
                             }
-                            redis::Value::Data(config_key) => Ok((
-                                String::from_utf8_lossy(config_key.as_slice()).to_string(),
-                                ConfigValue::try_from(&val)?,
-                            )),
-                            _ => Err(Into::<anyhow::Error>::into(
-                                FalkorDBError::InvalidDataReceived,
-                            )),
-                        }));
-                        acc
-                    })
+                            _ => Err(FalkorDBError::InvalidDataReceived),
+                        }?;
+
+                        config_map.insert(key, ConfigValue::try_from(&val)?);
+                    }
+                }
+
+                config_map
             }
         })
     }
@@ -151,6 +155,7 @@ impl SyncFalkorClient {
         SyncGraph {
             client: self,
             graph_name: graph_name.to_string(),
+            graph_schema: GraphSchema::new(graph_name.to_string()),
         }
     }
 }

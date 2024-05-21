@@ -6,3 +6,4 @@
 #[cfg(feature = "tokio")]
 pub mod asynchronous;
 pub mod blocking;
+pub mod schema;

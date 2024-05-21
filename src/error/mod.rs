@@ -15,6 +15,34 @@ pub enum FalkorDBError {
     InvalidConnectionPoolSize,
     #[error("Attempting to use an empty connection object")]
     EmptyConnection,
-    #[error("Parsing error due to invalid types, or argument count")]
+    #[error("General parsing error")]
     ParsingError,
+    #[error("Received malformed header")]
+    ParsingHeader,
+    #[error("Unknown type")]
+    ParsingUnknownType,
+    #[error("Element was not of type FArray")]
+    ParsingFArray,
+    #[error("Element was not of type FString")]
+    ParsingFString,
+    #[error("Element was not of type FEdge")]
+    ParsingFEdge,
+    #[error("Element was not of type FNode")]
+    ParsingFNode,
+    #[error("Element was not of type FPath")]
+    ParsingFPath,
+    #[error("Element was not of type FMap")]
+    ParsingFMap,
+    #[error("Element was not of type FPoint")]
+    ParsingFPoint,
+    #[error("Key id was not of type i64")]
+    ParsingKeyIdTypeMismatch,
+    #[error("Type marker was not of type i64")]
+    ParsingTypeMarkerTypeMismatch,
+    #[error("Both key id and type marker were not of type i64")]
+    ParsingKTVTypes,
+    #[error("Could not form slowlog entry, element count invalid")]
+    ParsingSlowlogEntryElementCount,
+    #[error("Could not parse node, element count invalid")]
+    ParsingNodeElementCount,
 }

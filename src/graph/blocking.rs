@@ -5,6 +5,9 @@
 
 use crate::client::blocking::SyncFalkorClient;
 use crate::connection::blocking::FalkorSyncConnection;
+use crate::error::FalkorDBError;
+use crate::graph::schema::GraphSchema;
+use crate::value::execution_plan::ExecutionPlan;
 use crate::value::query_result::QueryResult;
 use crate::value::slowlog_entry::SlowlogEntry;
 use crate::value::FalkorValue;
@@ -15,6 +18,7 @@ use std::collections::HashMap;
 pub struct SyncGraph<'a> {
     pub(crate) client: &'a SyncFalkorClient,
     pub(crate) graph_name: String,
+    pub(crate) graph_schema: GraphSchema,
 }
 
 fn construct_query<Q: ToString, T: ToString, Z: ToString>(
@@ -38,18 +42,7 @@ impl SyncGraph<'_> {
 
     fn send_command(&self, command: &str, params: Option<String>) -> Result<FalkorValue> {
         let mut conn = self.client.borrow_connection()?;
-        Ok(match conn.as_inner()? {
-            #[cfg(feature = "redis")]
-            FalkorSyncConnection::Redis(redis_conn) => {
-                redis::FromRedisValue::from_owned_redis_value(
-                    redis_conn.req_command(
-                        redis::cmd(command)
-                            .arg(self.graph_name.as_str())
-                            .arg(params),
-                    )?,
-                )?
-            }
-        })
+        conn.send_command(Some(self.graph_name.clone()), command, params)
     }
 
     pub fn copy<T: ToString>(&self, cloned_graph_name: T) -> Result<SyncGraph> {
@@ -69,12 +62,17 @@ impl SyncGraph<'_> {
             return Ok(vec![]);
         }
 
-        Ok(res
-            .into_iter()
-            .flat_map(FalkorValue::into_vec)
-            .flat_map(TryInto::<[FalkorValue; 4]>::try_into)
-            .flat_map(SlowlogEntry::from_value_array)
-            .collect::<Vec<_>>())
+        let mut slowlog_entries = Vec::with_capacity(res.len());
+        for entry_raw in res {
+            slowlog_entries.push(SlowlogEntry::from_value_array(
+                entry_raw
+                    .into_vec()?
+                    .try_into()
+                    .map_err(|_| FalkorDBError::ParsingSlowlogEntryElementCount)?,
+            )?);
+        }
+
+        Ok(slowlog_entries)
     }
 
     pub fn slowlog_reset(&self) -> Result<()> {
@@ -86,18 +84,13 @@ impl SyncGraph<'_> {
         &self,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<ExecutionPlan> {
         let query = construct_query(query_string, params);
-        Ok(self
-            .send_command("GRAPH.PROFILE", Some(query))
-            .and_then(|res| res.into_vec())?
-            .into_iter()
-            .flat_map(FalkorValue::into_string)
-            .map(|step| step.trim().to_string())
-            .collect::<Vec<_>>())
+
+        ExecutionPlan::try_from(self.send_command("GRAPH.PROFILE", Some(query))?)
     }
 
-    pub fn profile<Q: ToString>(&self, query_string: Q) -> Result<Vec<String>> {
+    pub fn profile<Q: ToString>(&self, query_string: Q) -> Result<ExecutionPlan> {
         self.profile_with_params::<Q, &str, &str>(query_string, None)
     }
 
@@ -105,18 +98,12 @@ impl SyncGraph<'_> {
         &self,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<ExecutionPlan> {
         let query = construct_query(query_string, params);
-        Ok(self
-            .send_command("GRAPH.EXPLAIN", Some(query))
-            .and_then(|res| res.into_vec())?
-            .into_iter()
-            .flat_map(FalkorValue::into_string)
-            .map(|step| step.trim().to_string())
-            .collect::<Vec<_>>())
+        ExecutionPlan::try_from(self.send_command("GRAPH.EXPLAIN", Some(query))?)
     }
 
-    pub fn explain<Q: ToString>(&self, query_string: Q) -> Result<Vec<String>> {
+    pub fn explain<Q: ToString>(&self, query_string: Q) -> Result<ExecutionPlan> {
         self.explain_with_params::<Q, &str, &str>(query_string, None)
     }
 
@@ -125,22 +112,27 @@ impl SyncGraph<'_> {
         command: &str,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
+        timeout: Option<u64>,
     ) -> Result<QueryResult> {
         let query = construct_query(query_string, params);
 
         let mut conn = self.client.borrow_connection()?;
-        Ok(match conn.as_inner()? {
+        let falkor_result = match conn.as_inner()? {
             #[cfg(feature = "redis")]
             FalkorSyncConnection::Redis(redis_conn) => {
+                use redis::FromRedisValue as _;
                 let redis_val = redis_conn.req_command(
                     redis::cmd(command)
                         .arg(self.graph_name.as_str())
                         .arg(query)
-                        .arg("--compact"),
+                        .arg("--compact")
+                        .arg(timeout.map(|timeout| format!("timeout {timeout}"))),
                 )?;
-                QueryResult::try_from(redis_val)?
+                FalkorValue::from_owned_redis_value(redis_val)?
             }
-        })
+        };
+
+        QueryResult::from_falkor_value(falkor_result, &self.graph_schema, &mut conn)
     }
 
     pub fn query_with_params<Q: ToString, T: ToString, Z: ToString>(
@@ -148,6 +140,7 @@ impl SyncGraph<'_> {
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
         readonly: bool,
+        timeout: Option<u64>,
     ) -> Result<QueryResult> {
         self.query_with_parser(
             if readonly {
@@ -157,23 +150,29 @@ impl SyncGraph<'_> {
             },
             query_string,
             params,
+            timeout,
         )
     }
 
-    pub fn query<Q: ToString>(&self, query_string: Q) -> Result<QueryResult> {
-        self.query_with_params::<Q, &str, &str>(query_string, None, false)
+    pub fn query<Q: ToString>(&self, query_string: Q, timeout: Option<u64>) -> Result<QueryResult> {
+        self.query_with_params::<Q, &str, &str>(query_string, None, false, timeout)
     }
 
-    pub fn query_readonly<Q: ToString>(&self, query_string: Q) -> Result<QueryResult> {
-        self.query_with_params::<Q, &str, &str>(query_string, None, true)
+    pub fn query_readonly<Q: ToString>(
+        &self,
+        query_string: Q,
+        timeout: Option<u64>,
+    ) -> Result<QueryResult> {
+        self.query_with_params::<Q, &str, &str>(query_string, None, true, timeout)
     }
 
-    pub fn call_procedure<P: ToString, A: ToString, E: ToString>(
+    pub fn call_procedure<P: ToString>(
         &self,
         procedure: P,
-        args: Option<&[A]>,
-        yields: Option<&[E]>,
+        args: Option<&[String]>,
+        yields: Option<&[String]>,
         read_only: Option<bool>,
+        timeout: Option<u64>,
     ) -> Result<QueryResult> {
         let params = args.map(|args| {
             args.iter()
@@ -189,7 +188,7 @@ impl SyncGraph<'_> {
             procedure.to_string(),
             args.unwrap_or_default()
                 .iter()
-                .map(|element| format!("${}", element.to_string()))
+                .map(|element| format!("${}", element))
                 .collect::<Vec<_>>()
                 .join(",")
         );
@@ -207,6 +206,30 @@ impl SyncGraph<'_> {
             .as_str();
         }
 
-        self.query_with_params(query_string, params.as_ref(), read_only.unwrap_or_default())
+        self.query_with_params(
+            query_string,
+            params.as_ref(),
+            read_only.unwrap_or_default(),
+            timeout,
+        )
+    }
+
+    pub fn list_indices(&self) -> Result<Vec<HashMap<String, FalkorValue>>> {
+        let query_res = self
+            .call_procedure("DB.INDEXES", None, None, None, None)?
+            .result_set;
+
+        Ok(query_res)
+    }
+
+    pub fn list_constraints(&self) -> Result<Vec<HashMap<String, FalkorValue>>> {
+        let query_res = self
+            .call_procedure("DB.CONSTRAINTS", None, None, None, None)?
+            .result_set;
+
+        let query_res_len = query_res.len();
+        Ok(query_res
+            .into_iter()
+            .fold(Vec::with_capacity(query_res_len), |acc, it| acc))
     }
 }

@@ -4,13 +4,9 @@
  */
 
 use crate::connection::blocking::BorrowedSyncConnection;
-use crate::graph::schema::GraphSchema;
-use crate::value::graph_entities::{Edge, Node};
+use crate::graph_schema::blocking::GraphSchema;
 use crate::value::map::parse_map;
-use crate::value::path::Path;
-use crate::value::point::Point;
-use crate::value::FalkorValue;
-use crate::FalkorDBError;
+use crate::{Edge, FalkorDBError, FalkorValue, Node, Path, Point};
 use anyhow::Result;
 
 pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValue)> {

@@ -3,12 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::client::FalkorClientImpl;
-use crate::connection::{asynchronous::FalkorAsyncConnection, blocking::FalkorSyncConnection};
-use crate::connection_info::FalkorConnectionInfo;
-use crate::error::FalkorDBError;
-use crate::value::config::ConfigValue;
-use crate::value::FalkorValue;
+use crate::{
+    client::FalkorClientImpl, connection::blocking::FalkorSyncConnection, ConfigValue,
+    FalkorConnectionInfo, FalkorDBError, FalkorValue,
+};
 use anyhow::Result;
 use redis::{FromRedisValue, RedisResult, RedisWrite, ToRedisArgs};
 
@@ -19,7 +17,7 @@ impl From<redis::Connection> for FalkorSyncConnection {
 }
 
 #[cfg(feature = "tokio")]
-impl From<redis::aio::MultiplexedConnection> for FalkorAsyncConnection {
+impl From<redis::aio::MultiplexedConnection> for crate::FalkorAsyncConnection {
     fn from(value: redis::aio::MultiplexedConnection) -> Self {
         Self::Redis(value)
     }

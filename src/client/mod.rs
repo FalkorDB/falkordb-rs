@@ -3,15 +3,15 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::asynchronous::FalkorAsyncConnection;
 use crate::connection::blocking::FalkorSyncConnection;
 use anyhow::Result;
 use std::time::Duration;
 
+pub(crate) mod blocking;
+pub(crate) mod builder;
+
 #[cfg(feature = "tokio")]
-pub mod asynchronous;
-pub mod blocking;
-pub mod builder;
+pub(crate) mod asynchronous;
 
 pub(crate) enum FalkorClientImpl {
     #[cfg(feature = "redis")]
@@ -36,7 +36,7 @@ impl FalkorClientImpl {
     pub(crate) async fn get_async_connection(
         &self,
         connection_timeout: Option<Duration>,
-    ) -> Result<FalkorAsyncConnection> {
+    ) -> Result<crate::FalkorAsyncConnection> {
         Ok(match self {
             FalkorClientImpl::Redis(redis_client) => match connection_timeout {
                 Some(timeout) => {

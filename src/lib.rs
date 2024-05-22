@@ -11,11 +11,33 @@ mod connection;
 mod connection_info;
 mod error;
 mod graph;
-pub(crate) mod parser;
+mod graph_schema;
+mod parser;
 mod value;
 
 #[cfg(feature = "redis")]
 mod redis_ext;
 
-pub use client::builder::FalkorDBClientBuilder;
+pub use client::{blocking::SyncFalkorClient, builder::FalkorDBClientBuilder};
+pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
+pub use graph::blocking::SyncGraph;
+pub use graph_schema::SchemaType;
+pub use parser::FalkorParsable;
+pub use value::{
+    config::ConfigValue,
+    constraint::Constraint,
+    execution_plan::ExecutionPlan,
+    graph_entities::{Edge, Node},
+    path::Path,
+    point::Point,
+    query_result::QueryResult,
+    slowlog_entry::SlowlogEntry,
+    FalkorValue,
+};
+
+#[cfg(feature = "tokio")]
+pub use {
+    client::asynchronous::AsyncFalkorClient, connection::asynchronous::FalkorAsyncConnection,
+    graph::asynchronous::AsyncGraph,
+};

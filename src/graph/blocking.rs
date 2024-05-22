@@ -3,16 +3,11 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::client::blocking::SyncFalkorClient;
-use crate::connection::blocking::FalkorSyncConnection;
-use crate::error::FalkorDBError;
-use crate::graph::schema::GraphSchema;
-use crate::graph::utils::generate_procedure_call;
-use crate::parser::FalkorParsable;
-use crate::value::execution_plan::ExecutionPlan;
-use crate::value::query_result::QueryResult;
-use crate::value::slowlog_entry::SlowlogEntry;
-use crate::value::FalkorValue;
+use super::utils::generate_procedure_call;
+use crate::{
+    connection::blocking::FalkorSyncConnection, graph_schema::blocking::GraphSchema, ExecutionPlan,
+    FalkorDBError, FalkorParsable, FalkorValue, QueryResult, SlowlogEntry, SyncFalkorClient,
+};
 use anyhow::Result;
 use redis::ConnectionLike;
 use std::collections::HashMap;
@@ -205,7 +200,9 @@ impl SyncGraph<'_> {
             .into_vec()?;
 
         for item in query_res {
-            log::info!("{item:?}");
+            for sub_item in item.into_vec()? {
+                log::info!("{sub_item:?}");
+            }
         }
         Ok(FalkorValue::None)
     }

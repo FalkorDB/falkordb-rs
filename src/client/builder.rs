@@ -3,11 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::client::asynchronous::AsyncFalkorClient;
-use crate::client::blocking::SyncFalkorClient;
-use crate::client::FalkorClientImpl;
-use crate::connection_info::FalkorConnectionInfo;
-use crate::error::FalkorDBError;
+use crate::{client::FalkorClientImpl, FalkorConnectionInfo, FalkorDBError, SyncFalkorClient};
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -102,7 +98,7 @@ impl FalkorDBClientBuilder<'A'> {
         }
     }
 
-    pub async fn build(self) -> Result<Arc<AsyncFalkorClient>> {
+    pub async fn build(self) -> Result<Arc<crate::AsyncFalkorClient>> {
         let connection_info = self
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
@@ -116,6 +112,6 @@ impl FalkorDBClientBuilder<'A'> {
             .build()?,
         );
 
-        AsyncFalkorClient::create(get_client(connection_info)?, runtime).await
+        crate::AsyncFalkorClient::create(get_client(connection_info)?, runtime).await
     }
 }

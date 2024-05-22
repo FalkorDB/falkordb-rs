@@ -3,23 +3,20 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::blocking::BorrowedSyncConnection;
-use crate::value::FalkorValue;
-use crate::FalkorDBError;
+use super::utils::{get_refresh_command, get_relevant_hashmap, update_map};
+use crate::{
+    connection::blocking::BorrowedSyncConnection, value::FalkorValue, FalkorDBError, SchemaType,
+};
 use anyhow::Result;
 use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet};
-use std::ops::DerefMut;
-use std::sync::atomic::AtomicI64;
-use std::sync::atomic::Ordering::SeqCst;
-use std::sync::Arc;
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum SchemaType {
-    Labels,
-    Properties,
-    Relationships,
-}
+use std::{
+    collections::{HashMap, HashSet},
+    ops::{Deref, DerefMut},
+    sync::{
+        atomic::{AtomicI64, Ordering::SeqCst},
+        Arc,
+    },
+};
 
 pub(crate) type LockableIdMap = Arc<RwLock<HashMap<i64, String>>>;
 
@@ -75,18 +72,7 @@ impl GraphSchema {
         }
         .read();
 
-        // Returns the write lock if
-        let mut id_hashmap = HashMap::new();
-        for id in id_set {
-            if let Some(id_val) = read_lock.get(id).cloned() {
-                id_hashmap.insert(*id, id_val);
-                continue;
-            }
-
-            return None;
-        }
-
-        Some(id_hashmap)
+        get_relevant_hashmap(id_set, read_lock.deref())
     }
 
     pub(crate) fn refresh(
@@ -95,14 +81,16 @@ impl GraphSchema {
         conn: &mut BorrowedSyncConnection,
         id_hashset: Option<&HashSet<i64>>,
     ) -> Result<Option<HashMap<i64, String>>> {
-        let (map, command) = match schema_type {
-            SchemaType::Labels => (&self.labels, "DB.LABELS"),
-            SchemaType::Properties => (&self.properties, "DB.PROPERTYKEYS"),
-            SchemaType::Relationships => (&self.relationships, "DB.RELATIONSHIPTYPES"),
+        let command = get_refresh_command(schema_type);
+        let map = match schema_type {
+            SchemaType::Labels => &self.labels,
+            SchemaType::Properties => &self.properties,
+            SchemaType::Relationships => &self.relationships,
         };
 
         let mut write_lock = map.write();
 
+        // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
         let [_, keys, _]: [FalkorValue; 3] = conn
             .send_command(
                 Some(self.graph_name.clone()),
@@ -112,37 +100,7 @@ impl GraphSchema {
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingError)?;
-        let keys_vec = keys.into_vec()?;
 
-        let mut new_keys = HashMap::with_capacity(keys_vec.len());
-        for (idx, item) in keys_vec.into_iter().enumerate() {
-            let key = item
-                .into_vec()?
-                .into_iter()
-                .next()
-                .ok_or(FalkorDBError::ParsingError)?
-                .into_string()?;
-            new_keys.insert(idx as i64, key);
-        }
-
-        *write_lock.deref_mut() = new_keys;
-
-        match id_hashset {
-            None => Ok(None),
-            Some(id_hashset) => {
-                let mut relevant_ids = HashMap::with_capacity(id_hashset.len());
-                for id in id_hashset {
-                    relevant_ids.insert(
-                        *id,
-                        write_lock
-                            .get(id)
-                            .cloned()
-                            .ok_or(FalkorDBError::ParsingError)?,
-                    );
-                }
-
-                Ok(Some(relevant_ids))
-            }
-        }
+        update_map(write_lock.deref_mut(), keys, id_hashset)
     }
 }

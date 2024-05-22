@@ -3,9 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::client::FalkorClientImpl;
-use crate::connection::asynchronous::FalkorAsyncConnection;
-use crate::error::FalkorDBError;
+use crate::{client::FalkorClientImpl, FalkorAsyncConnection, FalkorDBError};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::runtime::Runtime;

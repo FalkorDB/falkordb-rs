@@ -3,15 +3,17 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::client::FalkorClientImpl;
-use crate::connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection};
-use crate::error::FalkorDBError;
-use crate::graph::blocking::SyncGraph;
-use crate::graph::schema::GraphSchema;
-use crate::value::config::ConfigValue;
+use crate::{
+    client::FalkorClientImpl,
+    connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
+    graph_schema::blocking::GraphSchema,
+    ConfigValue, FalkorDBError, SyncGraph,
+};
 use anyhow::Result;
-use std::collections::HashMap;
-use std::sync::{mpsc, Arc};
+use std::{
+    collections::HashMap,
+    sync::{mpsc, Arc},
+};
 
 pub struct SyncFalkorClient {
     _inner: FalkorClientImpl,

@@ -3,16 +3,15 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::blocking::BorrowedSyncConnection;
-use crate::error::FalkorDBError;
-use crate::graph::schema::GraphSchema;
-use crate::parser::FalkorParsable;
-use crate::value::point::Point;
+use crate::{
+    connection::blocking::BorrowedSyncConnection, graph_schema::blocking::GraphSchema,
+    FalkorDBError, FalkorParsable,
+};
 use anyhow::Result;
 use graph_entities::{Edge, Node};
 use path::Path;
-use std::collections::HashMap;
-use std::fmt::Debug;
+use point::Point;
+use std::{collections::HashMap, fmt::Debug};
 
 pub(crate) mod config;
 pub(crate) mod constraint;

@@ -3,12 +3,11 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::blocking::BorrowedSyncConnection;
-use crate::error::FalkorDBError;
-use crate::graph::schema::GraphSchema;
-use crate::parser::FalkorParsable;
-use crate::value::utils::{parse_type, type_val_from_value};
-use crate::value::FalkorValue;
+use super::utils::{parse_type, type_val_from_value};
+use crate::{
+    connection::blocking::BorrowedSyncConnection, graph_schema::blocking::GraphSchema,
+    FalkorDBError, FalkorParsable, FalkorValue,
+};
 use anyhow::Result;
 use std::collections::HashMap;
 

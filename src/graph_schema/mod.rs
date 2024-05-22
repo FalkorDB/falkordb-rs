@@ -8,3 +8,10 @@ mod utils;
 
 #[cfg(feature = "tokio")]
 pub(crate) mod asynchronous;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SchemaType {
+    Labels,
+    Properties,
+    Relationships,
+}

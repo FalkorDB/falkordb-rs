@@ -3,8 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::error::FalkorDBError;
-use crate::value::FalkorValue;
+use crate::{FalkorDBError, FalkorValue};
 use anyhow::Result;
 use redis::ConnectionLike;
 use std::sync::mpsc;

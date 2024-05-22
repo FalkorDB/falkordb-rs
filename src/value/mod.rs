@@ -6,7 +6,7 @@
 use crate::connection::blocking::BorrowedSyncConnection;
 use crate::error::FalkorDBError;
 use crate::graph::schema::GraphSchema;
-use crate::value::map::parse_map;
+use crate::parser::FalkorParsable;
 use crate::value::point::Point;
 use anyhow::Result;
 use graph_entities::{Edge, Node};
@@ -14,15 +14,16 @@ use path::Path;
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-pub mod config;
-pub mod constraint;
-pub mod execution_plan;
-pub mod graph_entities;
-pub mod map;
-pub mod path;
-pub mod point;
-pub mod query_result;
-pub mod slowlog_entry;
+pub(crate) mod config;
+pub(crate) mod constraint;
+pub(crate) mod execution_plan;
+pub(crate) mod graph_entities;
+pub(crate) mod map;
+pub(crate) mod path;
+pub(crate) mod point;
+pub(crate) mod query_result;
+pub(crate) mod slowlog_entry;
+pub(crate) mod utils;
 
 #[derive(Clone, Debug)]
 pub enum FalkorValue {
@@ -83,47 +84,14 @@ where
     }
 }
 
-pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValue)> {
-    let [type_marker, val]: [FalkorValue; 2] = value
-        .into_vec()?
-        .try_into()
-        .map_err(|_| FalkorDBError::ParsingError)?;
-    let type_marker = type_marker.to_i64().ok_or(FalkorDBError::ParsingError)?;
-
-    Ok((type_marker, val))
-}
-
-pub(crate) fn parse_type(
-    type_marker: i64,
-    val: FalkorValue,
-    graph_schema: &GraphSchema,
-    conn: &mut BorrowedSyncConnection,
-) -> Result<FalkorValue> {
-    let res = match type_marker {
-        1 => FalkorValue::None,
-        2 => FalkorValue::FString(val.into_string()?),
-        3 => FalkorValue::Int64(val.to_i64().ok_or(FalkorDBError::ParsingError)?),
-        4 => FalkorValue::FBool(val.to_bool().ok_or(FalkorDBError::ParsingError)?),
-        5 => FalkorValue::F64(val.to_f64().ok_or(FalkorDBError::ParsingError)?),
-        6 => FalkorValue::FArray({
-            let val = val.into_vec()?;
-            let mut parsed_vec = Vec::with_capacity(val.len());
-            for item in val {
-                let (type_marker, val) = type_val_from_value(item)?;
-                parsed_vec.push(parse_type(type_marker, val, graph_schema, conn)?);
-            }
-            parsed_vec
-        }),
-        // The following types are sent as an array and require specific parsing functions
-        7 => FalkorValue::FEdge(Edge::parse(val, graph_schema, conn)?),
-        8 => FalkorValue::FNode(Node::parse(val, graph_schema, conn)?),
-        9 => FalkorValue::FPath(Path::parse(val)?),
-        10 => FalkorValue::FMap(parse_map(val, graph_schema, conn)?),
-        11 => FalkorValue::FPoint(Point::parse(val)?),
-        _ => Err(FalkorDBError::ParsingError)?,
-    };
-
-    Ok(res)
+impl FalkorParsable for FalkorValue {
+    fn from_falkor_value(
+        value: FalkorValue,
+        _graph_schema: &GraphSchema,
+        _conn: &mut BorrowedSyncConnection,
+    ) -> Result<Self> {
+        Ok(value)
+    }
 }
 
 impl FalkorValue {

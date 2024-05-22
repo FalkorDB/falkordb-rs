@@ -7,6 +7,8 @@ use crate::client::blocking::SyncFalkorClient;
 use crate::connection::blocking::FalkorSyncConnection;
 use crate::error::FalkorDBError;
 use crate::graph::schema::GraphSchema;
+use crate::graph::utils::generate_procedure_call;
+use crate::parser::FalkorParsable;
 use crate::value::execution_plan::ExecutionPlan;
 use crate::value::query_result::QueryResult;
 use crate::value::slowlog_entry::SlowlogEntry;
@@ -27,9 +29,11 @@ fn construct_query<Q: ToString, T: ToString, Z: ToString>(
 ) -> String {
     params
         .map(|params| {
-            params.iter().fold(String::new(), |acc, (key, val)| {
-                acc + format!("{}={}", key.to_string(), val.to_string()).as_str()
-            })
+            params
+                .iter()
+                .fold("CYPHER ".to_string(), |acc, (key, val)| {
+                    acc + format!("{}={}", key.to_string(), val.to_string()).as_str()
+                })
         })
         .unwrap_or_default()
         + query_str.to_string().as_str()
@@ -107,13 +111,13 @@ impl SyncGraph<'_> {
         self.explain_with_params::<Q, &str, &str>(query_string, None)
     }
 
-    fn query_with_parser<Q: ToString, T: ToString, Z: ToString>(
+    fn query_with_parser<Q: ToString, T: ToString, Z: ToString, P: FalkorParsable>(
         &self,
         command: &str,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
         timeout: Option<u64>,
-    ) -> Result<QueryResult> {
+    ) -> Result<P> {
         let query = construct_query(query_string, params);
 
         let mut conn = self.client.borrow_connection()?;
@@ -132,16 +136,16 @@ impl SyncGraph<'_> {
             }
         };
 
-        QueryResult::from_falkor_value(falkor_result, &self.graph_schema, &mut conn)
+        P::from_falkor_value(falkor_result, &self.graph_schema, &mut conn)
     }
 
-    pub fn query_with_params<Q: ToString, T: ToString, Z: ToString>(
+    pub fn query_with_params<Q: ToString, T: ToString, Z: ToString, P: FalkorParsable>(
         &self,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
         readonly: bool,
         timeout: Option<u64>,
-    ) -> Result<QueryResult> {
+    ) -> Result<P> {
         self.query_with_parser(
             if readonly {
                 "GRAPH.RO_QUERY"
@@ -155,7 +159,7 @@ impl SyncGraph<'_> {
     }
 
     pub fn query<Q: ToString>(&self, query_string: Q, timeout: Option<u64>) -> Result<QueryResult> {
-        self.query_with_params::<Q, &str, &str>(query_string, None, false, timeout)
+        self.query_with_params::<Q, &str, &str, QueryResult>(query_string, None, false, timeout)
     }
 
     pub fn query_readonly<Q: ToString>(
@@ -163,48 +167,18 @@ impl SyncGraph<'_> {
         query_string: Q,
         timeout: Option<u64>,
     ) -> Result<QueryResult> {
-        self.query_with_params::<Q, &str, &str>(query_string, None, true, timeout)
+        self.query_with_params::<Q, &str, &str, QueryResult>(query_string, None, true, timeout)
     }
 
-    pub fn call_procedure<P: ToString>(
+    pub fn call_procedure<C: ToString, P: FalkorParsable>(
         &self,
-        procedure: P,
+        procedure: C,
         args: Option<&[String]>,
         yields: Option<&[String]>,
         read_only: Option<bool>,
         timeout: Option<u64>,
-    ) -> Result<QueryResult> {
-        let params = args.map(|args| {
-            args.iter()
-                .enumerate()
-                .fold(HashMap::new(), |mut acc, (idx, param)| {
-                    acc.insert(format!("param{idx}"), param.to_string());
-                    acc
-                })
-        });
-
-        let mut query_string = format!(
-            "CALL {}({})",
-            procedure.to_string(),
-            args.unwrap_or_default()
-                .iter()
-                .map(|element| format!("${}", element))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-
-        let yields = yields.unwrap_or_default();
-        if !yields.is_empty() {
-            query_string += format!(
-                "YIELD {}",
-                yields
-                    .iter()
-                    .map(|element| element.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
-            .as_str();
-        }
+    ) -> Result<P> {
+        let (query_string, params) = generate_procedure_call(procedure, args, yields);
 
         self.query_with_params(
             query_string,
@@ -214,25 +188,25 @@ impl SyncGraph<'_> {
         )
     }
 
-    pub fn list_indices(&self) -> Result<Vec<HashMap<String, FalkorValue>>> {
+    pub fn list_indices(&self) -> Result<FalkorValue> {
         let query_res = self
-            .call_procedure("DB.INDEXES", None, None, None, None)?
-            .result_set;
+            .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, None, None)?
+            .into_vec()?;
 
-        Ok(query_res)
+        for item in query_res {
+            log::info!("{item:?}");
+        }
+        Ok(FalkorValue::None)
     }
 
-    pub fn list_constraints(&self) -> Result<Vec<HashMap<String, FalkorValue>>> {
+    pub fn list_constraints(&self) -> Result<FalkorValue> {
         let query_res = self
-            .call_procedure("DB.CONSTRAINTS", None, None, None, None)?
-            .result_set;
+            .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, None, None)?
+            .into_vec()?;
 
-        let query_res_len = query_res.len();
-        Ok(query_res
-            .into_iter()
-            .fold(Vec::with_capacity(query_res_len), |mut acc, it| {
-                acc.push(it);
-                acc
-            }))
+        for item in query_res {
+            log::info!("{item:?}");
+        }
+        Ok(FalkorValue::None)
     }
 }

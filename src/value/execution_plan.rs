@@ -30,6 +30,7 @@ impl TryFrom<FalkorValue> for ExecutionPlan {
             Vec::with_capacity(string_vec.len()),
             Vec::with_capacity(string_vec.len()),
         );
+        execution_plan_text.push(String::new());
         for item in string_vec {
             let raw_text = item.into_string()?;
             execution_plan.push(raw_text.trim().to_string());

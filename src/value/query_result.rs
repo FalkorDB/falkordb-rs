@@ -6,7 +6,9 @@
 use crate::connection::blocking::BorrowedSyncConnection;
 use crate::error::FalkorDBError;
 use crate::graph::schema::GraphSchema;
-use crate::value::{parse_type, type_val_from_value, FalkorValue};
+use crate::parser::FalkorParsable;
+use crate::value::utils::{parse_type, type_val_from_value};
+use crate::value::FalkorValue;
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -15,6 +17,59 @@ pub struct QueryResult {
     pub(crate) stats: Vec<String>,
     pub(crate) header: Vec<String>,
     pub(crate) result_set: Vec<HashMap<String, FalkorValue>>,
+}
+
+impl QueryResult {
+    pub fn stats(&self) -> &[String] {
+        self.stats.as_slice()
+    }
+
+    pub fn header(&self) -> &[String] {
+        self.header.as_slice()
+    }
+
+    pub fn result_set(&self) -> &[HashMap<String, FalkorValue>] {
+        self.result_set.as_slice()
+    }
+
+    pub fn take(self) -> (Vec<String>, Vec<String>, Vec<HashMap<String, FalkorValue>>) {
+        (self.stats, self.header, self.result_set)
+    }
+}
+
+fn query_parse_header(header: FalkorValue) -> Result<Vec<String>> {
+    let header_vec = header.into_vec()?;
+
+    let mut keys = Vec::with_capacity(header_vec.len());
+    for item in header_vec {
+        let item_vec = item.into_vec()?;
+        let key = if item_vec.len() == 2 {
+            let [_, key]: [FalkorValue; 2] = item_vec
+                .try_into()
+                .map_err(|_| FalkorDBError::ParsingHeader)?;
+            key
+        } else {
+            item_vec
+                .into_iter()
+                .next()
+                .ok_or(FalkorDBError::ParsingHeader)?
+        }
+        .into_string()?;
+        keys.push(key);
+    }
+
+    Ok(keys)
+}
+
+fn query_parse_stats(stats: FalkorValue) -> Result<Vec<String>> {
+    let stats_vec = stats.into_vec()?;
+
+    let mut stats_strings = Vec::with_capacity(stats_vec.len());
+    for element in stats_vec {
+        stats_strings.push(element.into_string()?);
+    }
+
+    Ok(stats_strings)
 }
 
 fn parse_result_set(
@@ -39,24 +94,8 @@ fn parse_result_set(
     Ok(parsed_result_set)
 }
 
-impl QueryResult {
-    pub fn stats(&self) -> &[String] {
-        self.stats.as_slice()
-    }
-
-    pub fn header(&self) -> &[String] {
-        self.header.as_slice()
-    }
-
-    pub fn result_set(&self) -> &[HashMap<String, FalkorValue>] {
-        self.result_set.as_slice()
-    }
-
-    pub fn take(self) -> (Vec<String>, Vec<String>, Vec<HashMap<String, FalkorValue>>) {
-        (self.stats, self.header, self.result_set)
-    }
-
-    pub(crate) fn from_falkor_value(
+impl FalkorParsable for QueryResult {
+    fn from_falkor_value(
         value: FalkorValue,
         graph_schema: &GraphSchema,
         conn: &mut BorrowedSyncConnection,
@@ -99,45 +138,10 @@ impl QueryResult {
             Err(FalkorDBError::ParsingError)?;
         }
 
-        Ok(QueryResult {
+        Ok(Self {
             stats: stats_strings,
             header: header_keys,
             result_set,
         })
     }
-}
-
-fn query_parse_header(header: FalkorValue) -> Result<Vec<String>> {
-    let header_vec = header.into_vec()?;
-
-    let mut keys = Vec::with_capacity(header_vec.len());
-    for item in header_vec {
-        let item_vec = item.into_vec()?;
-        let key = if item_vec.len() == 2 {
-            let [_, key]: [FalkorValue; 2] = item_vec
-                .try_into()
-                .map_err(|_| FalkorDBError::ParsingHeader)?;
-            key
-        } else {
-            item_vec
-                .into_iter()
-                .next()
-                .ok_or(FalkorDBError::ParsingHeader)?
-        }
-        .into_string()?;
-        keys.push(key);
-    }
-
-    Ok(keys)
-}
-
-fn query_parse_stats(stats: FalkorValue) -> Result<Vec<String>> {
-    let stats_vec = stats.into_vec()?;
-
-    let mut stats_strings = Vec::with_capacity(stats_vec.len());
-    for element in stats_vec {
-        stats_strings.push(element.into_string()?);
-    }
-
-    Ok(stats_strings)
 }

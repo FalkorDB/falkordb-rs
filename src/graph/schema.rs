@@ -3,8 +3,13 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::connection::blocking::BorrowedSyncConnection;
+use crate::value::FalkorValue;
+use crate::FalkorDBError;
+use anyhow::Result;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
+use std::ops::DerefMut;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::Arc;
@@ -46,32 +51,98 @@ impl GraphSchema {
         self.graph_name.clone()
     }
 
-    pub fn relationships(&self) -> LockableIdMap {
+    pub(crate) fn relationships(&self) -> LockableIdMap {
         self.relationships.clone()
     }
 
-    pub fn labels(&self) -> LockableIdMap {
+    pub(crate) fn labels(&self) -> LockableIdMap {
         self.labels.clone()
     }
 
-    pub fn properties(&self) -> LockableIdMap {
+    pub(crate) fn properties(&self) -> LockableIdMap {
         self.properties.clone()
     }
 
-    pub fn verify_id_set(&self, id_set: &HashSet<i64>, schema_type: SchemaType) -> bool {
-        match schema_type {
-            SchemaType::Labels => {
-                let labels = self.labels.read();
-                id_set.iter().all(|id| labels.contains_key(id))
+    pub fn verify_id_set(
+        &self,
+        id_set: &HashSet<i64>,
+        schema_type: SchemaType,
+    ) -> Option<HashMap<i64, String>> {
+        let read_lock = match schema_type {
+            SchemaType::Labels => &self.labels,
+            SchemaType::Properties => &self.properties,
+            SchemaType::Relationships => &self.relationships,
+        }
+        .read();
+
+        // Returns the write lock if
+        let mut id_hashmap = HashMap::new();
+        for id in id_set {
+            if let Some(id_val) = read_lock.get(id).cloned() {
+                id_hashmap.insert(*id, id_val);
+                continue;
             }
-            SchemaType::Properties => id_set.iter().all(|id| {
-                let properties = self.properties.read();
-                properties.contains_key(id)
-            }),
-            SchemaType::Relationships => id_set.iter().all(|id| {
-                let relationships = self.relationships.read();
-                relationships.contains_key(id)
-            }),
+
+            return None;
+        }
+
+        Some(id_hashmap)
+    }
+
+    pub(crate) fn refresh(
+        &self,
+        schema_type: SchemaType,
+        conn: &mut BorrowedSyncConnection,
+        id_hashset: Option<&HashSet<i64>>,
+    ) -> Result<Option<HashMap<i64, String>>> {
+        let (map, command) = match schema_type {
+            SchemaType::Labels => (&self.labels, "DB.LABELS"),
+            SchemaType::Properties => (&self.properties, "DB.PROPERTYKEYS"),
+            SchemaType::Relationships => (&self.relationships, "DB.RELATIONSHIPTYPES"),
+        };
+
+        let mut write_lock = map.write();
+
+        let [_, keys, _]: [FalkorValue; 3] = conn
+            .send_command(
+                Some(self.graph_name.clone()),
+                "GRAPH.QUERY",
+                Some(format!("CALL {command}()")),
+            )?
+            .into_vec()?
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingError)?;
+        let keys_vec = keys.into_vec()?;
+
+        let mut new_keys = HashMap::with_capacity(keys_vec.len());
+        for (idx, item) in keys_vec.into_iter().enumerate() {
+            let key = item
+                .into_vec()?
+                .into_iter()
+                .next()
+                .ok_or(FalkorDBError::ParsingError)?
+                .into_string()?;
+            new_keys.insert(idx as i64, key);
+        }
+
+        *write_lock.deref_mut() = new_keys;
+
+        match id_hashset {
+            None => Ok(None),
+            Some(id_hashset) => {
+                let mut relevant_ids = HashMap::with_capacity(id_hashset.len());
+                for id in id_hashset {
+                    relevant_ids.insert(
+                        *id,
+                        write_lock
+                            .get(id)
+                            .cloned()
+                            .ok_or(FalkorDBError::ParsingError)?,
+                    );
+                }
+
+                Ok(Some(relevant_ids))
+            }
         }
     }
 }

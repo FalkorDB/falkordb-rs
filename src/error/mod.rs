@@ -19,8 +19,16 @@ pub enum FalkorDBError {
     ParsingError,
     #[error("Received malformed header")]
     ParsingHeader,
+    #[error("The id received for this label/property/relationship was unknown")]
+    ParsingCompactIdUnknown,
     #[error("Unknown type")]
     ParsingUnknownType,
+    #[error("Element was not of type Bool")]
+    ParsingBool,
+    #[error("Element was not of type I64")]
+    ParsingI64,
+    #[error("Element was not of type F64")]
+    ParsingF64,
     #[error("Element was not of type FArray")]
     ParsingFArray,
     #[error("Element was not of type FString")]

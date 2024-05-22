@@ -19,10 +19,10 @@ impl SlowlogEntry {
     pub fn from_value_array(values: [FalkorValue; 4]) -> Result<Self> {
         let [timestamp, command, arguments, time_taken] = values;
         Ok(Self {
-            timestamp: timestamp.to_i64().ok_or(FalkorDBError::ParsingError)?,
+            timestamp: timestamp.to_i64().ok_or(FalkorDBError::ParsingI64)?,
             command: command.into_string()?,
             arguments: arguments.into_string()?,
-            time_taken: time_taken.to_i64().ok_or(FalkorDBError::ParsingError)?,
+            time_taken: time_taken.to_i64().ok_or(FalkorDBError::ParsingI64)?,
         })
     }
 }

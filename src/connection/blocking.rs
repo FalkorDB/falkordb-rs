@@ -14,7 +14,7 @@ pub enum FalkorSyncConnection {
     Redis(redis::Connection),
 }
 
-pub(crate) struct BorrowedSyncConnection {
+pub struct BorrowedSyncConnection {
     pub(crate) conn: Option<FalkorSyncConnection>,
     pub(crate) return_tx: mpsc::SyncSender<FalkorSyncConnection>,
 }

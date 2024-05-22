@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 pub(crate) type LockableIdMap = Arc<RwLock<HashMap<i64, String>>>;
 
 #[derive(Clone, Debug, Default)]
-pub struct GraphSchema {
+pub struct AsyncGraphSchema {
     graph_name: String,
     version: Arc<AtomicI64>,
     labels: LockableIdMap,
@@ -27,7 +27,7 @@ pub struct GraphSchema {
     relationships: LockableIdMap,
 }
 
-impl GraphSchema {
+impl AsyncGraphSchema {
     pub fn new(graph_name: String) -> Self {
         Self {
             graph_name,

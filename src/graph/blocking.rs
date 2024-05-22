@@ -3,10 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use super::utils::generate_procedure_call;
+use super::utils::{construct_query, generate_procedure_call};
 use crate::{
-    connection::blocking::FalkorSyncConnection, graph_schema::blocking::GraphSchema, ExecutionPlan,
-    FalkorDBError, FalkorParsable, FalkorValue, QueryResult, SlowlogEntry, SyncFalkorClient,
+    connection::blocking::FalkorSyncConnection, ExecutionPlan, FalkorDBError, FalkorParsable,
+    FalkorValue, QueryResult, SlowlogEntry, SyncFalkorClient, SyncGraphSchema,
 };
 use anyhow::Result;
 use redis::ConnectionLike;
@@ -15,23 +15,7 @@ use std::collections::HashMap;
 pub struct SyncGraph<'a> {
     pub(crate) client: &'a SyncFalkorClient,
     pub(crate) graph_name: String,
-    pub(crate) graph_schema: GraphSchema,
-}
-
-fn construct_query<Q: ToString, T: ToString, Z: ToString>(
-    query_str: Q,
-    params: Option<&HashMap<T, Z>>,
-) -> String {
-    params
-        .map(|params| {
-            params
-                .iter()
-                .fold("CYPHER ".to_string(), |acc, (key, val)| {
-                    acc + format!("{}={}", key.to_string(), val.to_string()).as_str()
-                })
-        })
-        .unwrap_or_default()
-        + query_str.to_string().as_str()
+    pub(crate) graph_schema: SyncGraphSchema,
 }
 
 impl SyncGraph<'_> {

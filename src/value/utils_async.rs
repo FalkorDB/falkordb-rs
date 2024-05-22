@@ -3,15 +3,19 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::blocking::BorrowedSyncConnection;
-use crate::{FalkorDBError, FalkorParsable, FalkorValue, Point, SchemaType, SyncGraphSchema};
+use super::utils::type_val_from_value;
+use crate::{
+    AsyncGraphSchema, Edge, FalkorAsyncConnection, FalkorAsyncParseable, FalkorDBError,
+    FalkorValue, Node, Path, Point, SchemaType,
+};
 use anyhow::Result;
-use std::collections::HashSet;
+use async_recursion::async_recursion;
+use std::collections::{HashMap, HashSet};
 
-pub(crate) fn parse_labels(
+pub(crate) async fn parse_labels_async(
     raw_ids: Vec<FalkorValue>,
-    graph_schema: &SyncGraphSchema,
-    conn: &mut BorrowedSyncConnection,
+    graph_schema: &AsyncGraphSchema,
+    conn: &mut FalkorAsyncConnection,
     schema_type: SchemaType,
 ) -> Result<Vec<String>> {
     let mut ids_hashset = HashSet::with_capacity(raw_ids.len());
@@ -19,8 +23,12 @@ pub(crate) fn parse_labels(
         ids_hashset.insert(label.to_i64().ok_or(FalkorDBError::ParsingI64)?);
     }
 
-    match match graph_schema.verify_id_set(&ids_hashset, schema_type) {
-        None => graph_schema.refresh(schema_type, conn, Some(&ids_hashset))?,
+    match match graph_schema.verify_id_set(&ids_hashset, schema_type).await {
+        None => {
+            graph_schema
+                .refresh(schema_type, conn, Some(&ids_hashset))
+                .await?
+        }
         relevant_ids => relevant_ids,
     } {
         Some(relevant_ids) => {
@@ -44,21 +52,12 @@ pub(crate) fn parse_labels(
     }
 }
 
-pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValue)> {
-    let [type_marker, val]: [FalkorValue; 2] = value
-        .into_vec()?
-        .try_into()
-        .map_err(|_| FalkorDBError::ParsingError)?;
-    let type_marker = type_marker.to_i64().ok_or(FalkorDBError::ParsingI64)?;
-
-    Ok((type_marker, val))
-}
-
-pub(crate) fn parse_type(
+#[async_recursion]
+pub(crate) async fn parse_type_async(
     type_marker: i64,
     val: FalkorValue,
-    graph_schema: &SyncGraphSchema,
-    conn: &mut BorrowedSyncConnection,
+    graph_schema: &AsyncGraphSchema,
+    conn: &mut FalkorAsyncConnection,
 ) -> Result<FalkorValue> {
     let res = match type_marker {
         1 => FalkorValue::None,
@@ -71,15 +70,15 @@ pub(crate) fn parse_type(
             let mut parsed_vec = Vec::with_capacity(val.len());
             for item in val {
                 let (type_marker, val) = type_val_from_value(item)?;
-                parsed_vec.push(parse_type(type_marker, val, graph_schema, conn)?);
+                parsed_vec.push(parse_type_async(type_marker, val, graph_schema, conn).await?);
             }
             parsed_vec
         }),
         // The following types are sent as an array and require specific parsing functions
-        7 => FalkorValue::FEdge(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
-        8 => FalkorValue::FNode(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
-        9 => FalkorValue::FPath(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
-        10 => FalkorValue::FMap(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
+        7 => FalkorValue::FEdge(Edge::from_falkor_value_async(val, graph_schema, conn).await?),
+        8 => FalkorValue::FNode(Node::from_falkor_value_async(val, graph_schema, conn).await?),
+        9 => FalkorValue::FPath(Path::from_falkor_value_async(val, graph_schema, conn).await?),
+        10 => FalkorValue::FMap(HashMap::from_falkor_value_async(val, graph_schema, conn).await?),
         11 => FalkorValue::FPoint(Point::parse(val)?),
         _ => Err(FalkorDBError::ParsingUnknownType)?,
     };

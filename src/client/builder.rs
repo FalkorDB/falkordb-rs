@@ -12,7 +12,6 @@ use std::sync::Arc;
 pub struct FalkorDBClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
     num_connections: u8,
-    multithreaded_rt: bool,
     #[cfg(feature = "tokio")]
     runtime: Option<tokio::runtime::Runtime>,
 }
@@ -52,7 +51,6 @@ impl FalkorDBClientBuilder<'S'> {
         FalkorDBClientBuilder {
             connection_info: None,
             num_connections: 4,
-            multithreaded_rt: false,
             #[cfg(feature = "tokio")]
             runtime: None,
         }
@@ -77,24 +75,7 @@ impl FalkorDBClientBuilder<'A'> {
         FalkorDBClientBuilder {
             connection_info: None,
             num_connections: 4,
-            multithreaded_rt: false,
-            #[cfg(feature = "tokio")]
             runtime: None,
-        }
-    }
-
-    pub fn with_multithreaded_runtime(self) -> Self {
-        Self {
-            multithreaded_rt: true,
-            ..self
-        }
-    }
-
-    /// This overrides with_multithreaded_runtime()
-    pub fn with_runtime(self, runtime: tokio::runtime::Runtime) -> Self {
-        Self {
-            runtime: Some(runtime),
-            ..self
         }
     }
 
@@ -103,15 +84,6 @@ impl FalkorDBClientBuilder<'A'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        let runtime = self.runtime.unwrap_or(
-            if self.multithreaded_rt {
-                tokio::runtime::Builder::new_multi_thread()
-            } else {
-                tokio::runtime::Builder::new_current_thread()
-            }
-            .build()?,
-        );
-
-        crate::AsyncFalkorClient::create(get_client(connection_info)?, runtime).await
+        crate::AsyncFalkorClient::create(get_client(connection_info)?).await
     }
 }

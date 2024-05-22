@@ -6,8 +6,7 @@
 use crate::{
     client::FalkorClientImpl,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
-    graph_schema::blocking::GraphSchema,
-    ConfigValue, FalkorDBError, SyncGraph,
+    ConfigValue, FalkorDBError, SyncGraph, SyncGraphSchema,
 };
 use anyhow::Result;
 use std::{
@@ -157,7 +156,7 @@ impl SyncFalkorClient {
         SyncGraph {
             client: self,
             graph_name: graph_name.to_string(),
-            graph_schema: GraphSchema::new(graph_name.to_string()),
+            graph_schema: SyncGraphSchema::new(graph_name.to_string()),
         }
     }
 }

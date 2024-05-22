@@ -4,8 +4,7 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, graph_schema::blocking::GraphSchema,
-    FalkorDBError, FalkorParsable,
+    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, SyncGraphSchema,
 };
 use anyhow::Result;
 use graph_entities::{Edge, Node};
@@ -23,6 +22,9 @@ pub(crate) mod point;
 pub(crate) mod query_result;
 pub(crate) mod slowlog_entry;
 pub(crate) mod utils;
+
+#[cfg(feature = "tokio")]
+pub(crate) mod utils_async;
 
 #[derive(Clone, Debug)]
 pub enum FalkorValue {
@@ -86,8 +88,19 @@ where
 impl FalkorParsable for FalkorValue {
     fn from_falkor_value(
         value: FalkorValue,
-        _graph_schema: &GraphSchema,
+        _graph_schema: &SyncGraphSchema,
         _conn: &mut BorrowedSyncConnection,
+    ) -> Result<Self> {
+        Ok(value)
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl crate::FalkorAsyncParseable for FalkorValue {
+    async fn from_falkor_value_async(
+        value: FalkorValue,
+        _graph_schema: &crate::AsyncGraphSchema,
+        _conn: &mut crate::FalkorAsyncConnection,
     ) -> Result<Self> {
         Ok(value)
     }

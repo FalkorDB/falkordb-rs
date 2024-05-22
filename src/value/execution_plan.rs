@@ -3,7 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::value::FalkorValue;
+use crate::FalkorValue;
 
 pub struct ExecutionPlan {
     text: String,

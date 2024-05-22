@@ -3,17 +3,9 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    connection::blocking::BorrowedSyncConnection,
-    graph_schema::blocking::GraphSchema as SyncGraphSchema, FalkorValue,
-};
+use crate::{connection::blocking::BorrowedSyncConnection, FalkorValue, SyncGraphSchema};
 use anyhow::Result;
-
-#[cfg(feature = "tokio")]
-use crate::{
-    connection::asynchronous::FalkorAsyncConnection,
-    graph_schema::asynchronous::GraphSchema as AsyncGraphSchema,
-};
+use std::future::Future;
 
 pub trait FalkorParsable: Sized {
     fn from_falkor_value(
@@ -25,9 +17,9 @@ pub trait FalkorParsable: Sized {
 
 #[cfg(feature = "tokio")]
 pub trait FalkorAsyncParseable: Sized {
-    async fn from_falkor_value(
+    fn from_falkor_value_async(
         value: FalkorValue,
-        graph_schema: &AsyncGraphSchema,
-        conn: &mut FalkorAsyncConnection,
-    ) -> Result<Self>;
+        graph_schema: &crate::AsyncGraphSchema,
+        conn: &mut crate::FalkorAsyncConnection,
+    ) -> impl Future<Output = Result<Self>> + Send;
 }

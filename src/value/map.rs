@@ -5,11 +5,14 @@
 
 use super::utils::parse_type;
 use crate::{
-    connection::blocking::BorrowedSyncConnection, graph_schema::blocking::GraphSchema,
-    FalkorDBError, FalkorValue, SchemaType,
+    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, FalkorValue,
+    SchemaType, SyncGraphSchema,
 };
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+
+#[cfg(feature = "tokio")]
+use super::utils_async::parse_type_async;
 
 // Intermediate type for map parsing
 pub(crate) struct FKeyTypeVal {
@@ -46,7 +49,7 @@ impl TryFrom<FalkorValue> for FKeyTypeVal {
 fn ktv_vec_to_map(
     map_vec: Vec<FKeyTypeVal>,
     relevant_ids_map: HashMap<i64, String>,
-    graph_schema: &GraphSchema,
+    graph_schema: &SyncGraphSchema,
     conn: &mut BorrowedSyncConnection,
 ) -> Result<HashMap<String, FalkorValue>> {
     let mut new_map = HashMap::with_capacity(map_vec.len());
@@ -63,10 +66,9 @@ fn ktv_vec_to_map(
     Ok(new_map)
 }
 
-// TODO: This does NOT support nested attributes yet
 pub(crate) fn parse_map_with_schema(
     value: FalkorValue,
-    graph_schema: &GraphSchema,
+    graph_schema: &SyncGraphSchema,
     conn: &mut BorrowedSyncConnection,
     schema_type: SchemaType,
 ) -> Result<HashMap<String, FalkorValue>> {
@@ -93,21 +95,101 @@ pub(crate) fn parse_map_with_schema(
     }
 }
 
-pub(crate) fn parse_map(
-    value: FalkorValue,
-    graph_schema: &GraphSchema,
-    conn: &mut BorrowedSyncConnection,
-) -> anyhow::Result<HashMap<String, FalkorValue>> {
-    let val_vec = value.into_vec()?;
+impl FalkorParsable for HashMap<String, FalkorValue> {
+    fn from_falkor_value(
+        value: FalkorValue,
+        graph_schema: &SyncGraphSchema,
+        conn: &mut BorrowedSyncConnection,
+    ) -> Result<Self> {
+        let val_vec = value.into_vec()?;
 
-    let mut new_map = HashMap::with_capacity(val_vec.len());
-    for val in val_vec {
-        let fktv = FKeyTypeVal::try_from(val)?;
+        let mut new_map = HashMap::with_capacity(val_vec.len());
+        for val in val_vec {
+            let fktv = FKeyTypeVal::try_from(val)?;
+            new_map.insert(
+                fktv.key.to_string(),
+                parse_type(fktv.type_marker, fktv.val, graph_schema, conn)?,
+            );
+        }
+
+        Ok(new_map)
+    }
+}
+
+#[cfg(feature = "tokio")]
+async fn ktv_vec_to_map_async(
+    map_vec: Vec<FKeyTypeVal>,
+    relevant_ids_map: HashMap<i64, String>,
+    graph_schema: &crate::AsyncGraphSchema,
+    conn: &mut crate::FalkorAsyncConnection,
+) -> Result<HashMap<String, FalkorValue>> {
+    let mut new_map = HashMap::with_capacity(map_vec.len());
+    for fktv in map_vec {
         new_map.insert(
-            fktv.key.to_string(),
-            parse_type(fktv.type_marker, fktv.val, graph_schema, conn)?,
+            relevant_ids_map
+                .get(&fktv.key)
+                .cloned()
+                .ok_or(FalkorDBError::ParsingError)?,
+            parse_type_async(fktv.type_marker, fktv.val, graph_schema, conn).await?,
         );
     }
 
     Ok(new_map)
+}
+
+#[cfg(feature = "tokio")]
+pub(crate) async fn parse_map_with_schema_async(
+    value: FalkorValue,
+    graph_schema: &crate::AsyncGraphSchema,
+    conn: &mut crate::FalkorAsyncConnection,
+    schema_type: SchemaType,
+) -> Result<HashMap<String, FalkorValue>> {
+    let val_vec = value.into_vec()?;
+    let (mut id_hashset, mut map_vec) = (
+        HashSet::with_capacity(val_vec.len()),
+        Vec::with_capacity(val_vec.len()),
+    );
+
+    for item in val_vec {
+        let fktv = FKeyTypeVal::try_from(item)?;
+        id_hashset.insert(fktv.key);
+        map_vec.push(fktv);
+    }
+
+    if let Some(relevant_ids_map) = graph_schema.verify_id_set(&id_hashset, schema_type).await {
+        return ktv_vec_to_map_async(map_vec, relevant_ids_map, graph_schema, conn).await;
+    }
+
+    // If we reached here, schema validation failed and we need to refresh our schema
+    match graph_schema
+        .refresh(schema_type, conn, Some(&id_hashset))
+        .await?
+    {
+        Some(relevant_ids_map) => {
+            ktv_vec_to_map_async(map_vec, relevant_ids_map, graph_schema, conn).await
+        }
+        None => Err(FalkorDBError::ParsingError)?,
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl crate::FalkorAsyncParseable for HashMap<String, FalkorValue> {
+    async fn from_falkor_value_async(
+        value: FalkorValue,
+        graph_schema: &crate::AsyncGraphSchema,
+        conn: &mut crate::FalkorAsyncConnection,
+    ) -> Result<Self> {
+        let val_vec = value.into_vec()?;
+
+        let mut new_map = HashMap::with_capacity(val_vec.len());
+        for val in val_vec {
+            let fktv = FKeyTypeVal::try_from(val)?;
+            new_map.insert(
+                fktv.key.to_string(),
+                parse_type_async(fktv.type_marker, fktv.val, graph_schema, conn).await?,
+            );
+        }
+
+        Ok(new_map)
+    }
 }

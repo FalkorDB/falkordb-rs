@@ -22,7 +22,7 @@ pub use client::{blocking::SyncFalkorClient, builder::FalkorDBClientBuilder};
 pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
 pub use graph::blocking::SyncGraph;
-pub use graph_schema::SchemaType;
+pub use graph_schema::{blocking::SyncGraphSchema, SchemaType};
 pub use parser::FalkorParsable;
 pub use value::{
     config::ConfigValue,
@@ -39,5 +39,6 @@ pub use value::{
 #[cfg(feature = "tokio")]
 pub use {
     client::asynchronous::AsyncFalkorClient, connection::asynchronous::FalkorAsyncConnection,
-    graph::asynchronous::AsyncGraph,
+    graph::asynchronous::AsyncGraph, graph_schema::asynchronous::AsyncGraphSchema,
+    parser::FalkorAsyncParseable,
 };

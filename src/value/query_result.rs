@@ -5,11 +5,14 @@
 
 use super::utils::{parse_type, type_val_from_value};
 use crate::{
-    connection::blocking::BorrowedSyncConnection, graph_schema::blocking::GraphSchema,
-    FalkorDBError, FalkorParsable, FalkorValue,
+    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, FalkorValue,
+    SyncGraphSchema,
 };
 use anyhow::Result;
 use std::collections::HashMap;
+
+#[cfg(feature = "tokio")]
+use super::utils_async::parse_type_async;
 
 #[derive(Clone, Debug, Default)]
 pub struct QueryResult {
@@ -73,7 +76,7 @@ fn query_parse_stats(stats: FalkorValue) -> Result<Vec<String>> {
 
 fn parse_result_set(
     data_vec: Vec<FalkorValue>,
-    graph_schema: &GraphSchema,
+    graph_schema: &SyncGraphSchema,
     conn: &mut BorrowedSyncConnection,
     header_keys: &[String],
 ) -> Result<Vec<HashMap<String, FalkorValue>>> {
@@ -96,7 +99,7 @@ fn parse_result_set(
 impl FalkorParsable for QueryResult {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &GraphSchema,
+        graph_schema: &SyncGraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         let value_vec = value.into_vec()?;
@@ -132,6 +135,82 @@ impl FalkorParsable for QueryResult {
         let data_len = data_vec.len();
 
         let result_set = parse_result_set(data_vec, graph_schema, conn, &header_keys)?;
+
+        if result_set.len() != data_len {
+            Err(FalkorDBError::ParsingError)?;
+        }
+
+        Ok(Self {
+            stats: stats_strings,
+            header: header_keys,
+            result_set,
+        })
+    }
+}
+
+#[cfg(feature = "tokio")]
+async fn parse_result_set_async(
+    data_vec: Vec<FalkorValue>,
+    graph_schema: &crate::AsyncGraphSchema,
+    conn: &mut crate::FalkorAsyncConnection,
+    header_keys: &[String],
+) -> Result<Vec<HashMap<String, FalkorValue>>> {
+    let mut parsed_result_set = Vec::with_capacity(data_vec.len());
+    for column in data_vec {
+        let column_vec = column.into_vec()?;
+
+        let mut parsed_column = Vec::with_capacity(column_vec.len());
+        for column_item in column_vec {
+            let (type_marker, val) = type_val_from_value(column_item)?;
+            parsed_column.push(parse_type_async(type_marker, val, graph_schema, conn).await?);
+        }
+
+        parsed_result_set.push(header_keys.iter().cloned().zip(parsed_column).collect())
+    }
+
+    Ok(parsed_result_set)
+}
+
+#[cfg(feature = "tokio")]
+impl crate::FalkorAsyncParseable for QueryResult {
+    async fn from_falkor_value_async(
+        value: FalkorValue,
+        graph_schema: &crate::AsyncGraphSchema,
+        conn: &mut crate::FalkorAsyncConnection,
+    ) -> Result<Self> {
+        let value_vec = value.into_vec()?;
+
+        // Empty result
+        if value_vec.is_empty() {
+            return Ok(QueryResult::default());
+        }
+
+        // Result only contains stats
+        if value_vec.len() == 1 {
+            let first_element = value_vec.into_iter().nth(0).unwrap();
+            return Ok(QueryResult {
+                stats: query_parse_stats(first_element)?,
+                ..Default::default()
+            });
+        }
+
+        // Invalid response
+        if value_vec.len() == 2 {
+            Err(FalkorDBError::InvalidDataReceived)?;
+        }
+
+        // Full result
+        let [header, data, stats]: [FalkorValue; 3] = value_vec
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingError)?;
+
+        let header_keys = query_parse_header(header)?;
+        let stats_strings = query_parse_stats(stats)?;
+
+        let data_vec = data.into_vec()?;
+        let data_len = data_vec.len();
+
+        let result_set = parse_result_set_async(data_vec, graph_schema, conn, &header_keys).await?;
 
         if result_set.len() != data_len {
             Err(FalkorDBError::ParsingError)?;

@@ -3,6 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+/// A verbose error enum used throughout the client, messages are static string slices.
+/// this allows easy [`anyhow`] integration using [`thiserror`]
 #[derive(thiserror::Error, Debug)]
 pub enum FalkorDBError {
     #[error("The provided connection info is invalid")]

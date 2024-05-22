@@ -9,6 +9,7 @@ use crate::{
 };
 use anyhow::Result;
 
+/// TODO: not exactly sure what this represents
 #[derive(Clone, Debug)]
 pub struct Path {
     pub nodes: Vec<Node>,

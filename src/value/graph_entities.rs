@@ -14,10 +14,14 @@ use std::collections::{HashMap, HashSet};
 #[cfg(feature = "tokio")]
 use crate::value::{map::parse_map_with_schema_async, utils_async::parse_labels_async};
 
+/// A node in the graph
 #[derive(Clone, Debug)]
 pub struct Node {
+    /// The internal entity ID
     pub entity_id: i64,
+    /// A [`Vec`] of the labels this node answers to
     pub labels: Vec<String>,
+    /// A [`HashMap`] of the properties in key-val form
     pub properties: HashMap<String, FalkorValue>,
 }
 
@@ -96,10 +100,15 @@ impl crate::FalkorAsyncParseable for Node {
 
 #[derive(Clone, Debug)]
 pub struct Edge {
+    /// The internal entity ID
     pub entity_id: i64,
+    /// What type is this relationship
     pub relationship_type: String,
+    /// The entity ID of the origin node
     pub src_node_id: i64,
+    /// The entity ID of the destination node
     pub dst_node_id: i64,
+    /// A [`HashMap`] of the properties in key-val form
     pub properties: HashMap<String, FalkorValue>,
 }
 

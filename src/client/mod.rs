@@ -13,19 +13,19 @@ pub(crate) mod builder;
 #[cfg(feature = "tokio")]
 pub(crate) mod asynchronous;
 
-pub(crate) enum FalkorClientImpl {
+pub(crate) enum FalkorClientProvider {
     #[cfg(feature = "redis")]
     Redis(redis::Client),
 }
 
-impl FalkorClientImpl {
+impl FalkorClientProvider {
     pub(crate) fn get_connection(
         &self,
         connection_timeout: Option<Duration>,
     ) -> Result<FalkorSyncConnection> {
         Ok(match self {
             #[cfg(feature = "redis")]
-            FalkorClientImpl::Redis(redis_client) => connection_timeout
+            FalkorClientProvider::Redis(redis_client) => connection_timeout
                 .map(|timeout| redis_client.get_connection_with_timeout(timeout))
                 .unwrap_or_else(|| redis_client.get_connection())?
                 .into(),
@@ -38,7 +38,7 @@ impl FalkorClientImpl {
         connection_timeout: Option<Duration>,
     ) -> Result<crate::FalkorAsyncConnection> {
         Ok(match self {
-            FalkorClientImpl::Redis(redis_client) => match connection_timeout {
+            FalkorClientProvider::Redis(redis_client) => match connection_timeout {
                 Some(timeout) => {
                     redis_client
                         .get_multiplexed_tokio_connection_with_response_timeouts(timeout, timeout)

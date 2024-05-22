@@ -3,39 +3,40 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use super::utils::{parse_type, type_val_from_value};
 use crate::{
-    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, FalkorValue,
-    SyncGraphSchema,
+    connection::blocking::BorrowedSyncConnection,
+    value::utils::{parse_type, type_val_from_value},
+    FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
 };
 use anyhow::Result;
 use std::collections::HashMap;
 
 #[cfg(feature = "tokio")]
-use super::utils_async::parse_type_async;
+use crate::value::utils_async::parse_type_async;
 
+/// A struct returned by the various queries, containing the result set, header, and stats
 #[derive(Clone, Debug, Default)]
 pub struct QueryResult {
-    pub(crate) stats: Vec<String>,
-    pub(crate) header: Vec<String>,
-    pub(crate) result_set: Vec<HashMap<String, FalkorValue>>,
+    /// The statistics for this query, such as how long it took
+    pub stats: Vec<String>,
+    pub header: Vec<String>,
+    pub result_set: Vec<HashMap<String, FalkorValue>>,
 }
 
 impl QueryResult {
+    /// Returns a slice of the statistics for this query, such as how long it took
     pub fn stats(&self) -> &[String] {
         self.stats.as_slice()
     }
 
+    /// Returns a slice of header for this query result, usually contains the verbose names of each column of the result set
     pub fn header(&self) -> &[String] {
         self.header.as_slice()
     }
 
+    /// Returns the result set as a slice which can be iterated without taking ownership
     pub fn result_set(&self) -> &[HashMap<String, FalkorValue>] {
         self.result_set.as_slice()
-    }
-
-    pub fn take(self) -> (Vec<String>, Vec<String>, Vec<HashMap<String, FalkorValue>>) {
-        (self.stats, self.header, self.result_set)
     }
 }
 

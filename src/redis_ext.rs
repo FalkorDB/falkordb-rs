@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    client::FalkorClientImpl, connection::blocking::FalkorSyncConnection, ConfigValue,
+    client::FalkorClientProvider, connection::blocking::FalkorSyncConnection, ConfigValue,
     FalkorConnectionInfo, FalkorDBError, FalkorValue,
 };
 use anyhow::Result;
@@ -29,7 +29,7 @@ impl From<redis::ConnectionInfo> for FalkorConnectionInfo {
     }
 }
 
-impl From<redis::Client> for FalkorClientImpl {
+impl From<redis::Client> for FalkorClientProvider {
     fn from(value: redis::Client) -> Self {
         Self::Redis(value)
     }

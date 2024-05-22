@@ -8,11 +8,15 @@ use anyhow::Result;
 use redis::ConnectionLike;
 use std::sync::mpsc;
 
-pub enum FalkorSyncConnection {
+pub(crate) enum FalkorSyncConnection {
     #[cfg(feature = "redis")]
     Redis(redis::Connection),
 }
 
+/// A container for a connection that is borrowed from the pool.
+/// Upon going out of scope, it will return the connection to the pool.
+///
+/// This is publicly exposed for user-implementations of [`FalkorParsable`](crate::FalkorParsable)
 pub struct BorrowedSyncConnection {
     pub(crate) conn: Option<FalkorSyncConnection>,
     pub(crate) return_tx: mpsc::SyncSender<FalkorSyncConnection>,

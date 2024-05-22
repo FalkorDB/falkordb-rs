@@ -5,6 +5,7 @@
 
 use std::fmt::{Display, Formatter};
 
+/// An enum representing the two viable types for a config value
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConfigValue {
     String(String),

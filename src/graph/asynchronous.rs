@@ -5,18 +5,18 @@
 
 use super::utils::{construct_query, generate_procedure_call};
 use crate::{
-    AsyncFalkorClient, AsyncGraphSchema, ExecutionPlan, FalkorAsyncConnection,
-    FalkorAsyncParseable, FalkorDBError, FalkorValue, QueryResult, SlowlogEntry,
+    AsyncGraphSchema, ExecutionPlan, FalkorAsyncConnection, FalkorAsyncParseable, FalkorDBError,
+    FalkorValue, QueryResult, SlowlogEntry,
 };
 use std::collections::HashMap;
 
-pub struct AsyncGraph<'a> {
-    pub(crate) client: &'a AsyncFalkorClient,
+pub struct AsyncGraph {
     pub(crate) graph_name: String,
+    pub(crate) connection: FalkorAsyncConnection,
     pub(crate) graph_schema: AsyncGraphSchema,
 }
 
-impl AsyncGraph<'_> {
+impl AsyncGraph {
     pub fn graph_name(&self) -> &str {
         self.graph_name.as_str()
     }
@@ -26,15 +26,9 @@ impl AsyncGraph<'_> {
         command: &str,
         params: Option<String>,
     ) -> anyhow::Result<FalkorValue> {
-        let mut conn = self.client.clone_connection();
+        let mut conn = self.connection.clone();
         conn.send_command(Some(self.graph_name.clone()), command, params)
             .await
-    }
-
-    pub async fn copy<T: ToString>(&self, cloned_graph_name: T) -> anyhow::Result<AsyncGraph> {
-        self.send_command("GRAPH.COPY", Some(cloned_graph_name.to_string()))
-            .await?;
-        Ok(self.client.open_graph(cloned_graph_name).await)
     }
 
     pub async fn delete(&self) -> anyhow::Result<()> {
@@ -95,36 +89,6 @@ impl AsyncGraph<'_> {
     pub async fn explain<Q: ToString>(&self, query_string: Q) -> anyhow::Result<ExecutionPlan> {
         self.explain_with_params::<Q, &str, &str>(query_string, None)
             .await
-    }
-
-    async fn query_with_parser<Q: ToString, T: ToString, Z: ToString, P: FalkorAsyncParseable>(
-        &self,
-        command: &str,
-        query_string: Q,
-        params: Option<&HashMap<T, Z>>,
-        timeout: Option<u64>,
-    ) -> anyhow::Result<P> {
-        let query = construct_query(query_string, params);
-
-        let mut conn = self.client.clone_connection();
-        let falkor_result = match &mut conn {
-            #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(redis_conn) => {
-                use redis::FromRedisValue;
-                let redis_val = redis_conn
-                    .send_packed_command(
-                        redis::cmd(command)
-                            .arg(self.graph_name.as_str())
-                            .arg(query)
-                            .arg("--compact")
-                            .arg(timeout.map(|timeout| format!("timeout {timeout}"))),
-                    )
-                    .await?;
-                FalkorValue::from_owned_redis_value(redis_val)?
-            }
-        };
-
-        P::from_falkor_value_async(falkor_result, &self.graph_schema, &mut conn).await
     }
 
     pub async fn query_with_params<

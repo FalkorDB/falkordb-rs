@@ -3,12 +3,14 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::error::FalkorDBError;
-use crate::value::FalkorValue;
+use crate::{FalkorDBError, FalkorValue};
 
+/// A point in the world.
 #[derive(Clone, Debug)]
 pub struct Point {
+    /// The latitude coordinate
     pub latitude: f64,
+    /// The longitude coordinate
     pub longitude: f64,
 }
 

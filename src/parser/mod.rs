@@ -5,8 +5,8 @@
 
 use crate::{connection::blocking::BorrowedSyncConnection, FalkorValue, SyncGraphSchema};
 use anyhow::Result;
-use std::future::Future;
 
+/// This trait allows implementing a parser from the table-style result sent by the database, to any other struct
 pub trait FalkorParsable: Sized {
     fn from_falkor_value(
         value: FalkorValue,
@@ -21,5 +21,5 @@ pub trait FalkorAsyncParseable: Sized {
         value: FalkorValue,
         graph_schema: &crate::AsyncGraphSchema,
         conn: &mut crate::FalkorAsyncConnection,
-    ) -> impl Future<Output = Result<Self>> + Send;
+    ) -> impl std::future::Future<Output = Result<Self>> + Send;
 }

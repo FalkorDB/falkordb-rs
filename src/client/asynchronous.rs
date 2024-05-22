@@ -4,23 +4,26 @@
  */
 
 use crate::{
-    client::FalkorClientImpl, AsyncGraph, AsyncGraphSchema, ConfigValue, FalkorAsyncConnection,
+    client::FalkorClientProvider, AsyncGraph, AsyncGraphSchema, ConfigValue, FalkorAsyncConnection,
     FalkorDBError,
 };
 use anyhow::Result;
 use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
 
-pub struct AsyncFalkorClient {
-    _inner: FalkorClientImpl,
+pub struct FalkorAsyncClient {
+    _inner: FalkorClientProvider,
     connection: FalkorAsyncConnection,
+    graph_cache: HashMap<String, AsyncGraphSchema>,
 }
 
-impl AsyncFalkorClient {
-    pub(crate) async fn create(client: FalkorClientImpl) -> Result<Arc<Self>> {
-        Ok(Arc::new(Self {
+impl FalkorAsyncClient {
+    pub(crate) async fn create(client: FalkorClientProvider) -> Result<Arc<Mutex<Self>>> {
+        Ok(Arc::new(Mutex::new(Self {
             connection: client.get_async_connection(None).await?,
             _inner: client,
-        }))
+            graph_cache: Default::default(),
+        })))
     }
     pub(crate) fn clone_connection(&self) -> FalkorAsyncConnection {
         self.connection.clone()
@@ -137,11 +140,23 @@ impl AsyncFalkorClient {
         Ok(())
     }
 
-    pub async fn open_graph<T: ToString>(&self, graph_name: T) -> AsyncGraph {
+    pub fn open_graph<T: ToString>(&mut self, graph_name: T) -> AsyncGraph {
         AsyncGraph {
-            client: self,
+            connection: self.connection.clone(),
             graph_name: graph_name.to_string(),
-            graph_schema: AsyncGraphSchema::new(graph_name.to_string()),
+            graph_schema: self
+                .graph_cache
+                .entry(graph_name.to_string())
+                .or_insert(AsyncGraphSchema::new(graph_name.to_string()))
+                .clone(),
         }
+    }
+
+    pub async fn copy_graph<T: ToString>(&mut self, cloned_graph_name: T) -> Result<AsyncGraph> {
+        self.connection
+            .clone()
+            .send_command(Some(cloned_graph_name.to_string()), "GRAPH.COPY", None)
+            .await?;
+        Ok(self.open_graph(cloned_graph_name))
     }
 }

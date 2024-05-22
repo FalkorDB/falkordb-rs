@@ -20,6 +20,11 @@ use std::{
 
 pub(crate) type LockableIdMap = Arc<RwLock<HashMap<i64, String>>>;
 
+/// A struct containing the various schema maps, allowing conversions between ids and their string representations.
+///
+/// # Thread Safety
+/// This struct is fully thread safe, it can be cloned and passed within threads without constraints,
+/// Its API uses only immutable references
 #[derive(Clone, Debug, Default)]
 pub struct SyncGraphSchema {
     graph_name: String,
@@ -30,37 +35,40 @@ pub struct SyncGraphSchema {
 }
 
 impl SyncGraphSchema {
-    pub fn new(graph_name: String) -> Self {
+    pub(crate) fn new(graph_name: String) -> Self {
         Self {
             graph_name,
             ..Default::default()
         }
     }
 
-    pub fn clear(&mut self) {
+    /// Clears all cached schemas, this will cause a refresh when next attempting to parse a compact query.
+    pub fn clear(&self) {
         self.version.store(0, SeqCst);
         self.labels.write().clear();
         self.properties.write().clear();
         self.relationships.write().clear();
     }
 
-    pub fn graph_name(&self) -> String {
-        self.graph_name.clone()
-    }
-
-    pub(crate) fn relationships(&self) -> LockableIdMap {
+    /// Returns a read-write-locked map, of the relationship ids to their respective string representations.
+    /// Minimize locking these to avoid starvation.
+    pub fn relationships(&self) -> LockableIdMap {
         self.relationships.clone()
     }
 
-    pub(crate) fn labels(&self) -> LockableIdMap {
+    /// Returns a read-write-locked map, of the label ids to their respective string representations.
+    /// Minimize locking these to avoid starvation.
+    pub fn labels(&self) -> LockableIdMap {
         self.labels.clone()
     }
 
-    pub(crate) fn properties(&self) -> LockableIdMap {
+    /// Returns a read-write-locked map, of the property ids to their respective string representations.
+    /// Minimize locking these to avoid starvation.
+    pub fn properties(&self) -> LockableIdMap {
         self.properties.clone()
     }
 
-    pub fn verify_id_set(
+    pub(crate) fn verify_id_set(
         &self,
         id_set: &HashSet<i64>,
         schema_type: SchemaType,

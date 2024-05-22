@@ -5,6 +5,8 @@
 
 use anyhow::Result;
 
+/// An agnostic container which allows maintaining of various connection details.
+/// The different enum variants are enabled based on compilation features
 #[derive(Clone)]
 pub enum FalkorConnectionInfo {
     #[cfg(feature = "redis")]
@@ -12,9 +14,6 @@ pub enum FalkorConnectionInfo {
 }
 
 impl FalkorConnectionInfo {
-    /// Redis is currently only option, and I feel will be the default for a while
-    /// So any new option should be set here should be added before redis
-    /// as a #[cfg(and(feature = <provider>, not(feature = "redis"))]
     fn fallback_provider(full_url: String) -> Result<FalkorConnectionInfo> {
         #[cfg(feature = "redis")]
         Ok(FalkorConnectionInfo::Redis(
@@ -59,7 +58,6 @@ impl TryFrom<&str> for FalkorConnectionInfo {
     }
 }
 
-// Calls TryFrom<&str>
 impl TryFrom<String> for FalkorConnectionInfo {
     type Error = anyhow::Error;
 
@@ -69,7 +67,6 @@ impl TryFrom<String> for FalkorConnectionInfo {
     }
 }
 
-// Calls TryFrom<String>
 impl<T: ToString> TryFrom<(T, u16)> for FalkorConnectionInfo {
     type Error = anyhow::Error;
 

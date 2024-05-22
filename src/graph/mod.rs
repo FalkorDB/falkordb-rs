@@ -4,7 +4,7 @@
  */
 
 pub(crate) mod blocking;
-mod utils;
+pub(crate) mod utils;
 
 #[cfg(feature = "tokio")]
 pub(crate) mod asynchronous;

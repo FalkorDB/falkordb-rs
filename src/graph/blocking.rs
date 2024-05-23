@@ -6,12 +6,12 @@
 use super::utils::{construct_query, generate_procedure_call};
 use crate::{
     client::blocking::FalkorSyncClientInner, connection::blocking::FalkorSyncConnection,
-    Constraint, ExecutionPlan, FalkorDBError, FalkorParsable, FalkorValue, QueryResult,
-    SlowlogEntry, SyncGraphSchema,
+    Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorParsable,
+    FalkorValue, QueryResult, SlowlogEntry, SyncGraphSchema,
 };
 use anyhow::Result;
 use redis::ConnectionLike;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
 ///
@@ -36,7 +36,11 @@ impl SyncGraph {
         self.graph_name.as_str()
     }
 
-    fn send_command(&self, command: &str, params: Option<String>) -> Result<FalkorValue> {
+    fn send_command(
+        &self,
+        command: &str,
+        params: Option<String>,
+    ) -> Result<FalkorValue> {
         let mut conn = self.client.borrow_connection()?;
         conn.send_command(Some(self.graph_name.clone()), command, params)
     }
@@ -66,7 +70,7 @@ impl SyncGraph {
                 entry_raw
                     .into_vec()?
                     .try_into()
-                    .map_err(|_| FalkorDBError::ParsingSlowlogEntryElementCount)?,
+                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?,
             )?);
         }
 
@@ -92,11 +96,12 @@ impl SyncGraph {
     pub fn profile_with_params<Q: ToString, T: ToString, Z: ToString>(
         &self,
         query_string: Q,
-        params: Option<HashMap<T, Z>>,
+        params: Option<&HashMap<T, Z>>,
     ) -> Result<ExecutionPlan> {
         let query = construct_query(query_string, params);
 
         ExecutionPlan::try_from(self.send_command("GRAPH.PROFILE", Some(query))?)
+            .map_err(Into::into)
     }
 
     /// Returns an [`ExecutionPlan`] object for the selected query,
@@ -107,7 +112,10 @@ impl SyncGraph {
     ///
     /// # Returns
     /// An [`ExecutionPlan`], which can provide info about each step, or a plaintext explanation of the whole thing for printing.
-    pub fn profile<Q: ToString>(&self, query_string: Q) -> Result<ExecutionPlan> {
+    pub fn profile<Q: ToString>(
+        &self,
+        query_string: Q,
+    ) -> Result<ExecutionPlan> {
         self.profile_with_params::<Q, &str, &str>(query_string, None)
     }
 
@@ -124,10 +132,11 @@ impl SyncGraph {
     pub fn explain_with_params<Q: ToString, T: ToString, Z: ToString>(
         &self,
         query_string: Q,
-        params: Option<HashMap<T, Z>>,
+        params: Option<&HashMap<T, Z>>,
     ) -> Result<ExecutionPlan> {
         let query = construct_query(query_string, params);
         ExecutionPlan::try_from(self.send_command("GRAPH.EXPLAIN", Some(query))?)
+            .map_err(Into::into)
     }
 
     /// Returns an [`ExecutionPlan`] object for the selected query,
@@ -138,7 +147,10 @@ impl SyncGraph {
     ///
     /// # Returns
     /// An [`ExecutionPlan`], which can provide info about each step, or a plaintext explanation of the whole thing for printing.
-    pub fn explain<Q: ToString>(&self, query_string: Q) -> Result<ExecutionPlan> {
+    pub fn explain<Q: ToString>(
+        &self,
+        query_string: Q,
+    ) -> Result<ExecutionPlan> {
         self.explain_with_params::<Q, &str, &str>(query_string, None)
     }
 
@@ -146,7 +158,7 @@ impl SyncGraph {
         &self,
         command: &str,
         query_string: Q,
-        params: Option<HashMap<T, Z>>,
+        params: Option<&HashMap<T, Z>>,
         timeout: Option<u64>,
     ) -> Result<P> {
         let query = construct_query(query_string, params);
@@ -178,7 +190,11 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub fn query<Q: ToString>(&self, query_string: Q, timeout: Option<u64>) -> Result<QueryResult> {
+    pub fn query<Q: ToString>(
+        &self,
+        query_string: Q,
+        timeout: Option<u64>,
+    ) -> Result<QueryResult> {
         self.query_inner::<Q, &str, &str, QueryResult>("GRAPH.QUERY", query_string, None, timeout)
     }
 
@@ -196,7 +212,7 @@ impl SyncGraph {
         &self,
         query_string: Q,
         timeout: Option<u64>,
-        params: HashMap<T, Z>,
+        params: &HashMap<T, Z>,
     ) -> Result<QueryResult> {
         self.query_inner("GRAPH.QUERY", query_string, Some(params), timeout)
     }
@@ -238,7 +254,7 @@ impl SyncGraph {
         &self,
         query_string: Q,
         timeout: Option<u64>,
-        params: HashMap<T, Z>,
+        params: &HashMap<T, Z>,
     ) -> Result<QueryResult> {
         self.query_inner("GRAPH.QUERY_RO", query_string, Some(params), timeout)
     }
@@ -267,11 +283,13 @@ impl SyncGraph {
         let (query_string, params) = generate_procedure_call(procedure, args, yields);
 
         self.query_inner(
-            read_only
-                .then_some("GRAPH.QUERY_RO")
-                .unwrap_or("GRAPH.QUERY"),
+            if read_only {
+                "GRAPH.QUERY_RO"
+            } else {
+                "GRAPH.QUERY"
+            },
             query_string,
-            params,
+            params.as_ref(),
             timeout,
         )
     }
@@ -309,5 +327,75 @@ impl SyncGraph {
         }
 
         Ok(constraints_vec)
+    }
+
+    /// Creates a new constraint for this graph
+    ///
+    /// # Arguments
+    /// * `constraint_type`: Which constraint to apply.
+    /// * `entity_type`: Whether to apply this constraint on nodes or relationships.
+    /// * `label`: Entities with this label will have this constraint applied to them.
+    /// * `properties`: A slice of the names of properties this constraint will apply to.
+    pub fn create_constraint<L: ToString, P: ToString + Debug>(
+        &self,
+        constraint_type: ConstraintType,
+        entity_type: EntityType,
+        label: L,
+        properties: &[P],
+    ) -> Result<FalkorValue> {
+        self.send_command(
+            "GRAPH.CONSTRAINT",
+            Some(format!(
+                "CREATE {constraint_type} {entity_type} {} {} {:?}",
+                label.to_string(),
+                properties.len(),
+                properties
+            )),
+        )
+    }
+
+    /// Drop an existing constraint from the graph
+    ///
+    /// # Arguments
+    /// * `constraint_type`: Which type of constraint to remove.
+    /// * `entity_type`: Whether this constraint exists on nodes or relationships.
+    /// * `label`: Remove the constraint from entities with this label.
+    /// * `properties`: A slice of the names of properties to remove the constraint from.
+    pub fn drop_constraint<L: ToString, P: ToString + Debug>(
+        &self,
+        constraint_type: ConstraintType,
+        entity_type: EntityType,
+        label: L,
+        properties: &[P],
+    ) -> Result<FalkorValue> {
+        self.send_command(
+            "GRAPH.CONSTRAINT",
+            Some(format!(
+                "DROP {constraint_type} {entity_type} {} {} {:?}",
+                label.to_string(),
+                properties.len(),
+                properties
+            )),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{ConstraintType, EntityType, FalkorClientBuilder};
+
+    #[test]
+    fn test_create_constraint() {
+        let client = FalkorClientBuilder::new()
+            .with_num_connections(4)
+            .build()
+            .expect("Could not create client");
+
+        let graph = client.open_graph("imdb");
+        let res = graph
+            .create_constraint(ConstraintType::Unique, EntityType::Edge, "act", &["hello"])
+            .expect("Could not create constraint");
+
+        panic!("{res:?}");
     }
 }

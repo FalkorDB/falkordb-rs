@@ -3,7 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::FalkorValue;
+use crate::{FalkorDBError, FalkorValue};
 
 /// An execution plan, storing both the specific string details for each step, and also a formatted plaintext string for pretty display
 #[derive(Debug, Clone)]
@@ -25,7 +25,7 @@ impl ExecutionPlan {
 }
 
 impl TryFrom<FalkorValue> for ExecutionPlan {
-    type Error = anyhow::Error;
+    type Error = FalkorDBError;
 
     fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
         let string_vec = value.into_vec()?;

@@ -21,7 +21,10 @@ impl<const R: char> FalkorClientBuilder<R> {
     ///
     /// # Returns
     /// The consumed and modified self.
-    pub fn with_connection_info(self, falkor_connection_info: FalkorConnectionInfo) -> Self {
+    pub fn with_connection_info(
+        self,
+        falkor_connection_info: FalkorConnectionInfo,
+    ) -> Self {
         Self {
             connection_info: Some(falkor_connection_info),
             ..self
@@ -35,7 +38,10 @@ impl<const R: char> FalkorClientBuilder<R> {
     ///
     /// # Returns
     /// The consumed and modified self.
-    pub fn with_num_connections(self, num_connections: u8) -> Self {
+    pub fn with_num_connections(
+        self,
+        num_connections: u8,
+    ) -> Self {
         Self {
             num_connections,
             ..self
@@ -49,6 +55,7 @@ where
 {
     let connection_info = connection_info.try_into()?;
     Ok(match connection_info {
+        #[cfg(feature = "redis")]
         FalkorConnectionInfo::Redis(connection_info) => {
             FalkorClientProvider::Redis(redis::Client::open(connection_info.clone())?)
         }
@@ -60,6 +67,7 @@ impl FalkorClientBuilder<'S'> {
     ///
     /// # Returns
     /// The new [`FalkorClientBuilder`]
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         FalkorClientBuilder {
             connection_info: None,
@@ -80,7 +88,11 @@ impl FalkorClientBuilder<'S'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        FalkorSyncClient::create(get_client(connection_info.clone())?, self.num_connections)
+        FalkorSyncClient::create(
+            get_client(connection_info.clone())?,
+            connection_info,
+            self.num_connections,
+        )
     }
 }
 
@@ -94,12 +106,66 @@ impl FalkorClientBuilder<'A'> {
     }
 
     pub async fn build(
-        self,
+        self
     ) -> Result<std::sync::Arc<tokio::sync::Mutex<crate::FalkorAsyncClient>>> {
         let connection_info = self
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
         crate::FalkorAsyncClient::create(get_client(connection_info)?).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{FalkorClientBuilder, FalkorConnectionInfo};
+
+    #[test]
+    fn test_sync_builder() {
+        let conneciton_info = "redis://127.0.0.1:6379".try_into();
+        assert!(conneciton_info.is_ok());
+
+        assert!(FalkorClientBuilder::new()
+            .with_num_connections(4)
+            .with_connection_info(conneciton_info.unwrap())
+            .build()
+            .is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "redis")]
+    fn test_sync_builder_redis_fallback() {
+        let client = FalkorClientBuilder::new().build();
+        assert!(client.is_ok());
+
+        if let FalkorConnectionInfo::Redis(redis_info) = client.unwrap().connection_info {
+            assert_eq!(redis_info.addr.to_string().as_str(), "127.0.0.1:6379");
+            return;
+        }
+
+        assert!(false);
+    }
+
+    #[test]
+    fn test_connection_pool_size() {
+        let client = FalkorClientBuilder::new().with_num_connections(16).build();
+        assert!(client.is_ok());
+
+        assert_eq!(client.unwrap().connection_pool_size(), 16);
+    }
+
+    #[test]
+    fn test_invalid_connection_pool_size() {
+        // Connection pool size must be between 0 and 32
+
+        assert!(FalkorClientBuilder::new()
+            .with_num_connections(0)
+            .build()
+            .is_err());
+
+        assert!(FalkorClientBuilder::new()
+            .with_num_connections(36)
+            .build()
+            .is_err());
     }
 }

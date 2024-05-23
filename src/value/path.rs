@@ -25,7 +25,7 @@ impl FalkorParsable for Path {
         let [nodes, relationships]: [FalkorValue; 2] = value
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingError)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
         let (nodes, relationships) = (nodes.into_vec()?, relationships.into_vec()?);
 
         let mut parsed_nodes = Vec::with_capacity(nodes.len());
@@ -63,7 +63,7 @@ impl crate::FalkorAsyncParseable for Path {
         let [nodes, relationships]: [FalkorValue; 2] = value
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingError)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
         let (nodes, relationships) = (nodes.into_vec()?, relationships.into_vec()?);
 
         let mut parsed_nodes = Vec::with_capacity(nodes.len());

@@ -9,12 +9,62 @@ use crate::{
     FalkorParsable, FalkorValue, SchemaType, SyncGraphSchema,
 };
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::{Display, Formatter},
+};
 
 #[cfg(feature = "tokio")]
 use crate::value::{map::parse_map_with_schema_async, utils_async::parse_labels_async};
 
-/// A node in the graph
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum EntityType {
+    Node,
+    Edge,
+}
+
+impl Display for EntityType {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>,
+    ) -> std::fmt::Result {
+        let str = match self {
+            EntityType::Node => "NODE",
+            EntityType::Edge => "RELATIONSHIP",
+        };
+        f.write_str(str)
+    }
+}
+
+impl TryFrom<&str> for EntityType {
+    type Error = FalkorDBError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(match value.to_uppercase().as_str() {
+            "NODE" => Self::Node,
+            "RELATIONSHIP" => Self::Edge,
+            _ => Err(FalkorDBError::ConstraintType)?,
+        })
+    }
+}
+
+impl TryFrom<String> for EntityType {
+    type Error = FalkorDBError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.as_str().try_into()
+    }
+}
+
+impl TryFrom<&String> for EntityType {
+    type Error = FalkorDBError;
+
+    fn try_from(value: &String) -> Result<Self, Self::Error> {
+        value.as_str().try_into()
+    }
+}
+
+/// A node in the graph, containing a unique id, various labels describing it, and its own property.
 #[derive(Clone, Debug)]
 pub struct Node {
     /// The internal entity ID
@@ -34,7 +84,7 @@ impl FalkorParsable for Node {
         let [entity_id, labels, properties]: [FalkorValue; 3] = value
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingNodeElementCount)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
         let labels = labels.into_vec()?;
 
         let mut ids_hashset = HashSet::with_capacity(labels.len());
@@ -70,7 +120,7 @@ impl crate::FalkorAsyncParseable for Node {
         let [entity_id, labels, properties]: [FalkorValue; 3] = value
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingNodeElementCount)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
         let labels = labels.into_vec()?;
 
         let mut ids_hashset = HashSet::with_capacity(labels.len());
@@ -98,6 +148,7 @@ impl crate::FalkorAsyncParseable for Node {
     }
 }
 
+/// An edge in the graph, representing a relationship between two [`Node`]s.
 #[derive(Clone, Debug)]
 pub struct Edge {
     /// The internal entity ID
@@ -121,7 +172,7 @@ impl FalkorParsable for Edge {
         let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] = value
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingError)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let relation = relations.to_i64().ok_or(FalkorDBError::ParsingI64)?;
         if let Some(relationship) = graph_schema.relationships().read().get(&relation).cloned() {
@@ -174,7 +225,7 @@ impl crate::FalkorAsyncParseable for Edge {
         let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] = value
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingError)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let relation = relations.to_i64().ok_or(FalkorDBError::ParsingI64)?;
         if let Some(relationship) = graph_schema

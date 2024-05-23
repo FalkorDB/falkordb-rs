@@ -140,7 +140,10 @@ impl FalkorAsyncClient {
         Ok(())
     }
 
-    pub fn open_graph<T: ToString>(&mut self, graph_name: T) -> AsyncGraph {
+    pub fn open_graph<T: ToString>(
+        &mut self,
+        graph_name: T,
+    ) -> AsyncGraph {
         AsyncGraph {
             connection: self.connection.clone(),
             graph_name: graph_name.to_string(),
@@ -152,7 +155,10 @@ impl FalkorAsyncClient {
         }
     }
 
-    pub async fn copy_graph<T: ToString>(&mut self, cloned_graph_name: T) -> Result<AsyncGraph> {
+    pub async fn copy_graph<T: ToString>(
+        &mut self,
+        cloned_graph_name: T,
+    ) -> Result<AsyncGraph> {
         self.connection
             .clone()
             .send_command(Some(cloned_graph_name.to_string()), "GRAPH.COPY", None)

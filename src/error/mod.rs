@@ -51,8 +51,10 @@ pub enum FalkorDBError {
     ParsingTypeMarkerTypeMismatch,
     #[error("Both key id and type marker were not of type i64")]
     ParsingKTVTypes,
-    #[error("Could not form slowlog entry, element count invalid")]
-    ParsingSlowlogEntryElementCount,
-    #[error("Could not parse node, element count invalid")]
-    ParsingNodeElementCount,
+    #[error("Attempting to parse an FArray into a struct, but the array doesn't have the expected element count")]
+    ParsingArrayToStructElementCount,
+    #[error("Invalid constraint type, expected 'UNIQUE' or 'MANDATORY'")]
+    ConstraintType,
+    #[error("Invalid constraint status, expected 'OPERATIONAL', 'UNDER CONSTRUCTION' or 'FAILED'")]
+    ConstraintStatus,
 }

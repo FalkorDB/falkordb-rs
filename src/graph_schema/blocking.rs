@@ -107,7 +107,7 @@ impl SyncGraphSchema {
             )?
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingError)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         update_map(write_lock.deref_mut(), keys, id_hashset)
     }

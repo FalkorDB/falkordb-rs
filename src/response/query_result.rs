@@ -127,7 +127,7 @@ impl FalkorParsable for QueryResult {
         // Full result
         let [header, data, stats]: [FalkorValue; 3] = value_vec
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingError)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let header_keys = query_parse_header(header)?;
         let stats_strings = query_parse_stats(stats)?;
@@ -203,7 +203,7 @@ impl crate::FalkorAsyncParseable for QueryResult {
         // Full result
         let [header, data, stats]: [FalkorValue; 3] = value_vec
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingError)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let header_keys = query_parse_header(header)?;
         let stats_strings = query_parse_stats(stats)?;

@@ -22,13 +22,13 @@ pub(crate) struct FKeyTypeVal {
 }
 
 impl TryFrom<FalkorValue> for FKeyTypeVal {
-    type Error = anyhow::Error;
+    type Error = FalkorDBError;
 
     fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
         let [key_raw, type_raw, val]: [FalkorValue; 3] = value
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingKTVTypes)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let key = key_raw.to_i64();
         let type_marker = type_raw.to_i64();

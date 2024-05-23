@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # This is mostly for actions/checkout
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    target-branch: "main"
+
+  # This is actually for cargo crates
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    target-branch: "main"

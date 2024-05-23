@@ -13,7 +13,6 @@ use point::Point;
 use std::{collections::HashMap, fmt::Debug};
 
 pub(crate) mod config;
-pub(crate) mod constraint;
 pub(crate) mod graph_entities;
 pub(crate) mod map;
 pub(crate) mod path;
@@ -191,34 +190,33 @@ impl FalkorValue {
     ///
     /// # Returns
     /// The inner [`Vec`]
-    pub fn into_vec(self) -> Result<Vec<Self>> {
+    pub fn into_vec(self) -> Result<Vec<Self>, FalkorDBError> {
         match self {
             FalkorValue::FArray(val) => Some(val),
             _ => None,
         }
-        .ok_or_else(|| FalkorDBError::ParsingFArray.into())
+        .ok_or(FalkorDBError::ParsingFArray)
     }
 
     /// Consumes this variant and returns the underlying [`String`] if this is an FString variant
     ///
     /// # Returns
     /// The inner [`String`]
-    pub fn into_string(self) -> Result<String> {
+    pub fn into_string(self) -> Result<String, FalkorDBError> {
         match self {
-            FalkorValue::FString(val) => Some(val),
-            _ => None,
+            FalkorValue::FString(val) => Ok(val),
+            _ => Err(FalkorDBError::ParsingFString),
         }
-        .ok_or(FalkorDBError::ParsingFString.into())
     }
 
     /// Consumes this variant and returns the underlying [`Edge`] if this is an FEdge variant
     ///
     /// # Returns
     /// The inner [`Edge`]
-    pub fn into_edge(self) -> Result<Edge> {
+    pub fn into_edge(self) -> Result<Edge, FalkorDBError> {
         match self {
             Self::FEdge(edge) => Ok(edge),
-            _ => Err(FalkorDBError::ParsingFEdge)?,
+            _ => Err(FalkorDBError::ParsingFEdge),
         }
     }
 
@@ -226,10 +224,10 @@ impl FalkorValue {
     ///
     /// # Returns
     /// The inner [`Node`]
-    pub fn into_node(self) -> Result<Node> {
+    pub fn into_node(self) -> Result<Node, FalkorDBError> {
         match self {
             Self::FNode(node) => Ok(node),
-            _ => Err(FalkorDBError::ParsingFNode)?,
+            _ => Err(FalkorDBError::ParsingFNode),
         }
     }
 
@@ -237,10 +235,10 @@ impl FalkorValue {
     ///
     /// # Returns
     /// The inner [`Path`]
-    pub fn into_path(self) -> Result<Path> {
+    pub fn into_path(self) -> Result<Path, FalkorDBError> {
         match self {
             Self::FPath(path) => Ok(path),
-            _ => Err(FalkorDBError::ParsingFPath)?,
+            _ => Err(FalkorDBError::ParsingFPath),
         }
     }
 
@@ -248,10 +246,10 @@ impl FalkorValue {
     ///
     /// # Returns
     /// The inner [`HashMap`]
-    pub fn into_map(self) -> Result<HashMap<String, FalkorValue>> {
+    pub fn into_map(self) -> Result<HashMap<String, FalkorValue>, FalkorDBError> {
         match self {
             FalkorValue::FMap(map) => Ok(map),
-            _ => Err(FalkorDBError::ParsingFMap)?,
+            _ => Err(FalkorDBError::ParsingFMap),
         }
     }
 
@@ -259,10 +257,10 @@ impl FalkorValue {
     ///
     /// # Returns
     /// The inner [`Point`]
-    pub fn into_point(self) -> Result<Point> {
+    pub fn into_point(self) -> Result<Point, FalkorDBError> {
         match self {
             Self::FPoint(point) => Ok(point),
-            _ => Err(FalkorDBError::ParsingFPoint)?,
+            _ => Err(FalkorDBError::ParsingFPoint),
         }
     }
 }
@@ -291,7 +289,7 @@ impl FalkorValue {
         }
     }
 
-    /// Returns a Copy of the inner [`F64`] if this is an F64 variant
+    /// Returns a Copy of the inner [`f64`] if this is an F64 variant
     ///
     /// # Returns
     /// A copy of the inner [`f64`]

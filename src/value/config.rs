@@ -13,7 +13,10 @@ pub enum ConfigValue {
 }
 
 impl Display for ConfigValue {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>,
+    ) -> std::fmt::Result {
         match self {
             ConfigValue::String(str_val) => str_val.fmt(f),
             ConfigValue::Int64(int_val) => int_val.fmt(f),

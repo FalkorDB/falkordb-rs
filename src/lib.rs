@@ -26,13 +26,15 @@ pub use graph::blocking::SyncGraph;
 pub use graph_schema::{blocking::SyncGraphSchema, SchemaType};
 pub use parser::FalkorParsable;
 pub use response::{
-    execution_plan::ExecutionPlan, query_result::QueryResult, slowlog_entry::SlowlogEntry,
+    constraint::{Constraint, ConstraintStatus, ConstraintType},
+    execution_plan::ExecutionPlan,
+    query_result::QueryResult,
+    slowlog_entry::SlowlogEntry,
     ResponseVariant,
 };
 pub use value::{
     config::ConfigValue,
-    constraint::Constraint,
-    graph_entities::{Edge, Node},
+    graph_entities::{Edge, EntityType, Node},
     path::Path,
     point::Point,
     FalkorValue,

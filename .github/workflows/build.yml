@@ -1,0 +1,19 @@
+name: Linux Build + Tests
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build
+      - uses: taiki-e/install-action@nextest
+      - name: Test
+        run: cargo nextest run --all

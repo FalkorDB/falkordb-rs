@@ -13,10 +13,9 @@ redis = { version = "0.25.3", default-features = false, optional = true }
 tokio = { version = "1.37.0", default-features = false, features = ["rt-multi-thread", "sync", "macros"], optional = true }
 thiserror = "1.0.60"
 url-parse = "1.0.8"
-simple_logger = "5.0.0"
 
 [features]
-default = ["redis", "tokio"]
+default = ["redis"]
 native-tls = ["redis/tls-native-tls"]
 rustls = ["redis/tls-rustls"]
 tokio = ["dep:tokio", "redis/tokio-comp"]

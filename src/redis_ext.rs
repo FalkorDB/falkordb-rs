@@ -36,8 +36,10 @@ impl From<redis::Client> for FalkorClientProvider {
 }
 
 impl ToRedisArgs for ConfigValue {
-    fn write_redis_args<W>(&self, out: &mut W)
-    where
+    fn write_redis_args<W>(
+        &self,
+        out: &mut W,
+    ) where
         W: ?Sized + RedisWrite,
     {
         match self {

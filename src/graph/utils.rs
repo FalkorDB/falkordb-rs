@@ -47,12 +47,12 @@ pub(crate) fn generate_procedure_call<P: ToString>(
 
 pub(crate) fn construct_query<Q: ToString, T: ToString, Z: ToString>(
     query_str: Q,
-    params: Option<HashMap<T, Z>>,
+    params: Option<&HashMap<T, Z>>,
 ) -> String {
     params
         .map(|params| {
             params
-                .into_iter()
+                .iter()
                 .fold("CYPHER ".to_string(), |acc, (key, val)| {
                     acc + format!("{}={}", key.to_string(), val.to_string()).as_str()
                 })

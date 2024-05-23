@@ -1,0 +1,5 @@
+# Environment
+msrv = "1.72"
+
+# Documentation
+missing-docs-in-crate-items = true

@@ -19,7 +19,7 @@ impl Point {
         let [lat, long]: [FalkorValue; 2] = value
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingError)?;
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         Ok(Point {
             latitude: lat.to_f64().ok_or(FalkorDBError::ParsingError)?,

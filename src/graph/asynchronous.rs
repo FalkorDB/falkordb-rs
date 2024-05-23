@@ -8,6 +8,7 @@ use crate::{
     AsyncGraphSchema, ExecutionPlan, FalkorAsyncConnection, FalkorAsyncParseable, FalkorDBError,
     FalkorValue, QueryResult, SlowlogEntry,
 };
+use anyhow::Result;
 use std::collections::HashMap;
 
 pub struct AsyncGraph {
@@ -25,18 +26,18 @@ impl AsyncGraph {
         &self,
         command: &str,
         params: Option<String>,
-    ) -> anyhow::Result<FalkorValue> {
+    ) -> Result<FalkorValue> {
         let mut conn = self.connection.clone();
         conn.send_command(Some(self.graph_name.clone()), command, params)
             .await
     }
 
-    pub async fn delete(&self) -> anyhow::Result<()> {
+    pub async fn delete(&self) -> Result<()> {
         self.send_command("GRAPH.DELETE", None).await?;
         Ok(())
     }
 
-    pub async fn slowlog(&self) -> anyhow::Result<Vec<SlowlogEntry>> {
+    pub async fn slowlog(&self) -> Result<Vec<SlowlogEntry>> {
         let res = self.send_command("GRAPH.SLOWLOG", None).await?.into_vec()?;
 
         if res.is_empty() {
@@ -49,14 +50,14 @@ impl AsyncGraph {
                 entry_raw
                     .into_vec()?
                     .try_into()
-                    .map_err(|_| FalkorDBError::ParsingSlowlogEntryElementCount)?,
+                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?,
             )?);
         }
 
         Ok(slowlog_entries)
     }
 
-    pub async fn slowlog_reset(&self) -> anyhow::Result<()> {
+    pub async fn slowlog_reset(&self) -> Result<()> {
         self.send_command("GRAPH.SLOWLOG", Some("RESET".to_string()))
             .await?;
         Ok(())
@@ -66,13 +67,17 @@ impl AsyncGraph {
         &self,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
-    ) -> anyhow::Result<ExecutionPlan> {
+    ) -> Result<ExecutionPlan> {
         let query = construct_query(query_string, params);
 
         ExecutionPlan::try_from(self.send_command("GRAPH.PROFILE", Some(query)).await?)
+            .map_err(Into::into)
     }
 
-    pub async fn profile<Q: ToString>(&self, query_string: Q) -> anyhow::Result<ExecutionPlan> {
+    pub async fn profile<Q: ToString>(
+        &self,
+        query_string: Q,
+    ) -> Result<ExecutionPlan> {
         self.profile_with_params::<Q, &str, &str>(query_string, None)
             .await
     }
@@ -81,12 +86,16 @@ impl AsyncGraph {
         &self,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
-    ) -> anyhow::Result<ExecutionPlan> {
+    ) -> Result<ExecutionPlan> {
         let query = construct_query(query_string, params);
         ExecutionPlan::try_from(self.send_command("GRAPH.EXPLAIN", Some(query)).await?)
+            .map_err(Into::into)
     }
 
-    pub async fn explain<Q: ToString>(&self, query_string: Q) -> anyhow::Result<ExecutionPlan> {
+    pub async fn explain<Q: ToString>(
+        &self,
+        query_string: Q,
+    ) -> Result<ExecutionPlan> {
         self.explain_with_params::<Q, &str, &str>(query_string, None)
             .await
     }
@@ -102,7 +111,7 @@ impl AsyncGraph {
         params: Option<&HashMap<T, Z>>,
         readonly: bool,
         timeout: Option<u64>,
-    ) -> anyhow::Result<P> {
+    ) -> Result<P> {
         self.query_with_parser(
             if readonly {
                 "GRAPH.RO_QUERY"
@@ -120,7 +129,7 @@ impl AsyncGraph {
         &self,
         query_string: Q,
         timeout: Option<u64>,
-    ) -> anyhow::Result<QueryResult> {
+    ) -> Result<QueryResult> {
         self.query_with_params::<Q, &str, &str, QueryResult>(query_string, None, false, timeout)
             .await
     }
@@ -129,7 +138,7 @@ impl AsyncGraph {
         &self,
         query_string: Q,
         timeout: Option<u64>,
-    ) -> anyhow::Result<QueryResult> {
+    ) -> Result<QueryResult> {
         self.query_with_params::<Q, &str, &str, QueryResult>(query_string, None, true, timeout)
             .await
     }
@@ -141,7 +150,7 @@ impl AsyncGraph {
         yields: Option<&[String]>,
         read_only: Option<bool>,
         timeout: Option<u64>,
-    ) -> anyhow::Result<P> {
+    ) -> Result<P> {
         let (query_string, params) = generate_procedure_call(procedure, args, yields);
 
         self.query_with_params(
@@ -153,7 +162,7 @@ impl AsyncGraph {
         .await
     }
 
-    pub async fn list_indices(&self) -> anyhow::Result<FalkorValue> {
+    pub async fn list_indices(&self) -> Result<FalkorValue> {
         let query_res = self
             .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, None, None)
             .await?
@@ -165,7 +174,7 @@ impl AsyncGraph {
         Ok(FalkorValue::None)
     }
 
-    pub async fn list_constraints(&self) -> anyhow::Result<FalkorValue> {
+    pub async fn list_constraints(&self) -> Result<FalkorValue> {
         let query_res = self
             .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, None, None)
             .await?

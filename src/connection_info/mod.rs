@@ -75,3 +75,21 @@ impl<T: ToString> TryFrom<(T, u16)> for FalkorConnectionInfo {
         Self::try_from(format!("{}:{}", value.0.to_string(), value.1))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::FalkorConnectionInfo;
+
+    #[test]
+    #[cfg(feature = "redis")]
+    fn test_redis_fallback_provider() {
+        if let FalkorConnectionInfo::Redis(redis) =
+            FalkorConnectionInfo::fallback_provider("127.0.0.1:6379".to_string()).unwrap()
+        {
+            assert_eq!(redis.addr.to_string(), "127.0.0.1:6379".to_string());
+            return;
+        }
+
+        assert!(false);
+    }
+}

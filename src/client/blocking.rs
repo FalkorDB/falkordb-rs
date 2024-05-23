@@ -6,7 +6,7 @@
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
-    ConfigValue, FalkorDBError, SyncGraph, SyncGraphSchema,
+    ConfigValue, FalkorConnectionInfo, FalkorDBError, SyncGraph, SyncGraphSchema,
 };
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -18,6 +18,7 @@ use std::{
 pub(crate) struct FalkorSyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
     graph_cache: Mutex<HashMap<String, SyncGraphSchema>>,
+    connection_pool_size: u8,
     connection_pool_tx: mpsc::SyncSender<FalkorSyncConnection>,
     connection_pool_rx: mpsc::Receiver<FalkorSyncConnection>,
 }
@@ -44,10 +45,15 @@ unsafe impl Send for FalkorSyncClientInner {}
 #[derive(Clone)]
 pub struct FalkorSyncClient {
     inner: Arc<FalkorSyncClientInner>,
+    pub(crate) _connection_info: FalkorConnectionInfo,
 }
 
 impl FalkorSyncClient {
-    pub(crate) fn create(client: FalkorClientProvider, num_connections: u8) -> Result<Self> {
+    pub(crate) fn create(
+        client: FalkorClientProvider,
+        connection_info: FalkorConnectionInfo,
+        num_connections: u8,
+    ) -> Result<Self> {
         let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(num_connections as usize);
         for _ in 0..num_connections {
             connection_pool_tx.send(client.get_connection(None)?)?;
@@ -57,10 +63,17 @@ impl FalkorSyncClient {
             inner: Arc::new(FalkorSyncClientInner {
                 _inner: client.into(),
                 graph_cache: Default::default(),
+                connection_pool_size: num_connections,
                 connection_pool_tx,
                 connection_pool_rx,
             }),
+            _connection_info: connection_info,
         })
+    }
+
+    /// Get the max number of connections in the client's connection pool
+    pub fn connection_pool_size(&self) -> u8 {
+        self.inner.connection_pool_size
     }
 
     pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnection> {
@@ -110,7 +123,10 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
-    pub fn config_get<T: ToString>(&self, config_key: T) -> Result<HashMap<String, ConfigValue>> {
+    pub fn config_get<T: ToString>(
+        &self,
+        config_key: T,
+    ) -> Result<HashMap<String, ConfigValue>> {
         let mut conn = self.borrow_connection()?;
 
         Ok(match conn.as_inner()? {
@@ -198,7 +214,10 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// a [`SyncGraph`] object, allowing various graph operations.
-    pub fn open_graph<T: ToString>(&self, graph_name: T) -> SyncGraph {
+    pub fn open_graph<T: ToString>(
+        &self,
+        graph_name: T,
+    ) -> SyncGraph {
         SyncGraph {
             client: self.inner.clone(),
             graph_name: graph_name.to_string(),
@@ -231,5 +250,37 @@ impl FalkorSyncClient {
             None,
         )?;
         Ok(self.open_graph(new_graph_name.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::connection::blocking::BorrowedSyncConnection;
+    use crate::FalkorClientBuilder;
+    use std::sync::mpsc::TryRecvError;
+
+    fn test_borrow_connection() {
+        let client = FalkorClientBuilder::new()
+            .with_num_connections(6)
+            .build()
+            .expect("Could not create client for this test");
+
+        // Client was created with 6 connections
+        let conn_vec: Vec<Result<BorrowedSyncConnection, anyhow::Error>> = (0..6)
+            .into_iter()
+            .map(|_| {
+                let conn = client.borrow_connection();
+                assert!(conn.is_ok());
+                conn
+            })
+            .collect();
+
+        let non_existing_conn = client.inner.connection_pool_rx.try_recv();
+        assert!(non_existing_conn.is_err());
+
+        if let Err(TryRecvError::Empty) = non_existing_conn {
+            return;
+        }
+        assert!(false);
     }
 }

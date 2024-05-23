@@ -330,9 +330,13 @@ impl SyncGraph {
     /// A [`Vec`] of [`Constraint`]s
     pub fn list_constraints(&self) -> Result<Vec<Constraint>> {
         let mut conn = self.client.borrow_connection()?;
-        let query_res = self
-            .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, true, None)?
-            .into_vec()?;
+        let [_, query_res, _]: [FalkorValue; 3] = self
+            .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, false, None)?
+            .into_vec()?
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+        let query_res = query_res.into_vec()?;
 
         let mut constraints_vec = Vec::with_capacity(query_res.len());
         for item in query_res {
@@ -482,5 +486,91 @@ mod tests {
                 &["first_name", "last_name"],
             )
             .expect("Could not drop constraint");
+    }
+
+    #[test]
+    fn test_list_constraints() {
+        let graph = open_test_graph("test_list_constraint");
+
+        graph
+            .inner
+            .create_unique_constraint(EntityType::Node, "actor", &["first_name", "last_name"])
+            .expect("Could not create constraint");
+
+        let constraints = graph
+            .inner
+            .list_constraints()
+            .expect("Could not list constraints");
+        assert_eq!(constraints.len(), 1);
+    }
+
+    #[test]
+    fn test_slowlog() {
+        let graph = open_test_graph("test_slowlog");
+
+        graph
+            .inner
+            .query("UNWIND range(0, 500) AS x RETURN x", None)
+            .expect("Could not generate the fast query");
+        graph
+            .inner
+            .query("UNWIND range(0, 100000) AS x RETURN x", None)
+            .expect("Could not generate the slow query");
+
+        let slowlog = graph
+            .inner
+            .slowlog()
+            .expect("Could not get slowlog entries");
+
+        assert_eq!(slowlog.len(), 2);
+        assert_eq!(
+            slowlog[0].arguments,
+            "UNWIND range(0, 500) AS x RETURN x".to_string()
+        );
+        assert_eq!(
+            slowlog[1].arguments,
+            "UNWIND range(0, 100000) AS x RETURN x".to_string()
+        );
+
+        graph
+            .inner
+            .slowlog_reset()
+            .expect("Could not reset slowlog memory");
+        let slowlog_after_reset = graph
+            .inner
+            .slowlog()
+            .expect("Could not get slowlog entries after reset");
+        assert!(slowlog_after_reset.is_empty());
+    }
+
+    #[test]
+    fn test_explain() {
+        let graph = open_test_graph("test_explain");
+
+        let execution_plan = graph.inner.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").expect("Could not create execution plan");
+        assert_eq!(execution_plan.steps().len(), 7);
+        assert_eq!(
+            execution_plan.text(),
+            "\nResults\n    Limit\n        Aggregate\n            Filter\n                Node By Index Scan | (b:actor)\n                    Project\n                        Node By Label Scan | (a:actor)"
+        );
+    }
+
+    #[test]
+    fn test_profile() {
+        let graph = open_test_graph("test_profile");
+
+        let execution_plan = graph
+            .inner
+            .profile("UNWIND range(0, 1000) AS x RETURN x")
+            .expect("Could not generate the query");
+
+        let steps = execution_plan.steps().to_vec();
+        assert_eq!(steps.len(), 3);
+
+        let expected = vec!["Results", "Project", "Unwind"];
+        for (step, expected) in steps.into_iter().zip(expected) {
+            assert!(step.starts_with(expected));
+            assert!(step.ends_with("ms"));
+        }
     }
 }

@@ -5,13 +5,14 @@ edition = "2021"
 
 
 [dependencies]
-async-recursion = { version = "1.1.1" }
 anyhow = { version = "1.0.83", default-features = false, features = ["std"] }
+async-recursion = { version = "1.1.1" }
 log = { version = "0.4.21", default-features = false }
 parking_lot = { version = "0.12.2", default-features = false, features = ["deadlock_detection"] }
 redis = { version = "0.25.3", default-features = false, optional = true }
-tokio = { version = "1.37.0", default-features = false, features = ["rt-multi-thread", "sync", "macros"], optional = true }
 thiserror = "1.0.60"
+tokio = { version = "1.37.0", default-features = false, features = ["rt-multi-thread", "sync", "macros"], optional = true }
+tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"] }
 url-parse = "1.0.8"
 
 [features]

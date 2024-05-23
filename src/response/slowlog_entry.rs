@@ -16,17 +16,23 @@ pub struct SlowlogEntry {
     /// The query itself
     pub arguments: String,
     /// How long did performing this query take.
-    pub time_taken: i64,
+    pub time_taken: f64,
 }
 
 impl SlowlogEntry {
     pub fn from_value_array(values: [FalkorValue; 4]) -> Result<Self> {
         let [timestamp, command, arguments, time_taken] = values;
         Ok(Self {
-            timestamp: timestamp.to_i64().ok_or(FalkorDBError::ParsingI64)?,
+            timestamp: timestamp
+                .into_string()?
+                .parse()
+                .map_err(|_| FalkorDBError::ParsingI64)?,
             command: command.into_string()?,
             arguments: arguments.into_string()?,
-            time_taken: time_taken.to_i64().ok_or(FalkorDBError::ParsingI64)?,
+            time_taken: time_taken
+                .into_string()?
+                .parse()
+                .map_err(|_| FalkorDBError::ParsingF64)?,
         })
     }
 }

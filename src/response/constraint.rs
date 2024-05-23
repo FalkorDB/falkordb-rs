@@ -4,8 +4,9 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, EntityType, FalkorDBError, FalkorParsable,
-    FalkorValue, SyncGraphSchema,
+    connection::blocking::BorrowedSyncConnection,
+    value::utils::{parse_type, type_val_from_value},
+    EntityType, FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
 };
 use anyhow::Result;
 use std::fmt::{Display, Formatter};
@@ -119,14 +120,19 @@ pub struct Constraint {
 impl FalkorParsable for Constraint {
     fn from_falkor_value(
         value: FalkorValue,
-        _graph_schema: &SyncGraphSchema,
-        _conn: &mut BorrowedSyncConnection,
+        graph_schema: &SyncGraphSchema,
+        conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
-        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue;
-            5] = value
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+        let value_vec = value.into_vec()?;
+
+        let mut parsed_values = Vec::with_capacity(value_vec.len());
+        for column_raw in value_vec {
+            parsed_values.push(type_val_from_value(column_raw).and_then(
+                |(type_marker, raw_val)| parse_type(type_marker, raw_val, graph_schema, conn),
+            )?);
+        }
+
+        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = parsed_values.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let constraint_type = constraint_type_raw.into_string()?.try_into()?;
         let label = label_raw.into_string()?;

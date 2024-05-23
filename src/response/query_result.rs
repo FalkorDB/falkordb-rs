@@ -75,7 +75,7 @@ fn query_parse_stats(stats: FalkorValue) -> Result<Vec<String>> {
     Ok(stats_strings)
 }
 
-fn parse_result_set(
+pub(crate) fn parse_result_set(
     data_vec: Vec<FalkorValue>,
     graph_schema: &SyncGraphSchema,
     conn: &mut BorrowedSyncConnection,

@@ -25,10 +25,11 @@ impl AsyncGraph {
     async fn send_command(
         &self,
         command: &str,
+        subcommand: Option<&str>,
         params: Option<String>,
     ) -> Result<FalkorValue> {
         let mut conn = self.connection.clone();
-        conn.send_command(Some(self.graph_name.clone()), command, params)
+        conn.send_command(Some(self.graph_name.clone()), command, subcommand, params)
             .await
     }
 

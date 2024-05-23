@@ -5,7 +5,6 @@
 
 use crate::{FalkorDBError, FalkorValue};
 use anyhow::Result;
-use redis::ConnectionLike;
 use std::sync::mpsc;
 
 pub(crate) enum FalkorSyncConnection {
@@ -33,15 +32,23 @@ impl BorrowedSyncConnection {
         &mut self,
         graph_name: Option<String>,
         command: &str,
-        params: Option<String>,
+        subcommand: Option<&str>,
+        params: Option<&[String]>,
     ) -> Result<FalkorValue> {
         Ok(
             match self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)? {
                 #[cfg(feature = "redis")]
                 FalkorSyncConnection::Redis(redis_conn) => {
-                    redis::FromRedisValue::from_owned_redis_value(
-                        redis_conn.req_command(redis::cmd(command).arg(graph_name).arg(params))?,
-                    )?
+                    use redis::ConnectionLike as _;
+                    let mut cmd = redis::cmd(command);
+                    cmd.arg(subcommand);
+                    cmd.arg(graph_name);
+                    if let Some(params) = params {
+                        for param in params {
+                            cmd.arg(param);
+                        }
+                    }
+                    redis::FromRedisValue::from_owned_redis_value(redis_conn.req_command(&cmd)?)?
                 }
             },
         )

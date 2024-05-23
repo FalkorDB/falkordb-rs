@@ -23,7 +23,7 @@ pub(crate) mod utils;
 pub(crate) mod utils_async;
 
 /// An enum of all the supported Falkor types
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum FalkorValue {
     FNode(Node),
     FEdge(Edge),

@@ -15,7 +15,7 @@ pub(crate) mod slowlog_entry;
 
 /// A naive wrapper for the various possible responses from queries
 /// Its main usecase is for creating things like [`JoinSet`](tokio::task::JoinSet)s, which require all the tasks to return the same type
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResponseVariant {
     ExecutionPlan(ExecutionPlan),
     QueryResult(QueryResult),

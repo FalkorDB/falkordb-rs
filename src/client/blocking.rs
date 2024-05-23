@@ -146,7 +146,11 @@ impl FalkorSyncClient {
                 if bulk_data.is_empty() {
                     return Err(FalkorDBError::InvalidDataReceived.into());
                 } else if bulk_data.len() == 2 {
-                    return if let Some(redis::Value::Status(config_key)) = bulk_data.first() {
+                    return if let Some(ConfigValue::String(config_key)) = bulk_data
+                        .first()
+                        .map(ConfigValue::try_from)
+                        .and_then(Result::ok)
+                    {
                         Ok(HashMap::from([(
                             config_key.to_string(),
                             ConfigValue::try_from(&bulk_data[1])?,
@@ -239,15 +243,16 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// If successful, will return the new [`SyncGraph`] object.
-    pub fn copy_graph<T: ToString>(
+    pub fn copy_graph<T: ToString, Z: ToString>(
         &self,
         graph_to_clone: T,
-        new_graph_name: T,
+        new_graph_name: Z,
     ) -> Result<SyncGraph> {
         self.borrow_connection()?.send_command(
             Some(graph_to_clone.to_string()),
             "GRAPH.COPY",
             None,
+            Some(&[new_graph_name.to_string()]),
         )?;
         Ok(self.open_graph(new_graph_name.to_string()))
     }
@@ -255,10 +260,14 @@ impl FalkorSyncClient {
 
 #[cfg(test)]
 mod tests {
-    use crate::connection::blocking::BorrowedSyncConnection;
-    use crate::FalkorClientBuilder;
-    use std::sync::mpsc::TryRecvError;
+    use crate::test_utils::TestGraphHandle;
+    use crate::{
+        connection::blocking::BorrowedSyncConnection, test_utils::create_test_client, ConfigValue,
+        FalkorClientBuilder,
+    };
+    use std::{mem, sync::mpsc::TryRecvError, thread};
 
+    #[test]
     fn test_borrow_connection() {
         let client = FalkorClientBuilder::new()
             .with_num_connections(6)
@@ -266,7 +275,7 @@ mod tests {
             .expect("Could not create client for this test");
 
         // Client was created with 6 connections
-        let conn_vec: Vec<Result<BorrowedSyncConnection, anyhow::Error>> = (0..6)
+        let _conn_vec: Vec<Result<BorrowedSyncConnection, anyhow::Error>> = (0..6)
             .into_iter()
             .map(|_| {
                 let conn = client.borrow_connection();
@@ -282,5 +291,113 @@ mod tests {
             return;
         }
         assert!(false);
+    }
+
+    #[test]
+    fn test_open_graph_and_query() {
+        let client = create_test_client();
+
+        let graph = client.open_graph("imdb");
+        assert_eq!(graph.graph_name(), "imdb".to_string());
+
+        let res = graph
+            .query("MATCH (a:actor) return a".to_string(), None)
+            .expect("Could not get actors from unmodified graph");
+
+        assert_eq!(res.result_set.len(), 1317);
+    }
+
+    #[test]
+    fn test_copy_graph() {
+        let client = create_test_client();
+
+        client.open_graph("imdb_ro_copy").delete().ok();
+
+        let graph = client.copy_graph("imdb", "imdb_ro_copy");
+        assert!(graph.is_ok());
+
+        let graph = TestGraphHandle {
+            inner: graph.unwrap(),
+        };
+
+        let original_graph = client.open_graph("imdb");
+
+        assert_eq!(
+            graph
+                .inner
+                .query("MATCH (a:actor) RETURN a".to_string(), None)
+                .expect("Could not get actors from unmodified graph")
+                .result_set,
+            original_graph
+                .query("MATCH (a:actor) RETURN a".to_string(), None)
+                .expect("Could not get actors from unmodified graph")
+                .result_set
+        )
+    }
+
+    #[test]
+    fn test_get_config() {
+        let client = create_test_client();
+
+        let config = client
+            .config_get("QUERY_MEM_CAPACITY")
+            .expect("Could not get configuration");
+
+        assert_eq!(config.len(), 1);
+        assert!(config.contains_key("QUERY_MEM_CAPACITY"));
+        assert_eq!(
+            mem::discriminant(config.get("QUERY_MEM_CAPACITY").unwrap()),
+            mem::discriminant(&ConfigValue::Int64(0))
+        );
+    }
+
+    #[test]
+    fn test_get_config_all() {
+        let client = create_test_client();
+        let configuration = client.config_get("*").expect("Could not get configuration");
+        assert_eq!(
+            configuration.get("THREAD_COUNT").cloned().unwrap(),
+            ConfigValue::Int64(thread::available_parallelism().unwrap().get() as i64)
+        );
+    }
+
+    #[test]
+    fn test_set_config() {
+        let client = create_test_client();
+
+        let config = client
+            .config_get("DELTA_MAX_PENDING_CHANGES")
+            .expect("Could not get configuration");
+
+        let current_val = config
+            .get("DELTA_MAX_PENDING_CHANGES")
+            .cloned()
+            .unwrap()
+            .as_i64()
+            .unwrap();
+
+        let desired_val = if current_val == 10000 { 50000 } else { 10000 };
+
+        client
+            .config_set("DELTA_MAX_PENDING_CHANGES", desired_val)
+            .expect("Could not set config value");
+
+        let new_config = client
+            .config_get("DELTA_MAX_PENDING_CHANGES")
+            .expect("Could not get configuration");
+
+        assert_eq!(
+            new_config
+                .get("DELTA_MAX_PENDING_CHANGES")
+                .cloned()
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            desired_val
+        );
+
+        client
+            .config_set("DELTA_MAX_PENDING_CHANGES", current_val)
+            .ok();
     }
 }

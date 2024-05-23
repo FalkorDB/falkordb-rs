@@ -65,7 +65,7 @@ impl TryFrom<&String> for EntityType {
 }
 
 /// A node in the graph, containing a unique id, various labels describing it, and its own property.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     /// The internal entity ID
     pub entity_id: i64,
@@ -149,7 +149,7 @@ impl crate::FalkorAsyncParseable for Node {
 }
 
 /// An edge in the graph, representing a relationship between two [`Node`]s.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Edge {
     /// The internal entity ID
     pub entity_id: i64,

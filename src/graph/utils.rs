@@ -3,7 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Not};
 
 pub(crate) fn generate_procedure_call<P: ToString>(
     procedure: P,
@@ -49,14 +49,15 @@ pub(crate) fn construct_query<Q: ToString, T: ToString, Z: ToString>(
     query_str: Q,
     params: Option<&HashMap<T, Z>>,
 ) -> String {
-    params
-        .map(|params| {
-            params
+    format!(
+        "{}{}",
+        params
+            .and_then(|params| params.is_empty().not().then(|| params
                 .iter()
                 .fold("CYPHER ".to_string(), |acc, (key, val)| {
-                    acc + format!("{}={}", key.to_string(), val.to_string()).as_str()
-                })
-        })
-        .unwrap_or_default()
-        + query_str.to_string().as_str()
+                    format!("{} {}={}", acc, key.to_string(), val.to_string())
+                })))
+            .unwrap_or_default(),
+        query_str.to_string()
+    )
 }

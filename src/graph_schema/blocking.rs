@@ -103,7 +103,8 @@ impl SyncGraphSchema {
             .send_command(
                 Some(self.graph_name.clone()),
                 "GRAPH.QUERY",
-                Some(format!("CALL {command}()")),
+                None,
+                Some(&[format!("CALL {command}()")]),
             )?
             .into_vec()?
             .try_into()

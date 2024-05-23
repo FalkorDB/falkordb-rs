@@ -82,6 +82,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "redis")]
+    #[allow(irrefutable_let_patterns)]
     fn test_redis_fallback_provider() {
         if let FalkorConnectionInfo::Redis(redis) =
             FalkorConnectionInfo::fallback_provider("127.0.0.1:6379".to_string()).unwrap()

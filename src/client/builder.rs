@@ -134,11 +134,12 @@ mod tests {
 
     #[test]
     #[cfg(feature = "redis")]
+    #[allow(irrefutable_let_patterns)]
     fn test_sync_builder_redis_fallback() {
         let client = FalkorClientBuilder::new().build();
         assert!(client.is_ok());
 
-        if let FalkorConnectionInfo::Redis(redis_info) = client.unwrap().connection_info {
+        if let FalkorConnectionInfo::Redis(redis_info) = client.unwrap()._connection_info {
             assert_eq!(redis_info.addr.to_string().as_str(), "127.0.0.1:6379");
             return;
         }
@@ -158,14 +159,10 @@ mod tests {
     fn test_invalid_connection_pool_size() {
         // Connection pool size must be between 0 and 32
 
-        assert!(FalkorClientBuilder::new()
-            .with_num_connections(0)
-            .build()
-            .is_err());
+        let zero = FalkorClientBuilder::new().with_num_connections(0).build();
 
-        assert!(FalkorClientBuilder::new()
-            .with_num_connections(36)
-            .build()
-            .is_err());
+        let too_many = FalkorClientBuilder::new().with_num_connections(36).build();
+
+        assert!(zero.is_err() && too_many.is_err());
     }
 }

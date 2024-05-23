@@ -7,7 +7,7 @@ use crate::{FalkorDBError, FalkorValue};
 use anyhow::Result;
 
 /// A slowlog entry, representing one of the N slowest queries in the current log
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SlowlogEntry {
     /// At which time was this query received
     pub timestamp: i64,

@@ -12,6 +12,15 @@ pub enum ConfigValue {
     Int64(i64),
 }
 
+impl ConfigValue {
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            ConfigValue::String(_) => None,
+            ConfigValue::Int64(i64) => Some(*i64),
+        }
+    }
+}
+
 impl Display for ConfigValue {
     fn fmt(
         &self,

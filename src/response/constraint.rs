@@ -102,7 +102,7 @@ impl TryFrom<&String> for ConstraintStatus {
 }
 
 /// A constraint applied on all 'properties' of the graph entity 'label' in this graph
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Constraint {
     /// Is this constraint applies the 'unique' modifier or the 'mandatory' modifier
     pub constraint_type: ConstraintType,

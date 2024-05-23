@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use crate::value::utils_async::parse_type_async;
 
 /// A struct returned by the various queries, containing the result set, header, and stats
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct QueryResult {
     /// The statistics for this query, such as how long it took
     pub stats: Vec<String>,

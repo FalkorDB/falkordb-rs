@@ -46,3 +46,36 @@ pub use {
     graph::asynchronous::AsyncGraph, graph_schema::asynchronous::AsyncGraphSchema,
     parser::FalkorAsyncParseable,
 };
+
+#[cfg(test)]
+pub(crate) mod test_utils {
+    use crate::{FalkorClientBuilder, FalkorSyncClient, SyncGraph};
+
+    pub(crate) struct TestGraphHandle {
+        pub(crate) inner: SyncGraph,
+    }
+
+    impl Drop for TestGraphHandle {
+        fn drop(&mut self) {
+            self.inner.delete().ok();
+        }
+    }
+
+    pub(crate) fn create_test_client() -> FalkorSyncClient {
+        FalkorClientBuilder::new()
+            .build()
+            .expect("Could not create client")
+    }
+
+    pub(crate) fn open_test_graph(graph_name: &str) -> TestGraphHandle {
+        let client = create_test_client();
+
+        client.open_graph(graph_name).delete().ok();
+
+        TestGraphHandle {
+            inner: client
+                .copy_graph("imdb", graph_name)
+                .expect("Could not copy graph for test"),
+        }
+    }
+}

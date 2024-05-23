@@ -6,7 +6,7 @@
 use crate::{FalkorDBError, FalkorValue};
 
 /// An execution plan, storing both the specific string details for each step, and also a formatted plaintext string for pretty display
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionPlan {
     text: String,
     steps: Vec<String>,

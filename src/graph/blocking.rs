@@ -4,14 +4,18 @@
  */
 
 use super::utils::{construct_query, generate_procedure_call};
+use crate::connection::blocking::FalkorSyncConnection;
 use crate::{
-    client::blocking::FalkorSyncClientInner, connection::blocking::FalkorSyncConnection,
-    Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorParsable,
-    FalkorValue, QueryResult, SlowlogEntry, SyncGraphSchema,
+    client::blocking::FalkorSyncClientInner, Constraint, ConstraintType, EntityType, ExecutionPlan,
+    FalkorDBError, FalkorParsable, FalkorValue, QueryResult, SlowlogEntry, SyncGraphSchema,
 };
 use anyhow::Result;
-use redis::ConnectionLike;
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::collections::HashMap;
+use std::fmt::Display;
+use std::{
+    fmt::{Debug, Formatter},
+    sync::Arc,
+};
 
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
 ///
@@ -27,6 +31,17 @@ pub struct SyncGraph {
     pub graph_schema: SyncGraphSchema,
 }
 
+impl Debug for SyncGraph {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("SyncGraph")
+            .field("client", &"<FalkorClient>")
+            .finish()
+    }
+}
+
 impl SyncGraph {
     /// Returns the name of the graph for which this API performs operations.
     ///
@@ -39,16 +54,17 @@ impl SyncGraph {
     fn send_command(
         &self,
         command: &str,
-        params: Option<String>,
+        subcommand: Option<&str>,
+        params: Option<&[String]>,
     ) -> Result<FalkorValue> {
         let mut conn = self.client.borrow_connection()?;
-        conn.send_command(Some(self.graph_name.clone()), command, params)
+        conn.send_command(Some(self.graph_name.clone()), command, subcommand, params)
     }
 
     /// Deletes the graph stored in the database, and drop all the schema caches.
     /// NOTE: This still maintains the graph API, operations are still viable.
     pub fn delete(&self) -> Result<()> {
-        self.send_command("GRAPH.DELETE", None)?;
+        self.send_command("GRAPH.DELETE", None, None)?;
         self.graph_schema.clear();
         Ok(())
     }
@@ -58,7 +74,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`Vec`] of [`SlowlogEntry`], providing information about each query.
     pub fn slowlog(&self) -> Result<Vec<SlowlogEntry>> {
-        let res = self.send_command("GRAPH.SLOWLOG", None)?.into_vec()?;
+        let res = self.send_command("GRAPH.SLOWLOG", None, None)?.into_vec()?;
 
         if res.is_empty() {
             return Ok(vec![]);
@@ -79,7 +95,7 @@ impl SyncGraph {
 
     /// Resets the slowlog, all query time data will be cleared.
     pub fn slowlog_reset(&self) -> Result<()> {
-        self.send_command("GRAPH.SLOWLOG", Some("RESET".to_string()))?;
+        self.send_command("GRAPH.SLOWLOG", None, Some(&["RESET".to_string()]))?;
         Ok(())
     }
 
@@ -100,7 +116,7 @@ impl SyncGraph {
     ) -> Result<ExecutionPlan> {
         let query = construct_query(query_string, params);
 
-        ExecutionPlan::try_from(self.send_command("GRAPH.PROFILE", Some(query))?)
+        ExecutionPlan::try_from(self.send_command("GRAPH.PROFILE", None, Some(&[query]))?)
             .map_err(Into::into)
     }
 
@@ -135,7 +151,7 @@ impl SyncGraph {
         params: Option<&HashMap<T, Z>>,
     ) -> Result<ExecutionPlan> {
         let query = construct_query(query_string, params);
-        ExecutionPlan::try_from(self.send_command("GRAPH.EXPLAIN", Some(query))?)
+        ExecutionPlan::try_from(self.send_command("GRAPH.EXPLAIN", None, Some(&[query]))?)
             .map_err(Into::into)
     }
 
@@ -159,7 +175,7 @@ impl SyncGraph {
         command: &str,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
-        timeout: Option<u64>,
+        timeout: Option<i64>,
     ) -> Result<P> {
         let query = construct_query(query_string, params);
 
@@ -167,6 +183,7 @@ impl SyncGraph {
         let falkor_result = match conn.as_inner()? {
             #[cfg(feature = "redis")]
             FalkorSyncConnection::Redis(redis_conn) => {
+                use redis::ConnectionLike as _;
                 use redis::FromRedisValue as _;
                 let redis_val = redis_conn.req_command(
                     redis::cmd(command)
@@ -190,10 +207,10 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub fn query<Q: ToString>(
+    pub fn query<Q: Display>(
         &self,
         query_string: Q,
-        timeout: Option<u64>,
+        timeout: Option<i64>,
     ) -> Result<QueryResult> {
         self.query_inner::<Q, &str, &str, QueryResult>("GRAPH.QUERY", query_string, None, timeout)
     }
@@ -208,10 +225,10 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub fn query_with_params<Q: ToString, T: ToString, Z: ToString>(
+    pub fn query_with_params<Q: Display, T: Display, Z: Display>(
         &self,
         query_string: Q,
-        timeout: Option<u64>,
+        timeout: Option<i64>,
         params: &HashMap<T, Z>,
     ) -> Result<QueryResult> {
         self.query_inner("GRAPH.QUERY", query_string, Some(params), timeout)
@@ -226,10 +243,10 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub fn query_readonly<Q: ToString>(
+    pub fn query_readonly<Q: Display>(
         &self,
         query_string: Q,
-        timeout: Option<u64>,
+        timeout: Option<i64>,
     ) -> Result<QueryResult> {
         self.query_inner::<Q, &str, &str, QueryResult>(
             "GRAPH.QUERY_RO",
@@ -253,10 +270,10 @@ impl SyncGraph {
     pub fn query_readonly_with_params<Q: ToString, T: ToString, Z: ToString>(
         &self,
         query_string: Q,
-        timeout: Option<u64>,
-        params: &HashMap<T, Z>,
+        timeout: Option<i64>,
+        params: Option<&HashMap<T, Z>>,
     ) -> Result<QueryResult> {
-        self.query_inner("GRAPH.QUERY_RO", query_string, Some(params), timeout)
+        self.query_inner("GRAPH.QUERY_RO", query_string, params, timeout)
     }
 
     /// Run a query which calls a procedure on the graph, read-only, or otherwise.
@@ -278,7 +295,7 @@ impl SyncGraph {
         args: Option<&[String]>,
         yields: Option<&[String]>,
         read_only: bool,
-        timeout: Option<u64>,
+        timeout: Option<i64>,
     ) -> Result<P> {
         let (query_string, params) = generate_procedure_call(procedure, args, yields);
 
@@ -329,29 +346,70 @@ impl SyncGraph {
         Ok(constraints_vec)
     }
 
-    /// Creates a new constraint for this graph
+    /// Creates a new constraint for this graph, making the provided properties mandatory
     ///
     /// # Arguments
-    /// * `constraint_type`: Which constraint to apply.
     /// * `entity_type`: Whether to apply this constraint on nodes or relationships.
     /// * `label`: Entities with this label will have this constraint applied to them.
     /// * `properties`: A slice of the names of properties this constraint will apply to.
-    pub fn create_constraint<L: ToString, P: ToString + Debug>(
+    pub fn create_mandatory_constraint<L: ToString, P: ToString>(
         &self,
-        constraint_type: ConstraintType,
         entity_type: EntityType,
         label: L,
         properties: &[P],
     ) -> Result<FalkorValue> {
-        self.send_command(
-            "GRAPH.CONSTRAINT",
-            Some(format!(
-                "CREATE {constraint_type} {entity_type} {} {} {:?}",
+        let mut params = Vec::with_capacity(5 + properties.len());
+        params.extend([
+            "MANDATORY".to_string(),
+            entity_type.to_string(),
+            label.to_string(),
+            "PROPERTIES".to_string(),
+            properties.len().to_string(),
+        ]);
+        params.extend(properties.iter().map(|property| property.to_string()));
+
+        self.send_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))
+    }
+
+    /// Creates a new constraint for this graph, making the provided properties unique
+    ///
+    /// # Arguments
+    /// * `entity_type`: Whether to apply this constraint on nodes or relationships.
+    /// * `label`: Entities with this label will have this constraint applied to them.
+    /// * `properties`: A slice of the names of properties this constraint will apply to.
+    pub fn create_unique_constraint<L: ToString, P: ToString>(
+        &self,
+        entity_type: EntityType,
+        label: L,
+        properties: &[P],
+    ) -> Result<FalkorValue> {
+        // Create index from these properties
+        let properties_string = properties
+            .iter()
+            .map(|element| format!("l.{}", element.to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.query(
+            format!(
+                "CREATE INDEX FOR (l:{}) ON ({})",
                 label.to_string(),
-                properties.len(),
-                properties
-            )),
-        )
+                properties_string
+            ),
+            None,
+        )?;
+
+        let mut params: Vec<String> = Vec::with_capacity(5 + properties.len());
+        params.extend([
+            "UNIQUE".to_string(),
+            entity_type.to_string(),
+            label.to_string(),
+            "PROPERTIES".to_string(),
+            properties.len().to_string(),
+        ]);
+        params.extend(properties.into_iter().map(|property| property.to_string()));
+
+        // create constraint using index
+        self.send_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))
     }
 
     /// Drop an existing constraint from the graph
@@ -361,41 +419,68 @@ impl SyncGraph {
     /// * `entity_type`: Whether this constraint exists on nodes or relationships.
     /// * `label`: Remove the constraint from entities with this label.
     /// * `properties`: A slice of the names of properties to remove the constraint from.
-    pub fn drop_constraint<L: ToString, P: ToString + Debug>(
+    pub fn drop_constraint<L: ToString, P: ToString>(
         &self,
         constraint_type: ConstraintType,
         entity_type: EntityType,
         label: L,
         properties: &[P],
     ) -> Result<FalkorValue> {
-        self.send_command(
-            "GRAPH.CONSTRAINT",
-            Some(format!(
-                "DROP {constraint_type} {entity_type} {} {} {:?}",
-                label.to_string(),
-                properties.len(),
-                properties
-            )),
-        )
+        let mut params = Vec::with_capacity(5 + properties.len());
+        params.extend([
+            constraint_type.to_string(),
+            entity_type.to_string(),
+            label.to_string(),
+            "PROPERTIES".to_string(),
+            properties.len().to_string(),
+        ]);
+        params.extend(properties.iter().map(|property| property.to_string()));
+
+        self.send_command("GRAPH.CONSTRAINT", Some("DROP"), Some(params.as_slice()))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{ConstraintType, EntityType, FalkorClientBuilder};
+    use crate::{test_utils::open_test_graph, ConstraintType, EntityType};
 
     #[test]
-    fn test_create_constraint() {
-        let client = FalkorClientBuilder::new()
-            .with_num_connections(4)
-            .build()
-            .expect("Could not create client");
+    fn test_create_drop_mandatory_constraint() {
+        let graph = open_test_graph("test_mandatory_constraint");
 
-        let graph = client.open_graph("imdb");
-        let res = graph
-            .create_constraint(ConstraintType::Unique, EntityType::Edge, "act", &["hello"])
+        graph
+            .inner
+            .create_mandatory_constraint(EntityType::Edge, "act", &["hello", "goodbye"])
             .expect("Could not create constraint");
 
-        panic!("{res:?}");
+        graph
+            .inner
+            .drop_constraint(
+                ConstraintType::Mandatory,
+                EntityType::Edge,
+                "act",
+                &["hello", "goodbye"],
+            )
+            .expect("Could not drop constraint");
+    }
+
+    #[test]
+    fn test_create_drop_unique_constraint() {
+        let graph = open_test_graph("test_unique_constraint");
+
+        graph
+            .inner
+            .create_unique_constraint(EntityType::Node, "actor", &["first_name", "last_name"])
+            .expect("Could not create constraint");
+
+        graph
+            .inner
+            .drop_constraint(
+                ConstraintType::Unique,
+                EntityType::Node,
+                "actor",
+                &["first_name", "last_name"],
+            )
+            .expect("Could not drop constraint");
     }
 }

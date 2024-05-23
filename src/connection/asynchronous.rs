@@ -19,6 +19,7 @@ impl FalkorAsyncConnection {
         &mut self,
         graph_name: Option<String>,
         command: &str,
+        subcommand: Option<&str>,
         params: Option<String>,
     ) -> Result<FalkorValue> {
         Ok(match self {
@@ -26,7 +27,12 @@ impl FalkorAsyncConnection {
             FalkorAsyncConnection::Redis(redis_conn) => {
                 redis::FromRedisValue::from_owned_redis_value(
                     redis_conn
-                        .send_packed_command(redis::cmd(command).arg(graph_name).arg(params))
+                        .send_packed_command(
+                            redis::cmd(command)
+                                .arg(subcommand)
+                                .arg(graph_name)
+                                .arg(params),
+                        )
                         .await?,
                 )?
             }

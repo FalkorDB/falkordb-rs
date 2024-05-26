@@ -51,10 +51,16 @@ pub enum FalkorDBError {
     ParsingTypeMarkerTypeMismatch,
     #[error("Both key id and type marker were not of type i64")]
     ParsingKTVTypes,
+    #[error("Field missing or mismatched while parsing index")]
+    ParsingIndex,
     #[error("Attempting to parse an FArray into a struct, but the array doesn't have the expected element count")]
     ParsingArrayToStructElementCount,
     #[error("Invalid constraint type, expected 'UNIQUE' or 'MANDATORY'")]
     ConstraintType,
     #[error("Invalid constraint status, expected 'OPERATIONAL', 'UNDER CONSTRUCTION' or 'FAILED'")]
     ConstraintStatus,
+    #[error("Invalid Index status, expected 'OPERATIONAL' or 'UNDER CONSTRUCTION'")]
+    IndexStatus,
+    #[error("Invalid Index field type, expected 'RANGE', 'VECTOR' or 'FULLTEXT'")]
+    IndexFieldType,
 }

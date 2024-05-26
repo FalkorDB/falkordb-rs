@@ -28,6 +28,7 @@ pub use parser::FalkorParsable;
 pub use response::{
     constraint::{Constraint, ConstraintStatus, ConstraintType},
     execution_plan::ExecutionPlan,
+    index::{FalkorIndex, IndexFieldType, IndexStatus},
     query_result::QueryResult,
     slowlog_entry::SlowlogEntry,
     ResponseVariant,

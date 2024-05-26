@@ -149,7 +149,7 @@ impl crate::FalkorAsyncParseable for Node {
 }
 
 /// An edge in the graph, representing a relationship between two [`Node`]s.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Edge {
     /// The internal entity ID
     pub entity_id: i64,

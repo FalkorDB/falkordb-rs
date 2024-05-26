@@ -22,10 +22,8 @@ pub struct BorrowedSyncConnection {
 }
 
 impl BorrowedSyncConnection {
-    pub(crate) fn as_inner(&mut self) -> Result<&mut FalkorSyncConnection> {
-        self.conn
-            .as_mut()
-            .ok_or(FalkorDBError::EmptyConnection.into())
+    pub(crate) fn as_inner(&mut self) -> Result<&mut FalkorSyncConnection, FalkorDBError> {
+        self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)
     }
 
     pub(crate) fn send_command(

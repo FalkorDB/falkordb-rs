@@ -5,10 +5,12 @@
 
 use crate::{client::FalkorClientProvider, FalkorConnectionInfo, FalkorDBError, FalkorSyncClient};
 use anyhow::Result;
+use std::time::Duration;
 
 /// A Builder-pattern implementation struct for creating a new Falkor client, sync or async.
 pub struct FalkorClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
+    timeout: Option<Duration>,
     num_connections: u8,
 }
 
@@ -47,6 +49,23 @@ impl<const R: char> FalkorClientBuilder<R> {
             ..self
         }
     }
+
+    /// Specify a timeout duration for requests and connections.
+    ///
+    /// # Arguments
+    /// * `timeout`: a [`Duration`], after which a timeout error will be returned from the connection.
+    ///
+    /// # Returns
+    /// The consumed and modified self.
+    pub fn with_timeout(
+        self,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            timeout: Some(timeout),
+            ..self
+        }
+    }
 }
 
 fn get_client<T: TryInto<FalkorConnectionInfo>>(connection_info: T) -> Result<FalkorClientProvider>
@@ -71,6 +90,7 @@ impl FalkorClientBuilder<'S'> {
     pub fn new() -> Self {
         FalkorClientBuilder {
             connection_info: None,
+            timeout: None,
             num_connections: 4,
         }
     }
@@ -92,6 +112,7 @@ impl FalkorClientBuilder<'S'> {
             get_client(connection_info.clone())?,
             connection_info,
             self.num_connections,
+            self.timeout,
         )
     }
 }
@@ -102,6 +123,7 @@ impl FalkorClientBuilder<'A'> {
         FalkorClientBuilder {
             connection_info: None,
             num_connections: 4,
+            timeout: None,
         }
     }
 
@@ -118,7 +140,7 @@ impl FalkorClientBuilder<'A'> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{FalkorClientBuilder, FalkorConnectionInfo};
+    use super::*;
 
     #[test]
     fn test_sync_builder() {
@@ -139,12 +161,8 @@ mod tests {
         let client = FalkorClientBuilder::new().build();
         assert!(client.is_ok());
 
-        if let FalkorConnectionInfo::Redis(redis_info) = client.unwrap()._connection_info {
-            assert_eq!(redis_info.addr.to_string().as_str(), "127.0.0.1:6379");
-            return;
-        }
-
-        assert!(false);
+        let FalkorConnectionInfo::Redis(redis_info) = client.unwrap()._connection_info;
+        assert_eq!(redis_info.addr.to_string().as_str(), "127.0.0.1:6379");
     }
 
     #[test]
@@ -164,5 +182,20 @@ mod tests {
         let too_many = FalkorClientBuilder::new().with_num_connections(36).build();
 
         assert!(zero.is_err() && too_many.is_err());
+    }
+
+    #[test]
+    fn test_timeout() {
+        {
+            let client = FalkorClientBuilder::new()
+                .with_timeout(Duration::from_millis(100))
+                .build();
+            assert!(client.is_ok());
+        }
+
+        let impossible_client = FalkorClientBuilder::new()
+            .with_timeout(Duration::from_nanos(10))
+            .build();
+        assert!(impossible_client.is_err());
     }
 }

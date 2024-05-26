@@ -5,11 +5,13 @@
 
 use constraint::Constraint;
 use execution_plan::ExecutionPlan;
+use index::FalkorIndex;
 use query_result::QueryResult;
 use slowlog_entry::SlowlogEntry;
 
 pub(crate) mod constraint;
 pub(crate) mod execution_plan;
+pub(crate) mod index;
 pub(crate) mod query_result;
 pub(crate) mod slowlog_entry;
 
@@ -21,4 +23,5 @@ pub enum ResponseVariant {
     QueryResult(QueryResult),
     SlowlogEntry(SlowlogEntry),
     Constraints(Vec<Constraint>),
+    Indices(Vec<FalkorIndex>),
 }

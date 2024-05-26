@@ -135,7 +135,7 @@ impl FalkorParsable for Constraint {
         let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = parsed_values.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let constraint_type = constraint_type_raw.into_string()?.try_into()?;
-        let label = label_raw.into_string()?;
+        let label = label_raw.try_into()?;
         let entity_type = entity_type_raw.into_string()?.try_into()?;
         let status = status_raw.into_string()?.try_into()?;
 

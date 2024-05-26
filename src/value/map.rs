@@ -102,13 +102,30 @@ impl FalkorParsable for HashMap<String, FalkorValue> {
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         let val_vec = value.into_vec()?;
+        if val_vec.len() % 2 != 0 {
+            Err(FalkorDBError::ParsingFMap)?;
+        }
 
-        let mut new_map = HashMap::with_capacity(val_vec.len());
-        for val in val_vec {
-            let fktv = FKeyTypeVal::try_from(val)?;
+        let mut new_map = HashMap::with_capacity(val_vec.len() / 2);
+        for pair in val_vec.chunks_exact(2) {
+            let [key, val]: [FalkorValue; 2] = pair
+                .to_vec()
+                .try_into()
+                .map_err(|_| FalkorDBError::ParsingFMap)?;
+
+            let [type_marker, val]: [FalkorValue; 2] = val
+                .into_vec()?
+                .try_into()
+                .map_err(|_| FalkorDBError::ParsingFMap)?;
+
             new_map.insert(
-                fktv.key.to_string(),
-                parse_type(fktv.type_marker, fktv.val, graph_schema, conn)?,
+                key.into_string()?,
+                parse_type(
+                    type_marker.to_i64().ok_or(FalkorDBError::ParsingKTVTypes)?,
+                    val,
+                    graph_schema,
+                    conn,
+                )?,
             );
         }
 

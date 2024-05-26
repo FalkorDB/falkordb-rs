@@ -110,6 +110,6 @@ impl SyncGraphSchema {
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-        update_map(write_lock.deref_mut(), keys, id_hashset)
+        Ok(update_map(write_lock.deref_mut(), keys, id_hashset)?)
     }
 }

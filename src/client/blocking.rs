@@ -10,6 +10,8 @@ use crate::{
 };
 use anyhow::Result;
 use parking_lot::Mutex;
+use std::fmt::{Debug, Formatter};
+use std::time::Duration;
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc},
@@ -48,15 +50,28 @@ pub struct FalkorSyncClient {
     pub(crate) _connection_info: FalkorConnectionInfo,
 }
 
+impl Debug for FalkorSyncClient {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("FalkorSyncClient")
+            .field("inner", &"<InnerClient>")
+            .field("connection_info", &self._connection_info)
+            .finish()
+    }
+}
+
 impl FalkorSyncClient {
     pub(crate) fn create(
         client: FalkorClientProvider,
         connection_info: FalkorConnectionInfo,
         num_connections: u8,
+        timeout: Option<Duration>,
     ) -> Result<Self> {
         let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(num_connections as usize);
         for _ in 0..num_connections {
-            connection_pool_tx.send(client.get_connection(None)?)?;
+            connection_pool_tx.send(client.get_connection(timeout)?)?;
         }
 
         Ok(Self {
@@ -260,9 +275,9 @@ impl FalkorSyncClient {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::TestGraphHandle;
+    use super::*;
     use crate::{
-        connection::blocking::BorrowedSyncConnection, test_utils::create_test_client, ConfigValue,
+        test_utils::{create_test_client, TestGraphHandle},
         FalkorClientBuilder,
     };
     use std::{mem, sync::mpsc::TryRecvError, thread};
@@ -291,6 +306,16 @@ mod tests {
             return;
         }
         assert!(false);
+    }
+
+    #[test]
+    fn test_list_graphs() {
+        let client = create_test_client();
+        let res = client.list_graphs();
+        assert!(res.is_ok());
+
+        let graphs = res.unwrap();
+        assert_eq!(graphs[0], "imdb");
     }
 
     #[test]

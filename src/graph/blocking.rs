@@ -4,16 +4,15 @@
  */
 
 use super::utils::{construct_query, generate_procedure_call};
-use crate::connection::blocking::FalkorSyncConnection;
 use crate::{
-    client::blocking::FalkorSyncClientInner, Constraint, ConstraintType, EntityType, ExecutionPlan,
-    FalkorDBError, FalkorParsable, FalkorValue, QueryResult, SlowlogEntry, SyncGraphSchema,
+    client::blocking::FalkorSyncClientInner, connection::blocking::FalkorSyncConnection,
+    Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorIndex,
+    FalkorParsable, FalkorValue, IndexFieldType, QueryResult, SlowlogEntry, SyncGraphSchema,
 };
 use anyhow::Result;
-use std::collections::HashMap;
-use std::fmt::Display;
 use std::{
-    fmt::{Debug, Formatter},
+    collections::HashMap,
+    fmt::{Debug, Display, Formatter},
     sync::Arc,
 };
 
@@ -292,8 +291,8 @@ impl SyncGraph {
     pub fn call_procedure<C: ToString, P: FalkorParsable>(
         &self,
         procedure: C,
-        args: Option<&[String]>,
-        yields: Option<&[String]>,
+        args: Option<&[&str]>,
+        yields: Option<&[&str]>,
         read_only: bool,
         timeout: Option<i64>,
     ) -> Result<P> {
@@ -311,17 +310,98 @@ impl SyncGraph {
         )
     }
 
-    /// Calls the DB.INDICES procedure on the graph
-    /// TODO: <What does this actually do?>
-    pub fn list_indices(&self) -> Result<FalkorValue> {
-        let query_res = self
-            .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, true, None)?
-            .into_vec()?;
+    /// Calls the DB.INDICES procedure on the graph, returning all the indexing methods currently used
+    ///
+    /// # Returns
+    /// A [`Vec`] of [`Index`]
+    pub fn list_indices(&self) -> Result<Vec<FalkorIndex>> {
+        let mut conn = self.client.borrow_connection()?;
+        let [_, indices, _]: [FalkorValue; 3] = self
+            .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, false, None)?
+            .into_vec()?
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-        for item in query_res {
-            log::info!("{item:?}");
+        let indices = indices.into_vec()?;
+
+        let mut out_vec = Vec::with_capacity(indices.len());
+        for index in indices {
+            out_vec.push(
+                FalkorIndex::from_falkor_value(index, &self.graph_schema, &mut conn)
+                    .expect("Could not parse"),
+            );
         }
-        Ok(FalkorValue::None)
+
+        Ok(out_vec)
+    }
+
+    pub fn create_index<L: ToString, P: ToString>(
+        &self,
+        index_field_type: IndexFieldType,
+        entity_type: EntityType,
+        label: L,
+        properties: &[P],
+    ) -> Result<QueryResult> {
+        // Create index from these properties
+        let properties_string = properties
+            .iter()
+            .map(|element| format!("l.{}", element.to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let pattern = match entity_type {
+            EntityType::Node => format!("(l:{})", label.to_string()),
+            EntityType::Edge => format!("()-[l:{}]->()", label.to_string()),
+        };
+
+        let idx_type = match index_field_type {
+            IndexFieldType::Range => "",
+            IndexFieldType::Vector => "VECTOR",
+            IndexFieldType::Fulltext => "FULLTEXT",
+        }
+        .to_string();
+
+        self.query(
+            format!(
+                "CREATE {idx_type} INDEX FOR {pattern} ON ({})",
+                properties_string
+            ),
+            None,
+        )
+    }
+
+    pub fn drop_index<L: ToString, P: ToString>(
+        &self,
+        index_field_type: IndexFieldType,
+        entity_type: EntityType,
+        label: L,
+        properties: &[P],
+    ) -> Result<QueryResult> {
+        let properties_string = properties
+            .iter()
+            .map(|element| format!("e.{}", element.to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let pattern = match entity_type {
+            EntityType::Node => format!("(e:{})", label.to_string()),
+            EntityType::Edge => format!("()-[e:{}]->()", label.to_string()),
+        };
+
+        let idx_type = match index_field_type {
+            IndexFieldType::Range => "",
+            IndexFieldType::Vector => "VECTOR",
+            IndexFieldType::Fulltext => "FULLTEXT",
+        }
+        .to_string();
+
+        self.query(
+            format!(
+                "DROP {idx_type} INDEX for {pattern} ON ({})",
+                properties_string
+            ),
+            None,
+        )
     }
 
     /// Calls the DB.CONSTRAINTS procedure on the graph, returning an array of the graph's constraints
@@ -381,26 +461,14 @@ impl SyncGraph {
     /// * `entity_type`: Whether to apply this constraint on nodes or relationships.
     /// * `label`: Entities with this label will have this constraint applied to them.
     /// * `properties`: A slice of the names of properties this constraint will apply to.
-    pub fn create_unique_constraint<L: ToString, P: ToString>(
+    pub fn create_unique_constraint<P: ToString>(
         &self,
+        index_field_type: IndexFieldType,
         entity_type: EntityType,
-        label: L,
+        label: String,
         properties: &[P],
     ) -> Result<FalkorValue> {
-        // Create index from these properties
-        let properties_string = properties
-            .iter()
-            .map(|element| format!("l.{}", element.to_string()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        self.query(
-            format!(
-                "CREATE INDEX FOR (l:{}) ON ({})",
-                label.to_string(),
-                properties_string
-            ),
-            None,
-        )?;
+        self.create_index(index_field_type, entity_type, label.as_str(), properties)?;
 
         let mut params: Vec<String> = Vec::with_capacity(5 + properties.len());
         params.extend([
@@ -446,7 +514,55 @@ impl SyncGraph {
 
 #[cfg(test)]
 mod tests {
-    use crate::{test_utils::open_test_graph, ConstraintType, EntityType};
+    use super::*;
+    use crate::test_utils::open_test_graph;
+    use crate::IndexFieldType;
+
+    #[test]
+    fn test_create_drop_index() {
+        let graph = open_test_graph("test_create_drop_index");
+        let res = graph.inner.create_index(
+            IndexFieldType::Fulltext,
+            EntityType::Node,
+            "actor".to_string(),
+            &["Hello"],
+        );
+        assert!(res.is_ok());
+
+        let res = graph.inner.list_indices();
+        assert!(res.is_ok());
+
+        let indices = res.unwrap();
+        assert_eq!(indices.len(), 2);
+
+        let res = graph.inner.drop_index(
+            IndexFieldType::Fulltext,
+            EntityType::Node,
+            "actor".to_string(),
+            &["Hello"],
+        );
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_list_indices() {
+        let graph = open_test_graph("test_list_indices");
+        let res = graph.inner.list_indices();
+        assert!(res.is_ok());
+
+        let indices = res.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].entity_type, EntityType::Node);
+        assert_eq!(indices[0].index_label, "actor".to_string());
+        assert_eq!(indices[0].field_types.len(), 2);
+        assert_eq!(
+            indices[0].field_types,
+            HashMap::from([
+                ("age".to_string(), vec![IndexFieldType::Range]),
+                ("name".to_string(), vec![IndexFieldType::Fulltext])
+            ])
+        );
+    }
 
     #[test]
     fn test_create_drop_mandatory_constraint() {
@@ -474,7 +590,12 @@ mod tests {
 
         graph
             .inner
-            .create_unique_constraint(EntityType::Node, "actor", &["first_name", "last_name"])
+            .create_unique_constraint(
+                IndexFieldType::Fulltext,
+                EntityType::Node,
+                "actor".to_string(),
+                &["first_name", "last_name"],
+            )
             .expect("Could not create constraint");
 
         graph
@@ -494,7 +615,12 @@ mod tests {
 
         graph
             .inner
-            .create_unique_constraint(EntityType::Node, "actor", &["first_name", "last_name"])
+            .create_unique_constraint(
+                IndexFieldType::Fulltext,
+                EntityType::Node,
+                "actor".to_string(),
+                &["first_name", "last_name"],
+            )
             .expect("Could not create constraint");
 
         let constraints = graph

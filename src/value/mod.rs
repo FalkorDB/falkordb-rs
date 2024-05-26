@@ -34,7 +34,6 @@ pub enum FalkorValue {
     Int64(i64),
     F64(f64),
     FPoint(Point),
-    FVector(Vec<f32>),
     FPath(Path),
     None,
 }
@@ -82,6 +81,95 @@ where
     }
 }
 
+impl TryFrom<FalkorValue> for Vec<FalkorValue> {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::FArray(val) => Ok(val),
+            _ => Err(FalkorDBError::ParsingFArray),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for f64 {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::FString(f64_str) => f64_str.parse().map_err(|_| FalkorDBError::ParsingF64),
+            FalkorValue::F64(f64_val) => Ok(f64_val),
+            _ => Err(FalkorDBError::ParsingF64),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for String {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::FString(val) => Ok(val),
+            _ => Err(FalkorDBError::ParsingFString),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for Edge {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::FEdge(edge) => Ok(edge),
+            _ => Err(FalkorDBError::ParsingFEdge),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for Node {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::FNode(node) => Ok(node),
+            _ => Err(FalkorDBError::ParsingFNode),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for Path {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::FPath(path) => Ok(path),
+            _ => Err(FalkorDBError::ParsingFPath),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for HashMap<String, FalkorValue> {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::FMap(map) => Ok(map),
+            _ => Err(FalkorDBError::ParsingFMap),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for Point {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::FPoint(point) => Ok(point),
+            _ => Err(FalkorDBError::ParsingFPoint),
+        }
+    }
+}
+
 impl FalkorParsable for FalkorValue {
     fn from_falkor_value(
         value: FalkorValue,
@@ -103,7 +191,6 @@ impl crate::FalkorAsyncParseable for FalkorValue {
     }
 }
 
-// By-reference conversions
 impl FalkorValue {
     /// Returns a reference to the internal [`Vec`] if this is an FArray variant.
     ///
@@ -181,92 +268,7 @@ impl FalkorValue {
             _ => None,
         }
     }
-}
 
-// Consuming conversions
-// TODO: convert these to TryFrom/TryInto traits?
-impl FalkorValue {
-    /// Consumes this variant and returns the underlying [`Vec`] if this is an FArray variant
-    ///
-    /// # Returns
-    /// The inner [`Vec`]
-    pub fn into_vec(self) -> Result<Vec<Self>, FalkorDBError> {
-        match self {
-            FalkorValue::FArray(val) => Some(val),
-            _ => None,
-        }
-        .ok_or(FalkorDBError::ParsingFArray)
-    }
-
-    /// Consumes this variant and returns the underlying [`String`] if this is an FString variant
-    ///
-    /// # Returns
-    /// The inner [`String`]
-    pub fn into_string(self) -> Result<String, FalkorDBError> {
-        match self {
-            FalkorValue::FString(val) => Ok(val),
-            _ => Err(FalkorDBError::ParsingFString),
-        }
-    }
-
-    /// Consumes this variant and returns the underlying [`Edge`] if this is an FEdge variant
-    ///
-    /// # Returns
-    /// The inner [`Edge`]
-    pub fn into_edge(self) -> Result<Edge, FalkorDBError> {
-        match self {
-            Self::FEdge(edge) => Ok(edge),
-            _ => Err(FalkorDBError::ParsingFEdge),
-        }
-    }
-
-    /// Consumes this variant and returns the underlying [`Node`] if this is an FNode variant
-    ///
-    /// # Returns
-    /// The inner [`Node`]
-    pub fn into_node(self) -> Result<Node, FalkorDBError> {
-        match self {
-            Self::FNode(node) => Ok(node),
-            _ => Err(FalkorDBError::ParsingFNode),
-        }
-    }
-
-    /// Consumes this variant and returns the underlying [`Path`] if this is an FPath variant
-    ///
-    /// # Returns
-    /// The inner [`Path`]
-    pub fn into_path(self) -> Result<Path, FalkorDBError> {
-        match self {
-            Self::FPath(path) => Ok(path),
-            _ => Err(FalkorDBError::ParsingFPath),
-        }
-    }
-
-    /// Consumes this variant and returns the underlying [`HashMap`] if this is an FMap variant
-    ///
-    /// # Returns
-    /// The inner [`HashMap`]
-    pub fn into_map(self) -> Result<HashMap<String, FalkorValue>, FalkorDBError> {
-        match self {
-            FalkorValue::FMap(map) => Ok(map),
-            _ => Err(FalkorDBError::ParsingFMap),
-        }
-    }
-
-    /// Consumes this variant and returns the underlying [`Point`] if this is an FPoint variant
-    ///
-    /// # Returns
-    /// The inner [`Point`]
-    pub fn into_point(self) -> Result<Point, FalkorDBError> {
-        match self {
-            Self::FPoint(point) => Ok(point),
-            _ => Err(FalkorDBError::ParsingFPoint),
-        }
-    }
-}
-
-// For types implementing Copy
-impl FalkorValue {
     /// Returns a Copy of the inner [`i64`] if this is an Int64 variant
     ///
     /// # Returns
@@ -285,6 +287,11 @@ impl FalkorValue {
     pub fn to_bool(&self) -> Option<bool> {
         match self {
             FalkorValue::FBool(val) => Some(*val),
+            FalkorValue::FString(bool_str) => match bool_str.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -299,4 +306,33 @@ impl FalkorValue {
             _ => None,
         }
     }
+
+    /// Consumes itself and returns the inner [`Vec`] if this is an FArray variant
+    ///
+    /// # Returns
+    /// The inner [`Vec`]
+    pub fn into_vec(self) -> Result<Vec<Self>, FalkorDBError> {
+        self.try_into()
+    }
+
+    /// Consumes itself and returns the inner [`String`] if this is an FString variant
+    ///
+    /// # Returns
+    /// The inner [`String`]
+    pub fn into_string(self) -> Result<String, FalkorDBError> {
+        self.try_into()
+    }
+}
+
+pub(crate) fn parse_vec<T: TryFrom<FalkorValue, Error = FalkorDBError>>(
+    value: FalkorValue
+) -> Result<Vec<T>, FalkorDBError> {
+    let val_vec = value.into_vec()?;
+
+    let mut out_vec = Vec::with_capacity(val_vec.len());
+    for element in val_vec {
+        out_vec.push(element.try_into()?);
+    }
+
+    Ok(out_vec)
 }

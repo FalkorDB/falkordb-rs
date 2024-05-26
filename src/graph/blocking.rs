@@ -7,7 +7,7 @@ use super::utils::{construct_query, generate_procedure_call};
 use crate::{
     client::blocking::FalkorSyncClientInner, connection::blocking::FalkorSyncConnection,
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorIndex,
-    FalkorParsable, FalkorValue, IndexFieldType, QueryResult, SlowlogEntry, SyncGraphSchema,
+    FalkorParsable, FalkorValue, IndexType, QueryResult, SlowlogEntry, SyncGraphSchema,
 };
 use anyhow::Result;
 use std::{
@@ -337,7 +337,7 @@ impl SyncGraph {
 
     pub fn create_index<L: ToString, P: ToString>(
         &self,
-        index_field_type: IndexFieldType,
+        index_field_type: IndexType,
         entity_type: EntityType,
         label: L,
         properties: &[P],
@@ -356,9 +356,9 @@ impl SyncGraph {
         };
 
         let idx_type = match index_field_type {
-            IndexFieldType::Range => "",
-            IndexFieldType::Vector => "VECTOR ",
-            IndexFieldType::Fulltext => "FULLTEXT ",
+            IndexType::Range => "",
+            IndexType::Vector => "VECTOR ",
+            IndexType::Fulltext => "FULLTEXT ",
         }
         .to_string();
 
@@ -380,9 +380,13 @@ impl SyncGraph {
         self.query(full_query, None)
     }
 
+    /// Drop an existing index, by specifying its type, entity, label and specific properties
+    ///
+    /// # Arguments
+    /// * `index_field_type`
     pub fn drop_index<L: ToString, P: ToString>(
         &self,
-        index_field_type: IndexFieldType,
+        index_field_type: IndexType,
         entity_type: EntityType,
         label: L,
         properties: &[P],
@@ -399,9 +403,9 @@ impl SyncGraph {
         };
 
         let idx_type = match index_field_type {
-            IndexFieldType::Range => "",
-            IndexFieldType::Vector => "VECTOR",
-            IndexFieldType::Fulltext => "FULLTEXT",
+            IndexType::Range => "",
+            IndexType::Vector => "VECTOR",
+            IndexType::Fulltext => "FULLTEXT",
         }
         .to_string();
 
@@ -478,7 +482,7 @@ impl SyncGraph {
         properties: &[P],
     ) -> Result<FalkorValue> {
         self.create_index(
-            IndexFieldType::Range,
+            IndexType::Range,
             entity_type,
             label.as_str(),
             properties,
@@ -530,13 +534,13 @@ impl SyncGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test_utils::open_test_graph, IndexFieldType};
+    use crate::{test_utils::open_test_graph, IndexType};
 
     #[test]
     fn test_create_drop_index() {
         let graph = open_test_graph("test_create_drop_index");
         let res = graph.inner.create_index(
-            IndexFieldType::Fulltext,
+            IndexType::Fulltext,
             EntityType::Node,
             "actor".to_string(),
             &["Hello"],
@@ -549,13 +553,10 @@ mod tests {
 
         let indices = res.unwrap();
         assert_eq!(indices.len(), 2);
-        assert_eq!(
-            indices[0].field_types["Hello"],
-            vec![IndexFieldType::Fulltext]
-        );
+        assert_eq!(indices[0].field_types["Hello"], vec![IndexType::Fulltext]);
 
         let res = graph.inner.drop_index(
-            IndexFieldType::Fulltext,
+            IndexType::Fulltext,
             EntityType::Node,
             "actor".to_string(),
             &["Hello"],
@@ -577,8 +578,8 @@ mod tests {
         assert_eq!(
             indices[0].field_types,
             HashMap::from([
-                ("age".to_string(), vec![IndexFieldType::Range]),
-                ("name".to_string(), vec![IndexFieldType::Fulltext])
+                ("age".to_string(), vec![IndexType::Range]),
+                ("name".to_string(), vec![IndexType::Fulltext])
             ])
         );
     }

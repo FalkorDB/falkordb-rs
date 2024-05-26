@@ -323,16 +323,3 @@ impl FalkorValue {
         self.try_into()
     }
 }
-
-pub(crate) fn parse_vec<T: TryFrom<FalkorValue, Error = FalkorDBError>>(
-    value: FalkorValue
-) -> Result<Vec<T>, FalkorDBError> {
-    let val_vec = value.into_vec()?;
-
-    let mut out_vec = Vec::with_capacity(val_vec.len());
-    for element in val_vec {
-        out_vec.push(element.try_into()?);
-    }
-
-    Ok(out_vec)
-}

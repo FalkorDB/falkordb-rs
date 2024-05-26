@@ -62,5 +62,5 @@ pub enum FalkorDBError {
     #[error("Invalid Index status, expected 'OPERATIONAL' or 'UNDER CONSTRUCTION'")]
     IndexStatus,
     #[error("Invalid Index field type, expected 'RANGE', 'VECTOR' or 'FULLTEXT'")]
-    IndexFieldType,
+    IndexType,
 }

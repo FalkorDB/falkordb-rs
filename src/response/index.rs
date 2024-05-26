@@ -3,10 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::blocking::BorrowedSyncConnection;
-use crate::value::utils::{parse_type, type_val_from_value};
 use crate::{
-    value::parse_vec, EntityType, FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
+    connection::blocking::BorrowedSyncConnection,
+    value::utils::{parse_type, parse_vec, type_val_from_value},
+    EntityType, FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ pub enum IndexStatus {
 impl TryFrom<&str> for IndexStatus {
     type Error = FalkorDBError;
 
-    fn try_from(value: &str) -> anyhow::Result<Self, Self::Error> {
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         Ok(match value.to_uppercase().as_str() {
             "OPERATIONAL" => Self::Active,
             "UNDER CONSTRUCTION" => Self::Pending,
@@ -35,7 +35,7 @@ impl TryFrom<&str> for IndexStatus {
 impl TryFrom<String> for IndexStatus {
     type Error = FalkorDBError;
 
-    fn try_from(value: String) -> anyhow::Result<Self, Self::Error> {
+    fn try_from(value: String) -> Result<Self, Self::Error> {
         value.as_str().try_into()
     }
 }
@@ -43,14 +43,14 @@ impl TryFrom<String> for IndexStatus {
 impl TryFrom<&String> for IndexStatus {
     type Error = FalkorDBError;
 
-    fn try_from(value: &String) -> anyhow::Result<Self, Self::Error> {
+    fn try_from(value: &String) -> Result<Self, Self::Error> {
         value.as_str().try_into()
     }
 }
 
 /// The type of this indexed field
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum IndexFieldType {
+pub enum IndexType {
     /// This index is a number
     Range,
     /// This index is raw vector data
@@ -59,20 +59,20 @@ pub enum IndexFieldType {
     Fulltext,
 }
 
-impl TryFrom<&str> for IndexFieldType {
+impl TryFrom<&str> for IndexType {
     type Error = FalkorDBError;
 
-    fn try_from(value: &str) -> anyhow::Result<Self, Self::Error> {
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         Ok(match value.to_uppercase().as_str() {
             "RANGE" => Self::Range,
             "VECTOR" => Self::Vector,
             "FULLTEXT" => Self::Fulltext,
-            _ => Err(FalkorDBError::IndexFieldType)?,
+            _ => Err(FalkorDBError::IndexType)?,
         })
     }
 }
 
-impl TryFrom<String> for IndexFieldType {
+impl TryFrom<String> for IndexType {
     type Error = FalkorDBError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -80,7 +80,7 @@ impl TryFrom<String> for IndexFieldType {
     }
 }
 
-impl TryFrom<&String> for IndexFieldType {
+impl TryFrom<&String> for IndexType {
     type Error = FalkorDBError;
 
     fn try_from(value: &String) -> Result<Self, Self::Error> {
@@ -88,9 +88,7 @@ impl TryFrom<&String> for IndexFieldType {
     }
 }
 
-fn parse_types_map(
-    value: FalkorValue
-) -> Result<HashMap<String, Vec<IndexFieldType>>, FalkorDBError> {
+fn parse_types_map(value: FalkorValue) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
     let value: HashMap<String, FalkorValue> = value.try_into()?;
 
     let mut out_map = HashMap::with_capacity(value.len());
@@ -98,7 +96,7 @@ fn parse_types_map(
         let val = val.into_vec()?;
         let mut field_types = Vec::with_capacity(val.len());
         for field_type in val {
-            field_types.push(IndexFieldType::try_from(field_type.into_string()?)?);
+            field_types.push(IndexType::try_from(field_type.into_string()?)?);
         }
 
         out_map.insert(key, field_types);
@@ -113,7 +111,7 @@ pub struct FalkorIndex {
     pub status: IndexStatus,
     pub index_label: String,
     pub fields: Vec<String>,
-    pub field_types: HashMap<String, Vec<IndexFieldType>>,
+    pub field_types: HashMap<String, Vec<IndexType>>,
     pub language: String,
     pub stopwords: Vec<String>,
     pub info: HashMap<String, FalkorValue>,

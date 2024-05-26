@@ -134,7 +134,13 @@ impl FalkorClientBuilder<'A'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        crate::FalkorAsyncClient::create(get_client(connection_info)?).await
+        crate::FalkorAsyncClient::create(
+            get_client(connection_info)?,
+            connection_info,
+            self.num_connections,
+            self.timeout,
+        )
+        .await
     }
 }
 

@@ -20,20 +20,21 @@ impl FalkorAsyncConnection {
         graph_name: Option<String>,
         command: &str,
         subcommand: Option<&str>,
-        params: Option<String>,
+        params: Option<&[String]>,
     ) -> Result<FalkorValue> {
         Ok(match self {
             #[cfg(feature = "redis")]
             FalkorAsyncConnection::Redis(redis_conn) => {
+                let mut cmd = redis::cmd(command);
+                cmd.arg(subcommand);
+                cmd.arg(graph_name);
+                if let Some(params) = params {
+                    for param in params {
+                        cmd.arg(param);
+                    }
+                }
                 redis::FromRedisValue::from_owned_redis_value(
-                    redis_conn
-                        .send_packed_command(
-                            redis::cmd(command)
-                                .arg(subcommand)
-                                .arg(graph_name)
-                                .arg(params),
-                        )
-                        .await?,
+                    redis_conn.send_packed_command(&cmd).await?,
                 )?
             }
         })

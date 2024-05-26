@@ -5,40 +5,99 @@
 
 use crate::{
     client::FalkorClientProvider, AsyncGraph, AsyncGraphSchema, ConfigValue, FalkorAsyncConnection,
-    FalkorDBError,
+    FalkorConnectionInfo, FalkorDBError,
 };
 use anyhow::Result;
-use std::{collections::HashMap, sync::Arc};
+use std::fmt::{Debug, Formatter};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::Mutex;
 
+pub(crate) struct FalkorAsyncClientInner {
+    _inner: Mutex<FalkorClientProvider>,
+    graph_cache: Mutex<HashMap<String, AsyncGraphSchema>>,
+    connection_pool_size: u8,
+    connection_pool: Mutex<VecDeque<FalkorAsyncConnection>>,
+}
+
+impl FalkorAsyncClientInner {
+    pub(crate) async fn get_connection(&self) -> Result<FalkorAsyncConnection> {
+        let mut conn_pool = self.connection_pool.lock().await;
+        let connection = conn_pool
+            .pop_front()
+            .ok_or(FalkorDBError::EmptyConnection)?;
+
+        let cloned = connection.clone();
+
+        conn_pool.push_back(connection);
+
+        Ok(cloned)
+    }
+}
+
+unsafe impl Sync for FalkorAsyncClientInner {}
+unsafe impl Send for FalkorAsyncClientInner {}
+
 pub struct FalkorAsyncClient {
-    _inner: FalkorClientProvider,
-    connection: FalkorAsyncConnection,
-    graph_cache: HashMap<String, AsyncGraphSchema>,
+    inner: Arc<FalkorAsyncClientInner>,
+    _connection_info: FalkorConnectionInfo,
+}
+
+impl Debug for FalkorAsyncClient {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("FalkorAsyncClient")
+            .field("inner", &"<InnerClient>")
+            .field("connection_info", &self._connection_info)
+            .finish()
+    }
 }
 
 impl FalkorAsyncClient {
-    pub(crate) async fn create(client: FalkorClientProvider) -> Result<Arc<Mutex<Self>>> {
-        Ok(Arc::new(Mutex::new(Self {
-            connection: client.get_async_connection(None).await?,
-            _inner: client,
-            graph_cache: Default::default(),
-        })))
+    pub(crate) async fn create(
+        client: FalkorClientProvider,
+        connection_info: FalkorConnectionInfo,
+        num_connections: u8,
+        timeout: Option<Duration>,
+    ) -> Result<Self> {
+        let connection_pool = Mutex::new(VecDeque::with_capacity(num_connections as usize));
+        {
+            let mut connection_pool = connection_pool.lock().await;
+            for _ in 0..num_connections {
+                connection_pool.push_back(client.get_async_connection(timeout).await?);
+            }
+        }
+
+        Ok(Self {
+            inner: Arc::new(FalkorAsyncClientInner {
+                _inner: client.into(),
+                graph_cache: Default::default(),
+                connection_pool_size: num_connections,
+                connection_pool,
+            }),
+            _connection_info: connection_info,
+        })
     }
-    pub(crate) fn clone_connection(&self) -> FalkorAsyncConnection {
-        self.connection.clone()
+    pub(crate) async fn get_connection(&self) -> Result<FalkorAsyncConnection> {
+        self.inner.get_connection().await
     }
 
+    /// Return a list of graphs currently residing in the database
+    ///
+    /// # Returns
+    /// A [`Vec`] of [`String`]s, containing the names of available graphs
     pub async fn list_graphs(&self) -> Result<Vec<String>> {
-        let conn = self.clone_connection();
-        let graph_list = match conn {
+        let graph_list = match self.get_connection().await? {
             #[cfg(feature = "redis")]
             FalkorAsyncConnection::Redis(mut redis_conn) => {
-                let res = match redis::cmd("GRAPH.LIST")
-                    .query_async(&mut redis_conn)
-                    .await?
-                {
-                    redis::Value::Bulk(data) => data,
+                let cmd = redis::cmd("GRAPH.LIST");
+                let res = match redis_conn.send_packed_command(&cmd).await {
+                    Ok(redis::Value::Bulk(data)) => data,
                     _ => Err(FalkorDBError::InvalidDataReceived)?,
                 };
 
@@ -61,11 +120,19 @@ impl FalkorAsyncClient {
         Ok(graph_list)
     }
 
+    /// Return the current value of a configuration option in the database.
+    ///
+    /// # Arguments
+    /// * `config_Key`: A [`String`] representation of a configuration's key.
+    /// The config key can also be "*", which will return ALL the configuration options.
+    ///
+    /// # Returns
+    /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
     pub async fn config_get<T: ToString>(
         &self,
         config_key: T,
     ) -> Result<HashMap<String, ConfigValue>> {
-        let conn = self.clone_connection();
+        let conn = self.get_connection().await?;
         Ok(match conn {
             #[cfg(feature = "redis")]
             FalkorAsyncConnection::Redis(mut redis_conn) => {
@@ -117,12 +184,18 @@ impl FalkorAsyncClient {
         })
     }
 
+    /// Return the current value of a configuration option in the database.
+    ///
+    /// # Arguments
+    /// * `config_Key`: A [`String`] representation of a configuration's key.
+    /// The config key can also be "*", which will return ALL the configuration options.
+    /// * `value`: The new value to set, which is anything that can be converted into a [`ConfigValue`], namely string types and i64.
     pub async fn config_set<T: Into<ConfigValue>, C: Into<ConfigValue>>(
         &self,
         config_key: T,
         value: C,
     ) -> Result<()> {
-        let conn = self.clone_connection();
+        let conn = self.get_connection().await?;
         match conn {
             #[cfg(feature = "redis")]
             FalkorAsyncConnection::Redis(mut redis_conn) => {
@@ -140,15 +213,25 @@ impl FalkorAsyncClient {
         Ok(())
     }
 
-    pub fn open_graph<T: ToString>(
-        &mut self,
+    /// Opens a graph context for queries and operations
+    ///
+    /// # Arguments
+    /// * `graph_name`: A string identifier of the graph to open.
+    ///
+    /// # Returns
+    /// a [`SyncGraph`] object, allowing various graph operations.
+    pub async fn open_graph<T: ToString>(
+        &self,
         graph_name: T,
     ) -> AsyncGraph {
         AsyncGraph {
-            connection: self.connection.clone(),
+            client: self.inner.clone(),
             graph_name: graph_name.to_string(),
             graph_schema: self
+                .inner
                 .graph_cache
+                .lock()
+                .await
                 .entry(graph_name.to_string())
                 .or_insert(AsyncGraphSchema::new(graph_name.to_string()))
                 .clone(),

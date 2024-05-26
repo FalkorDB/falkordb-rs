@@ -93,9 +93,8 @@ impl SyncGraph {
     }
 
     /// Resets the slowlog, all query time data will be cleared.
-    pub fn slowlog_reset(&self) -> Result<()> {
-        self.send_command("GRAPH.SLOWLOG", None, Some(&["RESET".to_string()]))?;
-        Ok(())
+    pub fn slowlog_reset(&self) -> Result<FalkorValue> {
+        self.send_command("GRAPH.SLOWLOG", None, Some(&["RESET".to_string()]))
     }
 
     /// Returns an [`ExecutionPlan`] object for the selected query,

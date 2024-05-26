@@ -154,3 +154,50 @@ impl FalkorParsable for Constraint {
         })
     }
 }
+
+#[cfg(feature = "tokio")]
+impl crate::FalkorAsyncParseable for Constraint {
+    async fn from_falkor_value_async(
+        value: FalkorValue,
+        graph_schema: &crate::AsyncGraphSchema,
+        conn: crate::FalkorAsyncConnection,
+    ) -> Result<Self> {
+        let value_vec = value.into_vec()?;
+
+        let mut parsed_values = Vec::with_capacity(value_vec.len());
+        for column_raw in value_vec {
+            parsed_values.push(type_val_from_value(column_raw).and_then(
+                |(type_marker, raw_val)| {
+                    crate::value::utils_async::parse_type_async(
+                        type_marker,
+                        raw_val,
+                        graph_schema,
+                        conn.clone(),
+                    )
+                    .await
+                },
+            )?);
+        }
+
+        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = parsed_values.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+        let constraint_type = constraint_type_raw.into_string()?.try_into()?;
+        let label = label_raw.try_into()?;
+        let entity_type = entity_type_raw.into_string()?.try_into()?;
+        let status = status_raw.into_string()?.try_into()?;
+
+        let properties_vec = properties_raw.into_vec()?;
+        let mut properties = Vec::with_capacity(properties_vec.len());
+        for property in properties_vec {
+            properties.push(property.into_string()?);
+        }
+
+        Ok(Constraint {
+            constraint_type,
+            label,
+            properties,
+            entity_type,
+            status,
+        })
+    }
+}

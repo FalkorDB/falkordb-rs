@@ -57,7 +57,7 @@ pub(crate) async fn parse_type_async(
     type_marker: i64,
     val: FalkorValue,
     graph_schema: &AsyncGraphSchema,
-    conn: &mut FalkorAsyncConnection,
+    conn: FalkorAsyncConnection,
 ) -> Result<FalkorValue> {
     let res = match type_marker {
         1 => FalkorValue::None,

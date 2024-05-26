@@ -220,7 +220,7 @@ impl crate::FalkorAsyncParseable for Edge {
     async fn from_falkor_value_async(
         value: FalkorValue,
         graph_schema: &crate::AsyncGraphSchema,
-        conn: &mut crate::FalkorAsyncConnection,
+        conn: crate::FalkorAsyncConnection,
     ) -> Result<Self> {
         let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] = value
             .into_vec()?

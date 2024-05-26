@@ -20,6 +20,6 @@ pub trait FalkorAsyncParseable: Sized {
     fn from_falkor_value_async(
         value: FalkorValue,
         graph_schema: &crate::AsyncGraphSchema,
-        conn: &mut crate::FalkorAsyncConnection,
+        conn: crate::FalkorAsyncConnection,
     ) -> impl std::future::Future<Output = Result<Self>> + Send;
 }

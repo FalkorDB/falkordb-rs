@@ -138,7 +138,7 @@ async fn ktv_vec_to_map_async(
     map_vec: Vec<FKeyTypeVal>,
     relevant_ids_map: HashMap<i64, String>,
     graph_schema: &crate::AsyncGraphSchema,
-    conn: &mut crate::FalkorAsyncConnection,
+    conn: crate::FalkorAsyncConnection,
 ) -> Result<HashMap<String, FalkorValue>> {
     let mut new_map = HashMap::with_capacity(map_vec.len());
     for fktv in map_vec {
@@ -158,7 +158,7 @@ async fn ktv_vec_to_map_async(
 pub(crate) async fn parse_map_with_schema_async(
     value: FalkorValue,
     graph_schema: &crate::AsyncGraphSchema,
-    conn: &mut crate::FalkorAsyncConnection,
+    conn: crate::FalkorAsyncConnection,
     schema_type: SchemaType,
 ) -> Result<HashMap<String, FalkorValue>> {
     let val_vec = value.into_vec()?;

@@ -77,7 +77,7 @@ impl AsyncGraphSchema {
     pub(crate) async fn refresh(
         &self,
         schema_type: SchemaType,
-        conn: &mut FalkorAsyncConnection,
+        mut conn: FalkorAsyncConnection,
         id_hashset: Option<&HashSet<i64>>,
     ) -> Result<Option<HashMap<i64, String>>> {
         let command = get_refresh_command(schema_type);
@@ -94,7 +94,8 @@ impl AsyncGraphSchema {
             .send_command(
                 Some(self.graph_name.clone()),
                 "GRAPH.QUERY",
-                Some(format!("CALL {command}()")),
+                None,
+                Some(&[format!("CALL {command}()")]),
             )
             .await?
             .into_vec()?

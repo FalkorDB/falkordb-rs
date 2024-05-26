@@ -277,7 +277,7 @@ impl SyncGraph {
 
     /// Run a query which calls a procedure on the graph, read-only, or otherwise.
     /// Read-only queries are more limited with the operations they are allowed to perform.
-    /// This function allows adding extra parameters after the query, and adding a YIELD block afterwards
+    /// This function allows adding extra parameters after the query, and adding a YIELD block afterward
     ///
     /// # Arguments
     /// * `procedure`: The procedure to call
@@ -341,6 +341,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: L,
         properties: &[P],
+        options: Option<&HashMap<String, String>>,
     ) -> Result<QueryResult> {
         // Create index from these properties
         let properties_string = properties
@@ -356,18 +357,27 @@ impl SyncGraph {
 
         let idx_type = match index_field_type {
             IndexFieldType::Range => "",
-            IndexFieldType::Vector => "VECTOR",
-            IndexFieldType::Fulltext => "FULLTEXT",
+            IndexFieldType::Vector => "VECTOR ",
+            IndexFieldType::Fulltext => "FULLTEXT ",
         }
         .to_string();
 
-        self.query(
-            format!(
-                "CREATE {idx_type} INDEX FOR {pattern} ON ({})",
-                properties_string
-            ),
-            None,
-        )
+        let options_string = options
+            .map(|hashmap| {
+                hashmap
+                    .into_iter()
+                    .map(|(key, val)| format!("'{key}':'{val}'"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .map(|options_string| format!(" OPTIONS {{ {} }}", options_string))
+            .unwrap_or_default();
+
+        let full_query = format!(
+            "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
+            properties_string, options_string
+        );
+        self.query(full_query, None)
     }
 
     pub fn drop_index<L: ToString, P: ToString>(
@@ -463,12 +473,17 @@ impl SyncGraph {
     /// * `properties`: A slice of the names of properties this constraint will apply to.
     pub fn create_unique_constraint<P: ToString>(
         &self,
-        index_field_type: IndexFieldType,
         entity_type: EntityType,
         label: String,
         properties: &[P],
     ) -> Result<FalkorValue> {
-        self.create_index(index_field_type, entity_type, label.as_str(), properties)?;
+        self.create_index(
+            IndexFieldType::Range,
+            entity_type,
+            label.as_str(),
+            properties,
+            None,
+        )?;
 
         let mut params: Vec<String> = Vec::with_capacity(5 + properties.len());
         params.extend([
@@ -515,8 +530,7 @@ impl SyncGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::open_test_graph;
-    use crate::IndexFieldType;
+    use crate::{test_utils::open_test_graph, IndexFieldType};
 
     #[test]
     fn test_create_drop_index() {
@@ -526,6 +540,7 @@ mod tests {
             EntityType::Node,
             "actor".to_string(),
             &["Hello"],
+            None,
         );
         assert!(res.is_ok());
 
@@ -534,6 +549,10 @@ mod tests {
 
         let indices = res.unwrap();
         assert_eq!(indices.len(), 2);
+        assert_eq!(
+            indices[0].field_types["Hello"],
+            vec![IndexFieldType::Fulltext]
+        );
 
         let res = graph.inner.drop_index(
             IndexFieldType::Fulltext,
@@ -591,7 +610,6 @@ mod tests {
         graph
             .inner
             .create_unique_constraint(
-                IndexFieldType::Fulltext,
                 EntityType::Node,
                 "actor".to_string(),
                 &["first_name", "last_name"],
@@ -616,7 +634,6 @@ mod tests {
         graph
             .inner
             .create_unique_constraint(
-                IndexFieldType::Fulltext,
                 EntityType::Node,
                 "actor".to_string(),
                 &["first_name", "last_name"],

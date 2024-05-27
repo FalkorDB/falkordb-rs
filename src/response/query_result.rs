@@ -80,7 +80,7 @@ fn query_parse_stats(stats: FalkorValue) -> Result<Vec<String>> {
 
 pub(crate) fn parse_result_set(
     data_vec: Vec<FalkorValue>,
-    graph_schema: &SyncGraphSchema,
+    graph_schema: &mut SyncGraphSchema,
     conn: &mut BorrowedSyncConnection,
     header_keys: &[String],
 ) -> Result<Vec<HashMap<String, FalkorValue>>> {
@@ -103,7 +103,7 @@ pub(crate) fn parse_result_set(
 impl FalkorParsable for QueryResult {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &SyncGraphSchema,
+        graph_schema: &mut SyncGraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         let value_vec = value.into_vec()?;

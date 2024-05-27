@@ -100,32 +100,14 @@ impl FalkorAsyncClient {
     /// A [`Vec`] of [`String`]s, containing the names of available graphs
     pub async fn list_graphs(&self) -> Result<Vec<String>> {
         let mut conn = self.borrow_connection().await?;
-        let graph_list = match conn.as_inner()? {
-            #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(redis_conn) => {
-                let cmd = redis::cmd("GRAPH.LIST");
-                let res = match redis_conn.send_packed_command(&cmd).await {
-                    Ok(redis::Value::Bulk(data)) => data,
-                    _ => Err(FalkorDBError::InvalidDataReceived)?,
-                };
 
-                let mut graph_list = Vec::with_capacity(res.len());
-                for graph in res {
-                    let graph = match graph {
-                        redis::Value::Data(data) => {
-                            Ok(String::from_utf8_lossy(data.as_slice()).to_string())
-                        }
-                        redis::Value::Status(data) => Ok(data),
-                        _ => Err(FalkorDBError::ParsingError),
-                    }?;
-
-                    graph_list.push(graph);
-                }
-                graph_list
-            }
-        };
-
-        Ok(graph_list)
+        Ok(conn
+            .send_command(None, "GRAPH.LIST", None, None)
+            .await?
+            .into_vec()?
+            .into_iter()
+            .flat_map(|data| data.into_string())
+            .collect::<Vec<_>>())
     }
 
     /// Return the current value of a configuration option in the database.
@@ -237,7 +219,7 @@ impl FalkorAsyncClient {
     ///
     /// # Returns
     /// a [`AsyncGraph`] object, allowing various graph operations.
-    pub async fn open_graph<T: ToString>(
+    pub async fn select_graph<T: ToString>(
         &self,
         graph_name: T,
     ) -> AsyncGraph {
@@ -277,7 +259,7 @@ impl FalkorAsyncClient {
                 Some(&[new_graph_name.to_string()]),
             )
             .await?;
-        Ok(self.open_graph(new_graph_name.to_string()).await)
+        Ok(self.select_graph(new_graph_name).await)
     }
 }
 
@@ -298,10 +280,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_async_open_graph_and_query() {
+    async fn test_async_select_graph_and_query() {
         let client = create_async_test_client().await;
 
-        let graph = client.open_graph("imdb").await;
+        let graph = client.select_graph("imdb").await;
         assert_eq!(graph.graph_name(), "imdb".to_string());
 
         let res = graph
@@ -317,7 +299,7 @@ mod tests {
         let client = create_async_test_client().await;
 
         client
-            .open_graph("imdb_async_ro_copy")
+            .select_graph("imdb_async_ro_copy")
             .await
             .delete()
             .await
@@ -328,7 +310,7 @@ mod tests {
             .await
             .expect("Could not copy graph");
 
-        let original_graph = client.open_graph("imdb").await;
+        let original_graph = client.select_graph("imdb").await;
 
         assert_eq!(
             graph

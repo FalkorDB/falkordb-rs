@@ -69,19 +69,21 @@ impl<const R: char> FalkorClientBuilder<R> {
             ..self
         }
     }
-}
 
-fn get_client<T: TryInto<FalkorConnectionInfo>>(connection_info: T) -> Result<FalkorClientProvider>
-where
-    anyhow::Error: From<T::Error>,
-{
-    let connection_info = connection_info.try_into()?;
-    Ok(match connection_info {
-        #[cfg(feature = "redis")]
-        FalkorConnectionInfo::Redis(connection_info) => {
-            FalkorClientProvider::Redis(redis::Client::open(connection_info.clone())?)
-        }
-    })
+    fn get_client<T: TryInto<FalkorConnectionInfo>>(
+        connection_info: T
+    ) -> Result<FalkorClientProvider>
+    where
+        anyhow::Error: From<T::Error>,
+    {
+        let connection_info = connection_info.try_into()?;
+        Ok(match connection_info {
+            #[cfg(feature = "redis")]
+            FalkorConnectionInfo::Redis(connection_info) => {
+                FalkorClientProvider::Redis(redis::Client::open(connection_info.clone())?)
+            }
+        })
+    }
 }
 
 impl FalkorClientBuilder<'S'> {
@@ -112,7 +114,7 @@ impl FalkorClientBuilder<'S'> {
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
         FalkorSyncClient::create(
-            get_client(connection_info.clone())?,
+            Self::get_client(connection_info.clone())?,
             connection_info,
             self.num_connections,
             self.timeout,
@@ -136,7 +138,7 @@ impl FalkorClientBuilder<'A'> {
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
         FalkorAsyncClient::create(
-            get_client(connection_info.clone())?,
+            Self::get_client(connection_info.clone())?,
             connection_info,
             self.num_connections,
             self.timeout,
@@ -151,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_sync_builder() {
-        let conneciton_info = "redis://127.0.0.1:6379".try_into();
+        let conneciton_info = "falkor://127.0.0.1:6379".try_into();
         assert!(conneciton_info.is_ok());
 
         assert!(FalkorClientBuilder::new()
@@ -185,10 +187,10 @@ mod tests {
         // Connection pool size must be between 0 and 32
 
         let zero = FalkorClientBuilder::new().with_num_connections(0).build();
+        assert!(zero.is_err());
 
         let too_many = FalkorClientBuilder::new().with_num_connections(36).build();
-
-        assert!(zero.is_err() && too_many.is_err());
+        assert!(too_many.is_err());
     }
 
     #[test]
@@ -209,7 +211,7 @@ mod tests {
     #[cfg(all(feature = "tokio", feature = "redis"))]
     #[tokio::test]
     async fn test_async_builder() {
-        let conneciton_info = "redis://127.0.0.1:6379".try_into();
+        let conneciton_info = "falkor://127.0.0.1:6379".try_into();
         assert!(conneciton_info.is_ok());
 
         assert!(FalkorClientBuilder::new_async()

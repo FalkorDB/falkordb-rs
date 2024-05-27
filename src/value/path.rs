@@ -24,7 +24,7 @@ pub struct Path {
 impl FalkorParsable for Path {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &SyncGraphSchema,
+        graph_schema: &mut SyncGraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         let [nodes, relationships]: [FalkorValue; 2] = value

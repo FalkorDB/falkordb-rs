@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::{FalkorDBError, FalkorValue};
 use std::fmt::{Display, Formatter};
 
 /// An enum representing the two viable types for a config value
@@ -48,5 +49,17 @@ impl From<String> for ConfigValue {
 impl From<&str> for ConfigValue {
     fn from(value: &str) -> Self {
         ConfigValue::String(value.to_string())
+    }
+}
+
+impl TryFrom<FalkorValue> for ConfigValue {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::FString(str_val) => Ok(ConfigValue::String(str_val)),
+            FalkorValue::Int64(int_val) => Ok(ConfigValue::Int64(int_val)),
+            _ => Err(FalkorDBError::ParsingConfigValue),
+        }
     }
 }

@@ -5,6 +5,7 @@
 
 use crate::{FalkorDBError, FalkorValue};
 use anyhow::Result;
+use std::fmt::Display;
 use std::sync::mpsc;
 
 pub(crate) enum FalkorSyncConnection {
@@ -17,39 +18,47 @@ pub(crate) enum FalkorSyncConnection {
 ///
 /// This is publicly exposed for user-implementations of [`FalkorParsable`](crate::FalkorParsable)
 pub struct BorrowedSyncConnection {
-    pub(crate) conn: Option<FalkorSyncConnection>,
-    pub(crate) return_tx: mpsc::SyncSender<FalkorSyncConnection>,
+    conn: Option<FalkorSyncConnection>,
+    return_tx: mpsc::SyncSender<FalkorSyncConnection>,
 }
 
 impl BorrowedSyncConnection {
+    pub(crate) fn new(
+        conn: FalkorSyncConnection,
+        return_tx: mpsc::SyncSender<FalkorSyncConnection>,
+    ) -> Self {
+        Self {
+            conn: Some(conn),
+            return_tx,
+        }
+    }
+
     pub(crate) fn as_inner(&mut self) -> Result<&mut FalkorSyncConnection, FalkorDBError> {
         self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)
     }
 
-    pub(crate) fn send_command(
+    pub(crate) fn send_command<P: Display>(
         &mut self,
-        graph_name: Option<String>,
+        graph_name: Option<&str>,
         command: &str,
         subcommand: Option<&str>,
-        params: Option<&[String]>,
+        params: Option<&[P]>,
     ) -> Result<FalkorValue> {
-        Ok(
-            match self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)? {
-                #[cfg(feature = "redis")]
-                FalkorSyncConnection::Redis(redis_conn) => {
-                    use redis::ConnectionLike as _;
-                    let mut cmd = redis::cmd(command);
-                    cmd.arg(subcommand);
-                    cmd.arg(graph_name);
-                    if let Some(params) = params {
-                        for param in params {
-                            cmd.arg(param);
-                        }
+        Ok(match self.as_inner()? {
+            #[cfg(feature = "redis")]
+            FalkorSyncConnection::Redis(redis_conn) => {
+                use redis::ConnectionLike as _;
+                let mut cmd = redis::cmd(command);
+                cmd.arg(subcommand);
+                cmd.arg(graph_name);
+                if let Some(params) = params {
+                    for param in params {
+                        cmd.arg(param.to_string());
                     }
-                    redis::FromRedisValue::from_owned_redis_value(redis_conn.req_command(&cmd)?)?
                 }
-            },
-        )
+                redis::FromRedisValue::from_owned_redis_value(redis_conn.req_command(&cmd)?)?
+            }
+        })
     }
 }
 

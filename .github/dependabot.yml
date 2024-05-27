@@ -4,12 +4,12 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
     target-branch: "main"
 
   # This is actually for cargo crates
   - package-ecosystem: cargo
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
     target-branch: "main"

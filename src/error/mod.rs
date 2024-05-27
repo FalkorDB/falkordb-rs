@@ -27,6 +27,8 @@ pub enum FalkorDBError {
     ParsingUnknownType,
     #[error("Element was not of type Bool")]
     ParsingBool,
+    #[error("Could not parse into config value, was not one of the supported types")]
+    ParsingConfigValue,
     #[error("Element was not of type I64")]
     ParsingI64,
     #[error("Element was not of type F64")]

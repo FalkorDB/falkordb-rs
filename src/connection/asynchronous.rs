@@ -63,11 +63,9 @@ impl Drop for BorrowedAsyncConnection {
             let handle = tokio::runtime::Handle::try_current();
             match handle {
                 Ok(handle) => {
-                    handle.spawn_blocking({
-                        let pool = self.conn_pool.clone();
-                        move || {
-                            pool.blocking_lock().push_back(conn);
-                        }
+                    let pool = self.conn_pool.clone();
+                    handle.spawn_blocking(move || {
+                        pool.blocking_lock().push_back(conn);
                     });
                 }
                 Err(_) => {

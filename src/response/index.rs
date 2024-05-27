@@ -125,7 +125,7 @@ pub struct FalkorIndex {
 impl FalkorParsable for FalkorIndex {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &SyncGraphSchema,
+        graph_schema: &mut SyncGraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         let value_vec = value.into_vec()?;

@@ -18,10 +18,10 @@ pub(crate) async fn parse_labels_async(
     conn: &mut BorrowedAsyncConnection,
     schema_type: SchemaType,
 ) -> Result<Vec<String>> {
-    let mut ids_hashset = HashSet::with_capacity(raw_ids.len());
-    for label in raw_ids.iter() {
-        ids_hashset.insert(label.to_i64().ok_or(FalkorDBError::ParsingI64)?);
-    }
+    let ids_hashset = raw_ids
+        .iter()
+        .filter_map(|label_id| label_id.to_i64())
+        .collect::<HashSet<i64>>();
 
     match match graph_schema.verify_id_set(&ids_hashset, schema_type).await {
         None => {

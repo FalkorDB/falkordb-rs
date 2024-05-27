@@ -20,25 +20,28 @@ pub(crate) fn update_map(
     keys: FalkorValue,
     id_hashset: Option<&HashSet<i64>>,
 ) -> Result<Option<HashMap<i64, String>>, FalkorDBError> {
-    let keys_vec = keys.into_vec()?;
-
-    let mut new_keys = HashMap::with_capacity(keys_vec.len());
-    for (idx, item) in keys_vec.into_iter().enumerate() {
-        let key = item
-            .into_vec()?
-            .into_iter()
-            .next()
-            .ok_or(FalkorDBError::ParsingError)?
-            .try_into()?;
-        new_keys.insert(idx as i64, key);
-    }
+    let new_keys = keys
+        .into_vec()?
+        .into_iter()
+        .enumerate()
+        .flat_map(|(idx, item)| {
+            Result::<(i64, String), FalkorDBError>::Ok((
+                idx as i64,
+                item.into_vec()?
+                    .into_iter()
+                    .next()
+                    .ok_or(FalkorDBError::ParsingError)
+                    .and_then(|item| item.into_string())?,
+            ))
+        })
+        .collect::<HashMap<i64, String>>();
 
     *map_to_update = new_keys;
 
-    match id_hashset {
-        None => Ok(None),
-        Some(id_hashset) => Ok(get_relevant_hashmap(id_hashset, map_to_update)),
-    }
+    Ok(match id_hashset {
+        None => None,
+        Some(id_hashset) => get_relevant_hashmap(id_hashset, map_to_update),
+    })
 }
 
 pub(crate) fn get_relevant_hashmap(

@@ -178,7 +178,7 @@ impl TryFrom<FalkorValue> for Point {
 impl FalkorParsable for FalkorValue {
     fn from_falkor_value(
         value: FalkorValue,
-        _graph_schema: &SyncGraphSchema,
+        _graph_schema: &mut SyncGraphSchema,
         _conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         Ok(value)

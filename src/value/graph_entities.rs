@@ -82,7 +82,7 @@ pub struct Node {
 impl FalkorParsable for Node {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &SyncGraphSchema,
+        graph_schema: &mut SyncGraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         let [entity_id, labels, properties]: [FalkorValue; 3] = value
@@ -170,7 +170,7 @@ pub struct Edge {
 impl FalkorParsable for Edge {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &SyncGraphSchema,
+        graph_schema: &mut SyncGraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] = value
@@ -179,10 +179,10 @@ impl FalkorParsable for Edge {
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let relation = relations.to_i64().ok_or(FalkorDBError::ParsingI64)?;
-        if let Some(relationship) = graph_schema.relationships().read().get(&relation).cloned() {
+        if let Some(relationship) = graph_schema.relationships().get(&relation) {
             return Ok(Edge {
                 entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                relationship_type: relationship,
+                relationship_type: relationship.to_string(),
                 src_node_id: src_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
                 dst_node_id: dst_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
                 properties: parse_map_with_schema(

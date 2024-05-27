@@ -3,42 +3,25 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use super::utils::{construct_query, generate_procedure_call};
 use crate::{
-    client::blocking::FalkorSyncClientInner, connection::blocking::FalkorSyncConnection,
+    client::blocking::FalkorSyncClientInner,
+    graph::utils::{construct_query, generate_procedure_call},
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorIndex,
     FalkorParsable, FalkorValue, IndexType, QueryResult, SlowlogEntry, SyncGraphSchema,
 };
 use anyhow::Result;
-use std::{
-    collections::HashMap,
-    fmt::{Debug, Display, Formatter},
-    sync::Arc,
-};
+use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
-///
 /// # Thread Safety
-/// This struct is fully thread safe, it can be cloned and passed within threads without constraints,
-/// Its API uses only immutable references
+/// This struct is NOT thread safe, and synchronization is up to the user.
+/// Also, graph schema is not shared between instances of SyncGraph, even with the same name
 #[derive(Clone)]
 pub struct SyncGraph {
     pub(crate) client: Arc<FalkorSyncClientInner>,
     pub(crate) graph_name: String,
     /// Provides user with access to the current graph schema,
-    /// which contains a safe cache of id to labels/properties/relationship maps
     pub graph_schema: SyncGraphSchema,
-}
-
-impl Debug for SyncGraph {
-    fn fmt(
-        &self,
-        f: &mut Formatter<'_>,
-    ) -> std::fmt::Result {
-        f.debug_struct("SyncGraph")
-            .field("client", &"<FalkorClient>")
-            .finish()
-    }
 }
 
 impl SyncGraph {
@@ -57,12 +40,12 @@ impl SyncGraph {
         params: Option<&[String]>,
     ) -> Result<FalkorValue> {
         let mut conn = self.client.borrow_connection()?;
-        conn.send_command(Some(self.graph_name.clone()), command, subcommand, params)
+        conn.send_command(Some(self.graph_name.as_str()), command, subcommand, params)
     }
 
     /// Deletes the graph stored in the database, and drop all the schema caches.
     /// NOTE: This still maintains the graph API, operations are still viable.
-    pub fn delete(&self) -> Result<()> {
+    pub fn delete(&mut self) -> Result<()> {
         self.send_command("GRAPH.DELETE", None, None)?;
         self.graph_schema.clear();
         Ok(())
@@ -168,36 +151,64 @@ impl SyncGraph {
         self.explain_with_params::<Q, &str, &str>(query_string, None)
     }
 
-    fn query_inner<Q: ToString, T: ToString, Z: ToString, P: FalkorParsable>(
-        &self,
+    fn query_inner_with_timeout<Q: ToString, T: ToString, Z: ToString, P: FalkorParsable>(
+        &mut self,
         command: &str,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
-        timeout: Option<i64>,
+        timeout: i64,
     ) -> Result<P> {
         let query = construct_query(query_string, params);
 
         let mut conn = self.client.borrow_connection()?;
-        let falkor_result = match conn.as_inner()? {
-            #[cfg(feature = "redis")]
-            FalkorSyncConnection::Redis(redis_conn) => {
-                use redis::ConnectionLike as _;
-                use redis::FromRedisValue as _;
-                let redis_val = redis_conn.req_command(
-                    redis::cmd(command)
-                        .arg(self.graph_name.as_str())
-                        .arg(query)
-                        .arg("--compact")
-                        .arg(timeout.map(|timeout| format!("timeout {timeout}"))),
-                )?;
-                FalkorValue::from_owned_redis_value(redis_val)?
-            }
-        };
+        P::from_falkor_value(
+            conn.send_command(
+                Some(self.graph_name.as_str()),
+                command,
+                None,
+                Some(&[query, "--compact".to_string(), format!("timeout {timeout}")]),
+            )?,
+            &mut self.graph_schema,
+            &mut conn,
+        )
+    }
 
-        P::from_falkor_value(falkor_result, &self.graph_schema, &mut conn)
+    fn query_inner<Q: ToString, T: ToString, Z: ToString, P: FalkorParsable>(
+        &mut self,
+        command: &str,
+        query_string: Q,
+        params: Option<&HashMap<T, Z>>,
+    ) -> Result<P> {
+        let query = construct_query(query_string, params);
+
+        let mut conn = self.client.borrow_connection()?;
+        P::from_falkor_value(
+            conn.send_command(
+                Some(self.graph_name.as_str()),
+                command,
+                None,
+                Some(&[query, "--compact".to_string()]),
+            )?,
+            &mut self.graph_schema,
+            &mut conn,
+        )
     }
 
     /// Run a query on the graph
+    ///
+    /// # Arguments
+    /// * `query_string`: The query to run
+    ///
+    /// # Returns
+    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    pub fn query<Q: Display>(
+        &mut self,
+        query_string: Q,
+    ) -> Result<QueryResult> {
+        self.query_inner::<Q, &str, &str, QueryResult>("GRAPH.QUERY", query_string, None)
+    }
+
+    /// Run a query on the graph, but abort it if it exceeds the timeout
     ///
     /// # Arguments
     /// * `query_string`: The query to run
@@ -205,15 +216,37 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub fn query<Q: Display>(
-        &self,
+    pub fn query_with_timeout<Q: Display>(
+        &mut self,
         query_string: Q,
-        timeout: Option<i64>,
+        timeout: i64,
     ) -> Result<QueryResult> {
-        self.query_inner::<Q, &str, &str, QueryResult>("GRAPH.QUERY", query_string, None, timeout)
+        self.query_inner_with_timeout::<Q, &str, &str, QueryResult>(
+            "GRAPH.QUERY",
+            query_string,
+            None,
+            timeout,
+        )
     }
 
     /// Run a query on the graph
+    /// This function variant allows adding extra parameters after the query
+    ///
+    /// # Arguments
+    /// * `query_string`: The query to run
+    /// * `params`: a map of parameters and values, note that all keys should be of the same type, and all values should be of the same type.
+    ///
+    /// # Returns
+    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    pub fn query_with_params<Q: Display, T: Display, Z: Display>(
+        &mut self,
+        query_string: Q,
+        params: &HashMap<T, Z>,
+    ) -> Result<QueryResult> {
+        self.query_inner("GRAPH.QUERY", query_string, Some(params))
+    }
+
+    /// Run a query on the graph but abort it if it exceeds the timeout
     /// This function variant allows adding extra parameters after the query
     ///
     /// # Arguments
@@ -223,16 +256,31 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub fn query_with_params<Q: Display, T: Display, Z: Display>(
-        &self,
+    pub fn query_with_params_and_timeout<Q: Display, T: Display, Z: Display>(
+        &mut self,
         query_string: Q,
-        timeout: Option<i64>,
+        timeout: i64,
         params: &HashMap<T, Z>,
     ) -> Result<QueryResult> {
-        self.query_inner("GRAPH.QUERY", query_string, Some(params), timeout)
+        self.query_inner_with_timeout("GRAPH.QUERY", query_string, Some(params), timeout)
     }
 
     /// Run a query on the graph
+    /// Read-only queries are more limited with the operations they are allowed to perform.
+    ///
+    /// # Arguments
+    /// * `query_string`: The query to run
+    ///
+    /// # Returns
+    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    pub fn query_readonly<Q: Display>(
+        &mut self,
+        query_string: Q,
+    ) -> Result<QueryResult> {
+        self.query_inner::<Q, &str, &str, QueryResult>("GRAPH.QUERY_RO", query_string, None)
+    }
+
+    /// Run a query on the graph, but abort it if it exceeds the timeout
     /// Read-only queries are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
@@ -241,12 +289,12 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub fn query_readonly<Q: Display>(
-        &self,
+    pub fn query_readonly_with_timeout<Q: Display>(
+        &mut self,
         query_string: Q,
-        timeout: Option<i64>,
+        timeout: i64,
     ) -> Result<QueryResult> {
-        self.query_inner::<Q, &str, &str, QueryResult>(
+        self.query_inner_with_timeout::<Q, &str, &str, QueryResult>(
             "GRAPH.QUERY_RO",
             query_string,
             None,
@@ -266,12 +314,31 @@ impl SyncGraph {
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
     pub fn query_readonly_with_params<Q: ToString, T: ToString, Z: ToString>(
-        &self,
+        &mut self,
         query_string: Q,
-        timeout: Option<i64>,
-        params: Option<&HashMap<T, Z>>,
+        params: &HashMap<T, Z>,
     ) -> Result<QueryResult> {
-        self.query_inner("GRAPH.QUERY_RO", query_string, params, timeout)
+        self.query_inner("GRAPH.QUERY_RO", query_string, Some(params))
+    }
+
+    /// Run a read-only query on the graph, but abort it if it exceeds the timeout
+    /// Read-only queries are more limited with the operations they are allowed to perform.
+    /// This function variant allows adding extra parameters after the query
+    ///
+    /// # Arguments
+    /// * `query_string`: The query to run
+    /// * `timeout`: Specify how long should the query run before aborting.
+    /// * `params`: a map of parameters and values, note that all keys should be of the same type, and all values should be of the same type.
+    ///
+    /// # Returns
+    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    pub fn query_readonly_with_params_and_timeout<Q: ToString, T: ToString, Z: ToString>(
+        &mut self,
+        query_string: Q,
+        params: &HashMap<T, Z>,
+        timeout: i64,
+    ) -> Result<QueryResult> {
+        self.query_inner_with_timeout("GRAPH.QUERY_RO", query_string, Some(params), timeout)
     }
 
     /// Run a query which calls a procedure on the graph, read-only, or otherwise.
@@ -288,16 +355,50 @@ impl SyncGraph {
     /// # Returns
     /// A caller-provided type which implements [`FalkorParsable`]
     pub fn call_procedure<C: ToString, P: FalkorParsable>(
-        &self,
+        &mut self,
         procedure: C,
         args: Option<&[&str]>,
         yields: Option<&[&str]>,
         read_only: bool,
-        timeout: Option<i64>,
     ) -> Result<P> {
         let (query_string, params) = generate_procedure_call(procedure, args, yields);
 
         self.query_inner(
+            if read_only {
+                "GRAPH.QUERY_RO"
+            } else {
+                "GRAPH.QUERY"
+            },
+            query_string,
+            params.as_ref(),
+        )
+    }
+
+    /// Run a query which calls a procedure on the graph, read-only, or otherwise.
+    /// Read-only queries are more limited with the operations they are allowed to perform.
+    /// This function allows adding extra parameters after the query, and adding a YIELD block afterward
+    /// This function will cause the query to abort if it exceeds a certain timeout
+    ///
+    /// # Arguments
+    /// * `procedure`: The procedure to call
+    /// * `args`: An optional slice of strings containing the parameters.
+    /// * `yields`: The optional yield block arguments.
+    /// * `read_only`: Whether this procedure is read-only.
+    /// * `timeout`: If provided, the query will abort if overruns the timeout.
+    ///
+    /// # Returns
+    /// A caller-provided type which implements [`FalkorParsable`]
+    pub fn call_procedure_with_timeout<C: ToString, P: FalkorParsable>(
+        &mut self,
+        procedure: C,
+        args: Option<&[&str]>,
+        yields: Option<&[&str]>,
+        read_only: bool,
+        timeout: i64,
+    ) -> Result<P> {
+        let (query_string, params) = generate_procedure_call(procedure, args, yields);
+
+        self.query_inner_with_timeout(
             if read_only {
                 "GRAPH.QUERY_RO"
             } else {
@@ -313,10 +414,10 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`Vec`] of [`Index`]
-    pub fn list_indices(&self) -> Result<Vec<FalkorIndex>> {
+    pub fn list_indices(&mut self) -> Result<Vec<FalkorIndex>> {
         let mut conn = self.client.borrow_connection()?;
         let [_, indices, _]: [FalkorValue; 3] = self
-            .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, false, None)?
+            .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, false)?
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
@@ -327,7 +428,7 @@ impl SyncGraph {
         for index in indices {
             out_vec.push(FalkorIndex::from_falkor_value(
                 index,
-                &self.graph_schema,
+                &mut self.graph_schema,
                 &mut conn,
             )?);
         }
@@ -336,7 +437,7 @@ impl SyncGraph {
     }
 
     pub fn create_index<L: ToString, P: ToString>(
-        &self,
+        &mut self,
         index_field_type: IndexType,
         entity_type: EntityType,
         label: L,
@@ -373,11 +474,10 @@ impl SyncGraph {
             .map(|options_string| format!(" OPTIONS {{ {} }}", options_string))
             .unwrap_or_default();
 
-        let full_query = format!(
+        self.query(format!(
             "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
             properties_string, options_string
-        );
-        self.query(full_query, None)
+        ))
     }
 
     /// Drop an existing index, by specifying its type, entity, label and specific properties
@@ -385,7 +485,7 @@ impl SyncGraph {
     /// # Arguments
     /// * `index_field_type`
     pub fn drop_index<L: ToString, P: ToString>(
-        &self,
+        &mut self,
         index_field_type: IndexType,
         entity_type: EntityType,
         label: L,
@@ -409,39 +509,38 @@ impl SyncGraph {
         }
         .to_string();
 
-        self.query(
-            format!(
-                "DROP {idx_type} INDEX for {pattern} ON ({})",
-                properties_string
-            ),
-            None,
-        )
+        self.query(format!(
+            "DROP {idx_type} INDEX for {pattern} ON ({})",
+            properties_string
+        ))
     }
 
     /// Calls the DB.CONSTRAINTS procedure on the graph, returning an array of the graph's constraints
     ///
     /// # Returns
-    /// A [`Vec`] of [`Constraint`]s
-    pub fn list_constraints(&self) -> Result<Vec<Constraint>> {
+    /// A tuple where the first element is a [`Vec`] of [`Constraint`]s, and the second element is a [`Vec`] of stats as [`String`]s
+    pub fn list_constraints(&mut self) -> Result<(Vec<Constraint>, Vec<String>)> {
         let mut conn = self.client.borrow_connection()?;
-        let [_, query_res, _]: [FalkorValue; 3] = self
-            .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, false, None)?
+        let [_, query_res, stats]: [FalkorValue; 3] = self
+            .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, false)?
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-        let query_res = query_res.into_vec()?;
-
-        let mut constraints_vec = Vec::with_capacity(query_res.len());
-        for item in query_res {
-            constraints_vec.push(Constraint::from_falkor_value(
-                item,
-                &self.graph_schema,
-                &mut conn,
-            )?);
-        }
-
-        Ok(constraints_vec)
+        Ok((
+            query_res
+                .into_vec()?
+                .into_iter()
+                .flat_map(|item| {
+                    Constraint::from_falkor_value(item, &mut self.graph_schema, &mut conn)
+                })
+                .collect(),
+            stats
+                .into_vec()?
+                .into_iter()
+                .flat_map(|stat| stat.into_string())
+                .collect(),
+        ))
     }
 
     /// Creates a new constraint for this graph, making the provided properties mandatory
@@ -476,7 +575,7 @@ impl SyncGraph {
     /// * `label`: Entities with this label will have this constraint applied to them.
     /// * `properties`: A slice of the names of properties this constraint will apply to.
     pub fn create_unique_constraint<P: ToString>(
-        &self,
+        &mut self,
         entity_type: EntityType,
         label: String,
         properties: &[P],
@@ -538,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_create_drop_index() {
-        let graph = open_test_graph("test_create_drop_index");
+        let mut graph = open_test_graph("test_create_drop_index");
         let res = graph.inner.create_index(
             IndexType::Fulltext,
             EntityType::Node,
@@ -566,11 +665,9 @@ mod tests {
 
     #[test]
     fn test_list_indices() {
-        let graph = open_test_graph("test_list_indices");
-        let res = graph.inner.list_indices();
-        assert!(res.is_ok());
+        let mut graph = open_test_graph("test_list_indices");
+        let indices = graph.inner.list_indices().expect("Could not list indices");
 
-        let indices = res.unwrap();
         assert_eq!(indices.len(), 1);
         assert_eq!(indices[0].entity_type, EntityType::Node);
         assert_eq!(indices[0].index_label, "actor".to_string());
@@ -606,7 +703,7 @@ mod tests {
 
     #[test]
     fn test_create_drop_unique_constraint() {
-        let graph = open_test_graph("test_unique_constraint");
+        let mut graph = open_test_graph("test_unique_constraint");
 
         graph
             .inner
@@ -630,7 +727,7 @@ mod tests {
 
     #[test]
     fn test_list_constraints() {
-        let graph = open_test_graph("test_list_constraint");
+        let mut graph = open_test_graph("test_list_constraint");
 
         graph
             .inner
@@ -641,7 +738,7 @@ mod tests {
             )
             .expect("Could not create constraint");
 
-        let constraints = graph
+        let (constraints, _) = graph
             .inner
             .list_constraints()
             .expect("Could not list constraints");
@@ -650,15 +747,15 @@ mod tests {
 
     #[test]
     fn test_slowlog() {
-        let graph = open_test_graph("test_slowlog");
+        let mut graph = open_test_graph("test_slowlog");
 
         graph
             .inner
-            .query("UNWIND range(0, 500) AS x RETURN x", None)
+            .query("UNWIND range(0, 500) AS x RETURN x")
             .expect("Could not generate the fast query");
         graph
             .inner
-            .query("UNWIND range(0, 100000) AS x RETURN x", None)
+            .query("UNWIND range(0, 100000) AS x RETURN x")
             .expect("Could not generate the slow query");
 
         let slowlog = graph

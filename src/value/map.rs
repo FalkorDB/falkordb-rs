@@ -51,7 +51,7 @@ impl TryFrom<FalkorValue> for FKeyTypeVal {
 fn ktv_vec_to_map(
     map_vec: Vec<FKeyTypeVal>,
     relevant_ids_map: HashMap<i64, String>,
-    graph_schema: &SyncGraphSchema,
+    graph_schema: &mut SyncGraphSchema,
     conn: &mut BorrowedSyncConnection,
 ) -> Result<HashMap<String, FalkorValue>> {
     let mut new_map = HashMap::with_capacity(map_vec.len());
@@ -70,7 +70,7 @@ fn ktv_vec_to_map(
 
 pub(crate) fn parse_map_with_schema(
     value: FalkorValue,
-    graph_schema: &SyncGraphSchema,
+    graph_schema: &mut SyncGraphSchema,
     conn: &mut BorrowedSyncConnection,
     schema_type: SchemaType,
 ) -> Result<HashMap<String, FalkorValue>> {
@@ -100,7 +100,7 @@ pub(crate) fn parse_map_with_schema(
 impl FalkorParsable for HashMap<String, FalkorValue> {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &SyncGraphSchema,
+        graph_schema: &mut SyncGraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         let val_vec = value.into_vec()?;

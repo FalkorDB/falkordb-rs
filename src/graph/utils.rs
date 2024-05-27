@@ -70,8 +70,8 @@ mod tests {
     fn test_generate_procedure_call() {
         let (query, params) = generate_procedure_call(
             "DB.CONSTRAINTS",
-            Some(&["Hello".to_string(), "World".to_string()]),
-            Some(&["Foo".to_string(), "Bar".to_string()]),
+            Some(&["Hello", "World"]),
+            Some(&["Foo", "Bar"]),
         );
 
         assert_eq!(query, "CALL DB.CONSTRAINTS($Hello,$World) YIELD Foo,Bar");

@@ -6,20 +6,19 @@
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
-    ConfigValue, FalkorConnectionInfo, FalkorDBError, SyncGraph, SyncGraphSchema,
+    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorValue, SyncGraph, SyncGraphSchema,
 };
 use anyhow::Result;
 use parking_lot::Mutex;
-use std::fmt::{Debug, Formatter};
-use std::time::Duration;
 use std::{
     collections::HashMap,
+    fmt::Display,
     sync::{mpsc, Arc},
+    time::Duration,
 };
 
 pub(crate) struct FalkorSyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
-    graph_cache: Mutex<HashMap<String, SyncGraphSchema>>,
     connection_pool_size: u8,
     connection_pool_tx: mpsc::SyncSender<FalkorSyncConnection>,
     connection_pool_rx: mpsc::Receiver<FalkorSyncConnection>,
@@ -27,10 +26,10 @@ pub(crate) struct FalkorSyncClientInner {
 
 impl FalkorSyncClientInner {
     pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnection> {
-        Ok(BorrowedSyncConnection {
-            return_tx: self.connection_pool_tx.clone(),
-            conn: Some(self.connection_pool_rx.recv()?),
-        })
+        Ok(BorrowedSyncConnection::new(
+            self.connection_pool_rx.recv()?,
+            self.connection_pool_tx.clone(),
+        ))
     }
 }
 
@@ -42,24 +41,12 @@ unsafe impl Send for FalkorSyncClientInner {}
 /// and will select it based on enabled features and url connection
 ///
 /// # Thread Safety
-/// This struct is fully thread safe, it can be cloned and passed within threads without constraints,
+/// This struct is fully thread safe, it can be cloned and passed between threads without constraints,
 /// Its API uses only immutable references
 #[derive(Clone)]
 pub struct FalkorSyncClient {
     inner: Arc<FalkorSyncClientInner>,
     pub(crate) _connection_info: FalkorConnectionInfo,
-}
-
-impl Debug for FalkorSyncClient {
-    fn fmt(
-        &self,
-        f: &mut Formatter<'_>,
-    ) -> std::fmt::Result {
-        f.debug_struct("FalkorSyncClient")
-            .field("inner", &"<InnerClient>")
-            .field("connection_info", &self._connection_info)
-            .finish()
-    }
 }
 
 impl FalkorSyncClient {
@@ -77,7 +64,6 @@ impl FalkorSyncClient {
         Ok(Self {
             inner: Arc::new(FalkorSyncClientInner {
                 _inner: client.into(),
-                graph_cache: Default::default(),
                 connection_pool_size: num_connections,
                 connection_pool_tx,
                 connection_pool_rx,
@@ -102,32 +88,12 @@ impl FalkorSyncClient {
     pub fn list_graphs(&self) -> Result<Vec<String>> {
         let mut conn = self.borrow_connection()?;
 
-        let graph_list = match conn.as_inner()? {
-            #[cfg(feature = "redis")]
-            FalkorSyncConnection::Redis(redis_conn) => {
-                use redis::ConnectionLike as _;
-                let res = match redis_conn.req_command(&redis::cmd("GRAPH.LIST"))? {
-                    redis::Value::Bulk(data) => data,
-                    _ => Err(FalkorDBError::InvalidDataReceived)?,
-                };
-
-                let mut graph_list = Vec::with_capacity(res.len());
-                for graph in res {
-                    let graph = match graph {
-                        redis::Value::Data(data) => {
-                            Ok(String::from_utf8_lossy(data.as_slice()).to_string())
-                        }
-                        redis::Value::Status(data) => Ok(data),
-                        _ => Err(FalkorDBError::ParsingError),
-                    }?;
-
-                    graph_list.push(graph);
-                }
-                graph_list
-            }
-        };
-
-        Ok(graph_list)
+        let graph_list = conn.send_command::<&str>(None, "GRAPH.LIST", None, None)?;
+        Ok(graph_list
+            .into_vec()?
+            .into_iter()
+            .flat_map(|name| name.into_string())
+            .collect())
     }
 
     /// Return the current value of a configuration option in the database.
@@ -138,64 +104,37 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
-    pub fn config_get<T: ToString>(
+    pub fn config_get<T: Display>(
         &self,
         config_key: T,
     ) -> Result<HashMap<String, ConfigValue>> {
         let mut conn = self.borrow_connection()?;
+        let config = conn
+            .send_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))?
+            .into_vec()?;
 
-        Ok(match conn.as_inner()? {
-            #[cfg(feature = "redis")]
-            FalkorSyncConnection::Redis(redis_conn) => {
-                use redis::ConnectionLike as _;
+        if config.len() == 2 {
+            let [key, val]: [FalkorValue; 2] = config
+                .try_into()
+                .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-                let bulk_data = match redis_conn.req_command(
-                    redis::cmd("GRAPH.CONFIG")
-                        .arg("GET")
-                        .arg(config_key.to_string()),
-                )? {
-                    redis::Value::Bulk(bulk_data) => bulk_data,
-                    _ => return Err(FalkorDBError::InvalidDataReceived.into()),
-                };
+            return Ok(HashMap::from([(
+                key.into_string()?,
+                ConfigValue::try_from(val)?,
+            )]));
+        }
 
-                if bulk_data.is_empty() {
-                    return Err(FalkorDBError::InvalidDataReceived.into());
-                } else if bulk_data.len() == 2 {
-                    return if let Some(ConfigValue::String(config_key)) = bulk_data
-                        .first()
-                        .map(ConfigValue::try_from)
-                        .and_then(Result::ok)
-                    {
-                        Ok(HashMap::from([(
-                            config_key.to_string(),
-                            ConfigValue::try_from(&bulk_data[1])?,
-                        )]))
-                    } else {
-                        Err(FalkorDBError::InvalidDataReceived.into())
-                    };
-                }
+        Ok(config
+            .into_iter()
+            .flat_map(|config| {
+                let [key, val]: [FalkorValue; 2] = config
+                    .into_vec()?
+                    .try_into()
+                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-                let mut config_map = HashMap::with_capacity(bulk_data.len());
-                for raw_map in bulk_data {
-                    for (key, val) in raw_map
-                        .into_map_iter()
-                        .map_err(|_| FalkorDBError::ParsingError)?
-                    {
-                        let key = match key {
-                            redis::Value::Status(config_key) => Ok(config_key),
-                            redis::Value::Data(config_key) => {
-                                Ok(String::from_utf8_lossy(config_key.as_slice()).to_string())
-                            }
-                            _ => Err(FalkorDBError::InvalidDataReceived),
-                        }?;
-
-                        config_map.insert(key, ConfigValue::try_from(&val)?);
-                    }
-                }
-
-                config_map
-            }
-        })
+                Result::<_, FalkorDBError>::Ok((key.into_string()?, ConfigValue::try_from(val)?))
+            })
+            .collect::<HashMap<String, ConfigValue>>())
     }
 
     /// Return the current value of a configuration option in the database.
@@ -208,22 +147,13 @@ impl FalkorSyncClient {
         &self,
         config_key: T,
         value: C,
-    ) -> Result<()> {
-        let mut conn = self.borrow_connection()?;
-        match conn.as_inner()? {
-            #[cfg(feature = "redis")]
-            FalkorSyncConnection::Redis(redis_conn) => {
-                use redis::ConnectionLike as _;
-                redis_conn.req_command(
-                    redis::cmd("GRAPH.CONFIG")
-                        .arg("SET")
-                        .arg(config_key.into())
-                        .arg(value.into()),
-                )?;
-            }
-        }
-
-        Ok(())
+    ) -> Result<FalkorValue> {
+        self.borrow_connection()?.send_command(
+            None,
+            "GRAPH.CONFIG",
+            Some("SET"),
+            Some(&[config_key.into(), value.into()]),
+        )
     }
 
     /// Opens a graph context for queries and operations
@@ -233,20 +163,14 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// a [`SyncGraph`] object, allowing various graph operations.
-    pub fn open_graph<T: ToString>(
+    pub fn select_graph<T: ToString>(
         &self,
         graph_name: T,
     ) -> SyncGraph {
         SyncGraph {
             client: self.inner.clone(),
             graph_name: graph_name.to_string(),
-            graph_schema: self
-                .inner
-                .graph_cache
-                .lock()
-                .entry(graph_name.to_string())
-                .or_insert(SyncGraphSchema::new(graph_name.to_string()))
-                .clone(),
+            graph_schema: SyncGraphSchema::new(graph_name.to_string()), // Required for requesting refreshes
         }
     }
 
@@ -258,18 +182,18 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// If successful, will return the new [`SyncGraph`] object.
-    pub fn copy_graph<T: ToString, Z: ToString>(
+    pub fn copy_graph(
         &self,
-        graph_to_clone: T,
-        new_graph_name: Z,
+        graph_to_clone: &str,
+        new_graph_name: &str,
     ) -> Result<SyncGraph> {
         self.borrow_connection()?.send_command(
-            Some(graph_to_clone.to_string()),
+            Some(graph_to_clone),
             "GRAPH.COPY",
             None,
-            Some(&[new_graph_name.to_string()]),
+            Some(&[new_graph_name]),
         )?;
-        Ok(self.open_graph(new_graph_name.to_string()))
+        Ok(self.select_graph(new_graph_name))
     }
 }
 
@@ -291,7 +215,6 @@ mod tests {
 
         // Client was created with 6 connections
         let _conn_vec: Vec<Result<BorrowedSyncConnection, anyhow::Error>> = (0..6)
-            .into_iter()
             .map(|_| {
                 let conn = client.borrow_connection();
                 assert!(conn.is_ok());
@@ -302,10 +225,9 @@ mod tests {
         let non_existing_conn = client.inner.connection_pool_rx.try_recv();
         assert!(non_existing_conn.is_err());
 
-        if let Err(TryRecvError::Empty) = non_existing_conn {
-            return;
-        }
-        assert!(false);
+        let Err(TryRecvError::Empty) = non_existing_conn else {
+            panic!("Got error, but not a TryRecvError::Empty, as expected");
+        };
     }
 
     #[test]
@@ -319,14 +241,14 @@ mod tests {
     }
 
     #[test]
-    fn test_open_graph_and_query() {
+    fn test_select_graph_and_query() {
         let client = create_test_client();
 
-        let graph = client.open_graph("imdb");
+        let mut graph = client.select_graph("imdb");
         assert_eq!(graph.graph_name(), "imdb".to_string());
 
         let res = graph
-            .query("MATCH (a:actor) return a".to_string(), None)
+            .query("MATCH (a:actor) return a".to_string())
             .expect("Could not get actors from unmodified graph");
 
         assert_eq!(res.result_set.len(), 1317);
@@ -336,25 +258,25 @@ mod tests {
     fn test_copy_graph() {
         let client = create_test_client();
 
-        client.open_graph("imdb_ro_copy").delete().ok();
+        client.select_graph("imdb_ro_copy").delete().ok();
 
         let graph = client.copy_graph("imdb", "imdb_ro_copy");
         assert!(graph.is_ok());
 
-        let graph = TestSyncGraphHandle {
+        let mut graph = TestSyncGraphHandle {
             inner: graph.unwrap(),
         };
 
-        let original_graph = client.open_graph("imdb");
+        let mut original_graph = client.select_graph("imdb");
 
         assert_eq!(
             graph
                 .inner
-                .query("MATCH (a:actor) RETURN a".to_string(), None)
+                .query("MATCH (a:actor) RETURN a".to_string())
                 .expect("Could not get actors from unmodified graph")
                 .result_set,
             original_graph
-                .query("MATCH (a:actor) RETURN a".to_string(), None)
+                .query("MATCH (a:actor) RETURN a".to_string())
                 .expect("Could not get actors from unmodified graph")
                 .result_set
         )

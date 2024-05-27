@@ -12,33 +12,24 @@ use std::collections::HashSet;
 
 pub(crate) fn parse_labels(
     raw_ids: Vec<FalkorValue>,
-    graph_schema: &SyncGraphSchema,
+    graph_schema: &mut SyncGraphSchema,
     conn: &mut BorrowedSyncConnection,
     schema_type: SchemaType,
 ) -> Result<Vec<String>> {
-    let mut ids_hashset = HashSet::with_capacity(raw_ids.len());
-    for label in raw_ids.iter() {
-        ids_hashset.insert(label.to_i64().ok_or(FalkorDBError::ParsingI64)?);
-    }
+    let ids_hashset = raw_ids
+        .iter()
+        .filter_map(|label_id| label_id.to_i64())
+        .collect::<HashSet<i64>>();
 
     match match graph_schema.verify_id_set(&ids_hashset, schema_type) {
         None => graph_schema.refresh(schema_type, conn, Some(&ids_hashset))?,
         relevant_ids => relevant_ids,
     } {
         Some(relevant_ids) => {
-            let mut parsed_ids = Vec::with_capacity(raw_ids.len());
-            for id in raw_ids {
-                parsed_ids.push(
-                    id.to_i64()
-                        .ok_or(FalkorDBError::ParsingI64)
-                        .and_then(|id| {
-                            relevant_ids
-                                .get(&id)
-                                .cloned()
-                                .ok_or(FalkorDBError::ParsingCompactIdUnknown)
-                        })?,
-                );
-            }
+            let parsed_ids = raw_ids
+                .into_iter()
+                .filter_map(|id| id.to_i64().and_then(|id| relevant_ids.get(&id).cloned()))
+                .collect();
 
             Ok(parsed_ids)
         }
@@ -59,7 +50,7 @@ pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValu
 pub(crate) fn parse_type(
     type_marker: i64,
     val: FalkorValue,
-    graph_schema: &SyncGraphSchema,
+    graph_schema: &mut SyncGraphSchema,
     conn: &mut BorrowedSyncConnection,
 ) -> Result<FalkorValue> {
     let res = match type_marker {
@@ -105,42 +96,11 @@ pub(crate) fn parse_vec<T: TryFrom<FalkorValue, Error = FalkorDBError>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::create_test_client;
-    use std::collections::HashMap;
+    use crate::graph_schema::blocking::tests::open_readonly_graph_with_modified_schema;
 
-    fn open_readonly_graph() -> (SyncGraphSchema, BorrowedSyncConnection) {
-        let client = create_test_client();
-        let schema = client.open_graph("imdb").graph_schema.clone();
-        let conn = client
-            .borrow_connection()
-            .expect("Could not borrow_connection");
-
-        {
-            let write_lock = schema.properties();
-            *write_lock.write() = HashMap::from([
-                (0, "age".to_string()),
-                (1, "is_boring".to_string()),
-                (2, "something_else".to_string()),
-                (3, "secs_since_login".to_string()),
-            ]);
-        }
-
-        {
-            let write_lock = schema.labels();
-            *write_lock.write() =
-                HashMap::from([(0, "much".to_string()), (1, "actor".to_string())]);
-        }
-
-        {
-            let write_lock = schema.relationships();
-            *write_lock.write() = HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
-        }
-
-        (schema, conn)
-    }
     #[test]
     fn test_parse_edge() {
-        let (schema, mut conn) = open_readonly_graph();
+        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             7,
@@ -162,7 +122,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &schema,
+            &mut graph.graph_schema,
             &mut conn,
         );
         assert!(res.is_ok());
@@ -187,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_parse_node() {
-        let (schema, mut conn) = open_readonly_graph();
+        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             8,
@@ -212,7 +172,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &schema,
+            &mut graph.graph_schema,
             &mut conn,
         );
         assert!(res.is_ok());
@@ -238,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_parse_path() {
-        let (schema, mut conn) = open_readonly_graph();
+        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             9,
@@ -277,7 +237,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &schema,
+            &mut graph.graph_schema,
             &mut conn,
         );
         assert!(res.is_ok());
@@ -305,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_parse_map() {
-        let (schema, mut conn) = open_readonly_graph();
+        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             10,
@@ -320,7 +280,7 @@ mod tests {
                 FalkorValue::FString("key2".to_string()),
                 FalkorValue::FArray(vec![FalkorValue::Int64(4), FalkorValue::FBool(true)]),
             ]),
-            &schema,
+            &mut graph.graph_schema,
             &mut conn,
         );
         assert!(res.is_ok());
@@ -341,12 +301,12 @@ mod tests {
 
     #[test]
     fn test_parse_point() {
-        let (schema, mut conn) = open_readonly_graph();
+        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             11,
             FalkorValue::FArray(vec![FalkorValue::F64(102.0), FalkorValue::F64(15.2)]),
-            &schema,
+            &mut graph.graph_schema,
             &mut conn,
         );
         assert!(res.is_ok());

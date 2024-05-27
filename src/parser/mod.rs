@@ -13,7 +13,7 @@ use crate::{connection::asynchronous::BorrowedAsyncConnection, AsyncGraphSchema}
 pub trait FalkorParsable: Sized {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &SyncGraphSchema,
+        graph_schema: &mut SyncGraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self>;
 }

@@ -71,7 +71,7 @@ pub(crate) mod test_utils {
     pub(crate) fn open_test_graph(graph_name: &str) -> TestSyncGraphHandle {
         let client = create_test_client();
 
-        client.open_graph(graph_name).delete().ok();
+        client.select_graph(graph_name).delete().ok();
 
         TestSyncGraphHandle {
             inner: client
@@ -106,7 +106,7 @@ pub(crate) mod test_utils {
     pub(crate) async fn open_test_graph_async(graph_name: &str) -> TestAsyncGraphHandle {
         let client = create_async_test_client().await;
         TestAsyncGraphHandle {
-            inner: client.open_graph(graph_name).await,
+            inner: client.select_graph(graph_name).await,
         }
     }
 }

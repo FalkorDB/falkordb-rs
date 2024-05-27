@@ -16,7 +16,7 @@ tracing = { version = "0.1.40", default-features = false, features = ["std", "at
 url-parse = "1.0.8"
 
 [features]
-default = ["redis", "tokio"]
+default = ["redis"]
 native-tls = ["redis/tls-native-tls"]
 rustls = ["redis/tls-rustls"]
 tokio = ["dep:tokio", "redis/tokio-comp"]

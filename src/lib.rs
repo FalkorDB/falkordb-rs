@@ -80,10 +80,12 @@ pub(crate) mod test_utils {
         }
     }
 
+    #[cfg(feature = "tokio")]
     pub(crate) struct TestAsyncGraphHandle {
         pub(crate) inner: AsyncGraph,
     }
 
+    #[cfg(feature = "tokio")]
     impl Drop for TestAsyncGraphHandle {
         fn drop(&mut self) {
             tokio::runtime::Handle::current().block_on(async {

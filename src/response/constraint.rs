@@ -3,15 +3,18 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::asynchronous::BorrowedAsyncConnection;
 use crate::{
     connection::blocking::BorrowedSyncConnection,
     value::utils::{parse_type, type_val_from_value},
-    AsyncGraphSchema, EntityType, FalkorAsyncParseable, FalkorDBError, FalkorParsable, FalkorValue,
-    SyncGraphSchema,
+    EntityType, FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
 };
 use anyhow::Result;
 use std::fmt::{Display, Formatter};
+
+#[cfg(feature = "tokio")]
+use crate::{
+    connection::asynchronous::BorrowedAsyncConnection, AsyncGraphSchema, FalkorAsyncParseable,
+};
 
 /// The type of restriction to apply for the property
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

@@ -206,7 +206,7 @@ mod tests {
         assert!(impossible_client.is_err());
     }
 
-    #[cfg(feature = "redis")]
+    #[cfg(all(feature = "tokio", feature = "redis"))]
     #[tokio::test]
     async fn test_async_builder() {
         let conneciton_info = "redis://127.0.0.1:6379".try_into();
@@ -220,6 +220,7 @@ mod tests {
             .is_ok());
     }
 
+    #[cfg(feature = "tokio")]
     #[tokio::test]
     #[ignore]
     async fn test_async_timeout() {

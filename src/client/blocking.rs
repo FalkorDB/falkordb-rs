@@ -277,7 +277,7 @@ impl FalkorSyncClient {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_test_client, TestGraphHandle},
+        test_utils::{create_test_client, TestSyncGraphHandle},
         FalkorClientBuilder,
     };
     use std::{mem, sync::mpsc::TryRecvError, thread};
@@ -341,7 +341,7 @@ mod tests {
         let graph = client.copy_graph("imdb", "imdb_ro_copy");
         assert!(graph.is_ok());
 
-        let graph = TestGraphHandle {
+        let graph = TestSyncGraphHandle {
             inner: graph.unwrap(),
         };
 

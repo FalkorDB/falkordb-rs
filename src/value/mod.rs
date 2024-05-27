@@ -12,6 +12,11 @@ use path::Path;
 use point::Point;
 use std::{collections::HashMap, fmt::Debug};
 
+#[cfg(feature = "tokio")]
+use crate::{
+    connection::asynchronous::BorrowedAsyncConnection, AsyncGraphSchema, FalkorAsyncParseable,
+};
+
 pub(crate) mod config;
 pub(crate) mod graph_entities;
 pub(crate) mod map;
@@ -181,11 +186,11 @@ impl FalkorParsable for FalkorValue {
 }
 
 #[cfg(feature = "tokio")]
-impl crate::FalkorAsyncParseable for FalkorValue {
+impl FalkorAsyncParseable for FalkorValue {
     async fn from_falkor_value_async(
         value: FalkorValue,
-        _graph_schema: &crate::AsyncGraphSchema,
-        _conn: crate::FalkorAsyncConnection,
+        _graph_schema: &AsyncGraphSchema,
+        _conn: &mut BorrowedAsyncConnection,
     ) -> Result<Self> {
         Ok(value)
     }

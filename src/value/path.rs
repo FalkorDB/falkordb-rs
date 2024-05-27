@@ -9,6 +9,11 @@ use crate::{
 };
 use anyhow::Result;
 
+#[cfg(feature = "tokio")]
+use crate::{
+    connection::asynchronous::BorrowedAsyncConnection, AsyncGraphSchema, FalkorAsyncParseable,
+};
+
 /// TODO: not exactly sure what this represents
 #[derive(Clone, Debug, PartialEq)]
 pub struct Path {
@@ -54,11 +59,11 @@ impl FalkorParsable for Path {
 }
 
 #[cfg(feature = "tokio")]
-impl crate::FalkorAsyncParseable for Path {
+impl FalkorAsyncParseable for Path {
     async fn from_falkor_value_async(
         value: FalkorValue,
-        graph_schema: &crate::AsyncGraphSchema,
-        conn: crate::FalkorAsyncConnection,
+        graph_schema: &AsyncGraphSchema,
+        conn: &mut BorrowedAsyncConnection,
     ) -> Result<Self> {
         let [nodes, relationships]: [FalkorValue; 2] = value
             .into_vec()?
@@ -68,14 +73,12 @@ impl crate::FalkorAsyncParseable for Path {
 
         let mut parsed_nodes = Vec::with_capacity(nodes.len());
         for node_raw in nodes {
-            parsed_nodes
-                .push(Node::from_falkor_value_async(node_raw, graph_schema, conn.clone()).await?);
+            parsed_nodes.push(Node::from_falkor_value_async(node_raw, graph_schema, conn).await?);
         }
 
         let mut parsed_edges = Vec::with_capacity(relationships.len());
         for edge_raw in relationships {
-            parsed_edges
-                .push(Edge::from_falkor_value_async(edge_raw, graph_schema, conn.clone()).await?);
+            parsed_edges.push(Edge::from_falkor_value_async(edge_raw, graph_schema, conn).await?);
         }
 
         Ok(Path {

@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    client::FalkorClientProvider, AsyncGraph, AsyncGraphSchema, ConfigValue, FalkorAsyncConnection,
-    FalkorConnectionInfo, FalkorDBError,
+    client::FalkorClientProvider, connection::asynchronous::BorrowedAsyncConnection, AsyncGraph,
+    AsyncGraphSchema, ConfigValue, FalkorAsyncConnection, FalkorConnectionInfo, FalkorDBError,
 };
 use anyhow::Result;
 use std::{
@@ -20,21 +20,20 @@ pub(crate) struct FalkorAsyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
     graph_cache: Mutex<HashMap<String, AsyncGraphSchema>>,
     connection_pool_size: u8,
-    connection_pool: Mutex<VecDeque<FalkorAsyncConnection>>,
+    connection_pool: Arc<Mutex<VecDeque<FalkorAsyncConnection>>>,
 }
 
 impl FalkorAsyncClientInner {
-    pub(crate) async fn get_connection(&self) -> Result<FalkorAsyncConnection> {
+    pub(crate) async fn borrow_connection(&self) -> Result<BorrowedAsyncConnection> {
         let mut conn_pool = self.connection_pool.lock().await;
         let connection = conn_pool
             .pop_front()
             .ok_or(FalkorDBError::EmptyConnection)?;
 
-        let cloned = connection.clone();
-
-        conn_pool.push_back(connection);
-
-        Ok(cloned)
+        Ok(BorrowedAsyncConnection {
+            conn: Some(connection),
+            conn_pool: self.connection_pool.clone(),
+        })
     }
 }
 
@@ -65,7 +64,9 @@ impl FalkorAsyncClient {
         num_connections: u8,
         timeout: Option<Duration>,
     ) -> Result<Self> {
-        let connection_pool = Mutex::new(VecDeque::with_capacity(num_connections as usize));
+        let connection_pool = Arc::new(Mutex::new(VecDeque::with_capacity(
+            num_connections as usize,
+        )));
         {
             let mut connection_pool = connection_pool.lock().await;
             for _ in 0..num_connections {
@@ -83,8 +84,14 @@ impl FalkorAsyncClient {
             _connection_info: connection_info,
         })
     }
-    pub(crate) async fn get_connection(&self) -> Result<FalkorAsyncConnection> {
-        self.inner.get_connection().await
+
+    /// Get the max number of connections in the client's connection pool
+    pub fn connection_pool_size(&self) -> u8 {
+        self.inner.connection_pool_size
+    }
+
+    pub(crate) async fn borrow_connection(&self) -> Result<BorrowedAsyncConnection> {
+        self.inner.borrow_connection().await
     }
 
     /// Return a list of graphs currently residing in the database
@@ -92,9 +99,10 @@ impl FalkorAsyncClient {
     /// # Returns
     /// A [`Vec`] of [`String`]s, containing the names of available graphs
     pub async fn list_graphs(&self) -> Result<Vec<String>> {
-        let graph_list = match self.get_connection().await? {
+        let mut conn = self.borrow_connection().await?;
+        let graph_list = match conn.as_inner()? {
             #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(mut redis_conn) => {
+            FalkorAsyncConnection::Redis(redis_conn) => {
                 let cmd = redis::cmd("GRAPH.LIST");
                 let res = match redis_conn.send_packed_command(&cmd).await {
                     Ok(redis::Value::Bulk(data)) => data,
@@ -132,10 +140,10 @@ impl FalkorAsyncClient {
         &self,
         config_key: T,
     ) -> Result<HashMap<String, ConfigValue>> {
-        let conn = self.get_connection().await?;
-        Ok(match conn {
+        let mut conn = self.borrow_connection().await?;
+        Ok(match conn.as_inner()? {
             #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(mut redis_conn) => {
+            FalkorAsyncConnection::Redis(redis_conn) => {
                 let bulk_data = match redis_conn
                     .send_packed_command(
                         redis::cmd("GRAPH.CONFIG")
@@ -145,19 +153,28 @@ impl FalkorAsyncClient {
                     .await?
                 {
                     redis::Value::Bulk(bulk_data) => bulk_data,
-                    _ => return Err(FalkorDBError::InvalidDataReceived.into()),
+                    _ => {
+                        return Err(FalkorDBError::InvalidDataReceived)?;
+                    }
                 };
 
                 if bulk_data.is_empty() {
-                    return Err(FalkorDBError::InvalidDataReceived.into());
+                    Err(FalkorDBError::InvalidDataReceived)?;
                 } else if bulk_data.len() == 2 {
-                    return if let Some(redis::Value::Status(config_key)) = bulk_data.first() {
+                    return if let Some(value) = bulk_data.first() {
+                        let str_key = match value {
+                            redis::Value::Data(bytes_data) => {
+                                String::from_utf8_lossy(bytes_data.as_slice()).to_string()
+                            }
+                            redis::Value::Status(status_data) => status_data.to_owned(),
+                            _ => Err(FalkorDBError::InvalidDataReceived)?,
+                        };
                         Ok(HashMap::from([(
-                            config_key.to_string(),
+                            str_key.to_string(),
                             ConfigValue::try_from(&bulk_data[1])?,
                         )]))
                     } else {
-                        Err(FalkorDBError::InvalidDataReceived.into())
+                        Err(FalkorDBError::InvalidDataReceived)?
                     };
                 }
 
@@ -195,10 +212,10 @@ impl FalkorAsyncClient {
         config_key: T,
         value: C,
     ) -> Result<()> {
-        let conn = self.get_connection().await?;
-        match conn {
+        let mut conn = self.borrow_connection().await?;
+        match conn.as_inner()? {
             #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(mut redis_conn) => {
+            FalkorAsyncConnection::Redis(redis_conn) => {
                 redis_conn
                     .send_packed_command(
                         redis::cmd("GRAPH.CONFIG")
@@ -219,7 +236,7 @@ impl FalkorAsyncClient {
     /// * `graph_name`: A string identifier of the graph to open.
     ///
     /// # Returns
-    /// a [`SyncGraph`] object, allowing various graph operations.
+    /// a [`AsyncGraph`] object, allowing various graph operations.
     pub async fn open_graph<T: ToString>(
         &self,
         graph_name: T,
@@ -238,20 +255,20 @@ impl FalkorAsyncClient {
         }
     }
 
-    /// Copies an entire graph and returns the [`SyncGraph`] for the new copied graph.
+    /// Copies an entire graph and returns the [`AsyncGraph`] for the new copied graph.
     ///
     /// # Arguments
     /// * `graph_to_clone`: A string identifier of the graph to copy.
     /// * `new_graph_name`: The name to give the new graph.
     ///
     /// # Returns
-    /// If successful, will return the new [`SyncGraph`] object.
+    /// If successful, will return the new [`AsyncGraph`] object.
     pub async fn copy_graph<T: ToString, Z: ToString>(
         &self,
         graph_to_clone: T,
         new_graph_name: Z,
     ) -> Result<AsyncGraph> {
-        self.get_connection()
+        self.borrow_connection()
             .await?
             .send_command(
                 Some(graph_to_clone.to_string()),
@@ -261,5 +278,139 @@ impl FalkorAsyncClient {
             )
             .await?;
         Ok(self.open_graph(new_graph_name.to_string()).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::create_async_test_client;
+    use std::{mem, thread};
+
+    #[tokio::test]
+    async fn test_list_graphs() {
+        let client = create_async_test_client().await;
+        let res = client.list_graphs().await;
+        assert!(res.is_ok());
+
+        let graphs = res.unwrap();
+        assert_eq!(graphs[0], "imdb");
+    }
+
+    #[tokio::test]
+    async fn test_open_graph_and_query() {
+        let client = create_async_test_client().await;
+
+        let graph = client.open_graph("imdb").await;
+        assert_eq!(graph.graph_name(), "imdb".to_string());
+
+        let res = graph
+            .query("MATCH (a:actor) return a".to_string(), None)
+            .await
+            .expect("Could not get actors from unmodified graph");
+
+        assert_eq!(res.result_set.len(), 1317);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_copy_graph() {
+        let client = create_async_test_client().await;
+
+        client.open_graph("imdb_ro_copy").await.delete().await.ok();
+
+        let graph = client
+            .copy_graph("imdb", "imdb_ro_copy")
+            .await
+            .expect("Could not copy graph");
+
+        let original_graph = client.open_graph("imdb").await;
+
+        assert_eq!(
+            graph
+                .query("MATCH (a:actor) RETURN a".to_string(), None)
+                .await
+                .expect("Could not get actors from unmodified graph")
+                .result_set,
+            original_graph
+                .query("MATCH (a:actor) RETURN a".to_string(), None)
+                .await
+                .expect("Could not get actors from unmodified graph")
+                .result_set
+        )
+    }
+
+    #[tokio::test]
+    async fn test_get_config() {
+        let client = create_async_test_client().await;
+
+        let config = client
+            .config_get("QUERY_MEM_CAPACITY")
+            .await
+            .expect("Could not get configuration");
+
+        assert_eq!(config.len(), 1);
+        assert!(config.contains_key("QUERY_MEM_CAPACITY"));
+        assert_eq!(
+            mem::discriminant(config.get("QUERY_MEM_CAPACITY").unwrap()),
+            mem::discriminant(&ConfigValue::Int64(0))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_config_all() {
+        let client = create_async_test_client().await;
+        let configuration = client
+            .config_get("*")
+            .await
+            .expect("Could not get configuration");
+        assert_eq!(
+            configuration.get("THREAD_COUNT").cloned().unwrap(),
+            ConfigValue::Int64(thread::available_parallelism().unwrap().get() as i64)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_config() {
+        let client = create_async_test_client().await;
+
+        let config = client
+            .config_get("DELTA_MAX_PENDING_CHANGES")
+            .await
+            .expect("Could not get configuration");
+
+        let current_val = config
+            .get("DELTA_MAX_PENDING_CHANGES")
+            .cloned()
+            .unwrap()
+            .as_i64()
+            .unwrap();
+
+        let desired_val = if current_val == 10000 { 50000 } else { 10000 };
+
+        client
+            .config_set("DELTA_MAX_PENDING_CHANGES", desired_val)
+            .await
+            .expect("Could not set config value");
+
+        let new_config = client
+            .config_get("DELTA_MAX_PENDING_CHANGES")
+            .await
+            .expect("Could not get configuration");
+
+        assert_eq!(
+            new_config
+                .get("DELTA_MAX_PENDING_CHANGES")
+                .cloned()
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            desired_val
+        );
+
+        client
+            .config_set("DELTA_MAX_PENDING_CHANGES", current_val)
+            .await
+            .ok();
     }
 }

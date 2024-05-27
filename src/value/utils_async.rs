@@ -3,10 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use super::utils::type_val_from_value;
 use crate::{
-    AsyncGraphSchema, Edge, FalkorAsyncConnection, FalkorAsyncParseable, FalkorDBError,
-    FalkorValue, Node, Path, Point, SchemaType,
+    connection::asynchronous::BorrowedAsyncConnection, value::utils::type_val_from_value,
+    AsyncGraphSchema, Edge, FalkorAsyncParseable, FalkorDBError, FalkorValue, Node, Path, Point,
+    SchemaType,
 };
 use anyhow::Result;
 use async_recursion::async_recursion;
@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 pub(crate) async fn parse_labels_async(
     raw_ids: Vec<FalkorValue>,
     graph_schema: &AsyncGraphSchema,
-    conn: FalkorAsyncConnection,
+    conn: &mut BorrowedAsyncConnection,
     schema_type: SchemaType,
 ) -> Result<Vec<String>> {
     let mut ids_hashset = HashSet::with_capacity(raw_ids.len());
@@ -57,7 +57,7 @@ pub(crate) async fn parse_type_async(
     type_marker: i64,
     val: FalkorValue,
     graph_schema: &AsyncGraphSchema,
-    conn: FalkorAsyncConnection,
+    conn: &mut BorrowedAsyncConnection,
 ) -> Result<FalkorValue> {
     let res = match type_marker {
         1 => FalkorValue::None,
@@ -70,8 +70,7 @@ pub(crate) async fn parse_type_async(
             let mut parsed_vec = Vec::with_capacity(val.len());
             for item in val {
                 let (type_marker, val) = type_val_from_value(item)?;
-                parsed_vec
-                    .push(parse_type_async(type_marker, val, graph_schema, conn.clone()).await?);
+                parsed_vec.push(parse_type_async(type_marker, val, graph_schema, conn).await?);
             }
             parsed_vec
         }),

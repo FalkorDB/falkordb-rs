@@ -3,10 +3,12 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::connection::asynchronous::BorrowedAsyncConnection;
 use crate::{
     connection::blocking::BorrowedSyncConnection,
     value::utils::{parse_type, type_val_from_value},
-    EntityType, FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
+    AsyncGraphSchema, EntityType, FalkorAsyncParseable, FalkorDBError, FalkorParsable, FalkorValue,
+    SyncGraphSchema,
 };
 use anyhow::Result;
 use std::fmt::{Display, Formatter};
@@ -156,11 +158,11 @@ impl FalkorParsable for Constraint {
 }
 
 #[cfg(feature = "tokio")]
-impl crate::FalkorAsyncParseable for Constraint {
+impl FalkorAsyncParseable for Constraint {
     async fn from_falkor_value_async(
         value: FalkorValue,
-        graph_schema: &crate::AsyncGraphSchema,
-        conn: crate::FalkorAsyncConnection,
+        graph_schema: &AsyncGraphSchema,
+        conn: &mut BorrowedAsyncConnection,
     ) -> Result<Self> {
         let value_vec = value.into_vec()?;
 
@@ -168,13 +170,8 @@ impl crate::FalkorAsyncParseable for Constraint {
         for column_raw in value_vec {
             let (type_marker, val) = type_val_from_value(column_raw)?;
             parsed_values.push(
-                crate::value::utils_async::parse_type_async(
-                    type_marker,
-                    val,
-                    graph_schema,
-                    conn.clone(),
-                )
-                .await?,
+                crate::value::utils_async::parse_type_async(type_marker, val, graph_schema, conn)
+                    .await?,
             );
         }
 

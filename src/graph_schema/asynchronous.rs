@@ -4,7 +4,10 @@
  */
 
 use super::utils::{get_refresh_command, get_relevant_hashmap, update_map};
-use crate::{value::FalkorValue, FalkorAsyncConnection, FalkorDBError, SchemaType};
+use crate::{
+    connection::asynchronous::BorrowedAsyncConnection, value::FalkorValue, FalkorDBError,
+    SchemaType,
+};
 use anyhow::Result;
 use std::{
     collections::{HashMap, HashSet},
@@ -77,7 +80,7 @@ impl AsyncGraphSchema {
     pub(crate) async fn refresh(
         &self,
         schema_type: SchemaType,
-        mut conn: FalkorAsyncConnection,
+        conn: &mut BorrowedAsyncConnection,
         id_hashset: Option<&HashSet<i64>>,
     ) -> Result<Option<HashMap<i64, String>>> {
         let command = get_refresh_command(schema_type);

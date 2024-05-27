@@ -52,11 +52,11 @@ pub use {
 pub(crate) mod test_utils {
     use crate::{FalkorClientBuilder, FalkorSyncClient, SyncGraph};
 
-    pub(crate) struct TestGraphHandle {
+    pub(crate) struct TestSyncGraphHandle {
         pub(crate) inner: SyncGraph,
     }
 
-    impl Drop for TestGraphHandle {
+    impl Drop for TestSyncGraphHandle {
         fn drop(&mut self) {
             self.inner.delete().ok();
         }
@@ -68,15 +68,29 @@ pub(crate) mod test_utils {
             .expect("Could not create client")
     }
 
-    pub(crate) fn open_test_graph(graph_name: &str) -> TestGraphHandle {
+    pub(crate) fn open_test_graph(graph_name: &str) -> TestSyncGraphHandle {
         let client = create_test_client();
 
         client.open_graph(graph_name).delete().ok();
 
-        TestGraphHandle {
+        TestSyncGraphHandle {
             inner: client
                 .copy_graph("imdb", graph_name)
                 .expect("Could not copy graph for test"),
         }
+    }
+
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn create_async_test_client() -> crate::FalkorAsyncClient {
+        FalkorClientBuilder::new_async()
+            .build()
+            .await
+            .expect("Could not construct client")
+    }
+
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn open_test_graph_async(graph_name: &str) -> crate::AsyncGraph {
+        let client = create_async_test_client().await;
+        client.open_graph(graph_name).await
     }
 }

@@ -202,4 +202,35 @@ mod tests {
             .build();
         assert!(impossible_client.is_err());
     }
+
+    #[cfg(feature = "redis")]
+    #[tokio::test]
+    async fn test_async_builder() {
+        let conneciton_info = "redis://127.0.0.1:6379".try_into();
+        assert!(conneciton_info.is_ok());
+
+        assert!(FalkorClientBuilder::new_async()
+            .with_num_connections(4)
+            .with_connection_info(conneciton_info.unwrap())
+            .build()
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_async_timeout() {
+        {
+            let client = FalkorClientBuilder::new_async()
+                .with_timeout(Duration::from_millis(100))
+                .build()
+                .await;
+            assert!(client.is_ok());
+        }
+
+        let impossible_client = FalkorClientBuilder::new_async()
+            .with_timeout(Duration::from_nanos(10))
+            .build()
+            .await;
+        assert!(impossible_client.is_err());
+    }
 }

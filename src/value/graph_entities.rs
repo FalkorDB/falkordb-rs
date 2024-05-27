@@ -15,7 +15,11 @@ use std::{
 };
 
 #[cfg(feature = "tokio")]
-use crate::value::{map::parse_map_with_schema_async, utils_async::parse_labels_async};
+use crate::{
+    connection::asynchronous::BorrowedAsyncConnection,
+    value::{map::parse_map_with_schema_async, utils_async::parse_labels_async},
+    AsyncGraphSchema, FalkorAsyncParseable,
+};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum EntityType {
@@ -111,11 +115,11 @@ impl FalkorParsable for Node {
 }
 
 #[cfg(feature = "tokio")]
-impl crate::FalkorAsyncParseable for Node {
+impl FalkorAsyncParseable for Node {
     async fn from_falkor_value_async(
         value: FalkorValue,
-        graph_schema: &crate::AsyncGraphSchema,
-        conn: crate::FalkorAsyncConnection,
+        graph_schema: &AsyncGraphSchema,
+        conn: &mut BorrowedAsyncConnection,
     ) -> Result<Self> {
         let [entity_id, labels, properties]: [FalkorValue; 3] = value
             .into_vec()?
@@ -133,7 +137,7 @@ impl crate::FalkorAsyncParseable for Node {
         }
 
         let parsed_labels =
-            parse_labels_async(labels, graph_schema, conn.clone(), SchemaType::Labels).await?;
+            parse_labels_async(labels, graph_schema, conn, SchemaType::Labels).await?;
         Ok(Node {
             entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
             labels: parsed_labels,
@@ -216,11 +220,11 @@ impl FalkorParsable for Edge {
 }
 
 #[cfg(feature = "tokio")]
-impl crate::FalkorAsyncParseable for Edge {
+impl FalkorAsyncParseable for Edge {
     async fn from_falkor_value_async(
         value: FalkorValue,
-        graph_schema: &crate::AsyncGraphSchema,
-        conn: crate::FalkorAsyncConnection,
+        graph_schema: &AsyncGraphSchema,
+        conn: &mut BorrowedAsyncConnection,
     ) -> Result<Self> {
         let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] = value
             .into_vec()?
@@ -253,7 +257,7 @@ impl crate::FalkorAsyncParseable for Edge {
         match graph_schema
             .refresh(
                 SchemaType::Relationships,
-                conn.clone(),
+                conn,
                 Some(&HashSet::from([relation])),
             )
             .await?

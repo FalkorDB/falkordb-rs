@@ -3,10 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::graph::utils::construct_query;
-use crate::FalkorValue;
+use crate::{FalkorDBError, FalkorValue};
 use anyhow::Result;
-use std::collections::HashMap;
+use std::{collections::VecDeque, sync::Arc};
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub enum FalkorAsyncConnection {
@@ -14,7 +14,20 @@ pub enum FalkorAsyncConnection {
     Redis(redis::aio::MultiplexedConnection),
 }
 
-impl FalkorAsyncConnection {
+/// A container for a connection that is borrowed from the pool.
+/// Upon going out of scope, it will return the connection to the pool.
+///
+/// This is publicly exposed for user-implementations of [`FalkorParsable`](crate::FalkorParsable)
+pub struct BorrowedAsyncConnection {
+    pub(crate) conn: Option<FalkorAsyncConnection>,
+    pub(crate) conn_pool: Arc<Mutex<VecDeque<FalkorAsyncConnection>>>,
+}
+
+impl BorrowedAsyncConnection {
+    pub(crate) fn as_inner(&mut self) -> Result<&mut FalkorAsyncConnection, FalkorDBError> {
+        self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)
+    }
+
     pub(crate) async fn send_command(
         &mut self,
         graph_name: Option<String>,
@@ -22,72 +35,45 @@ impl FalkorAsyncConnection {
         subcommand: Option<&str>,
         params: Option<&[String]>,
     ) -> Result<FalkorValue> {
-        Ok(match self {
-            #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(redis_conn) => {
-                let mut cmd = redis::cmd(command);
-                cmd.arg(subcommand);
-                cmd.arg(graph_name);
-                if let Some(params) = params {
-                    for param in params {
-                        cmd.arg(param);
+        Ok(
+            match self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)? {
+                #[cfg(feature = "redis")]
+                FalkorAsyncConnection::Redis(redis_conn) => {
+                    let mut cmd = redis::cmd(command);
+                    cmd.arg(subcommand);
+                    cmd.arg(graph_name);
+                    if let Some(params) = params {
+                        for param in params {
+                            cmd.arg(param);
+                        }
                     }
+
+                    redis::FromRedisValue::from_owned_redis_value(
+                        redis_conn.send_packed_command(&cmd).await?,
+                    )?
                 }
-                redis::FromRedisValue::from_owned_redis_value(
-                    redis_conn.send_packed_command(&cmd).await?,
-                )?
+            },
+        )
+    }
+}
+
+impl Drop for BorrowedAsyncConnection {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            let handle = tokio::runtime::Handle::try_current();
+            match handle {
+                Ok(handle) => {
+                    handle.spawn_blocking({
+                        let pool = self.conn_pool.clone();
+                        move || {
+                            pool.blocking_lock().push_back(conn);
+                        }
+                    });
+                }
+                Err(_) => {
+                    self.conn_pool.blocking_lock().push_back(conn);
+                }
             }
-        })
-    }
-
-    async fn query_internal<Q: ToString, T: ToString, Z: ToString>(
-        &mut self,
-        graph_name: String,
-        command: &str,
-        query_string: Q,
-        params: Option<&HashMap<T, Z>>,
-        timeout: Option<u64>,
-    ) -> Result<FalkorValue> {
-        let query = construct_query(query_string, params);
-
-        Ok(match self {
-            #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(redis_conn) => {
-                use redis::FromRedisValue;
-                let redis_val = redis_conn
-                    .send_packed_command(
-                        redis::cmd(command)
-                            .arg(graph_name.as_str())
-                            .arg(query)
-                            .arg("--compact")
-                            .arg(timeout.map(|timeout| format!("timeout {timeout}"))),
-                    )
-                    .await?;
-
-                FalkorValue::from_owned_redis_value(redis_val)?
-            }
-        })
-    }
-
-    pub(crate) async fn query<Q: ToString, T: ToString, Z: ToString>(
-        &mut self,
-        graph_name: String,
-        query_string: Q,
-        params: Option<&HashMap<T, Z>>,
-        timeout: Option<u64>,
-    ) -> Result<FalkorValue> {
-        self.query_internal(graph_name, "GRAPH.QUERY", query_string, params, timeout)
-            .await
-    }
-
-    pub(crate) async fn query_readonly<Q: ToString, T: ToString, Z: ToString>(
-        &mut self,
-        graph_name: String,
-        query_string: Q,
-        params: Option<&HashMap<T, Z>>,
-        timeout: Option<u64>,
-    ) -> Result<FalkorValue> {
-        self.query_internal(graph_name, "GRAPH.QUERY_RO", query_string, params, timeout)
-            .await
+        }
     }
 }

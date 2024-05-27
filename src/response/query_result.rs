@@ -12,7 +12,10 @@ use anyhow::Result;
 use std::collections::HashMap;
 
 #[cfg(feature = "tokio")]
-use crate::value::utils_async::parse_type_async;
+use crate::{
+    connection::asynchronous::BorrowedAsyncConnection, value::utils_async::parse_type_async,
+    AsyncGraphSchema, FalkorAsyncParseable,
+};
 
 /// A struct returned by the various queries, containing the result set, header, and stats
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -152,8 +155,8 @@ impl FalkorParsable for QueryResult {
 #[cfg(feature = "tokio")]
 async fn parse_result_set_async(
     data_vec: Vec<FalkorValue>,
-    graph_schema: &crate::AsyncGraphSchema,
-    conn: crate::FalkorAsyncConnection,
+    graph_schema: &AsyncGraphSchema,
+    conn: &mut BorrowedAsyncConnection,
     header_keys: &[String],
 ) -> Result<Vec<HashMap<String, FalkorValue>>> {
     let mut parsed_result_set = Vec::with_capacity(data_vec.len());
@@ -163,8 +166,7 @@ async fn parse_result_set_async(
         let mut parsed_column = Vec::with_capacity(column_vec.len());
         for column_item in column_vec {
             let (type_marker, val) = type_val_from_value(column_item)?;
-            parsed_column
-                .push(parse_type_async(type_marker, val, graph_schema, conn.clone()).await?);
+            parsed_column.push(parse_type_async(type_marker, val, graph_schema, conn).await?);
         }
 
         parsed_result_set.push(header_keys.iter().cloned().zip(parsed_column).collect())
@@ -174,11 +176,11 @@ async fn parse_result_set_async(
 }
 
 #[cfg(feature = "tokio")]
-impl crate::FalkorAsyncParseable for QueryResult {
+impl FalkorAsyncParseable for QueryResult {
     async fn from_falkor_value_async(
         value: FalkorValue,
-        graph_schema: &crate::AsyncGraphSchema,
-        conn: crate::FalkorAsyncConnection,
+        graph_schema: &AsyncGraphSchema,
+        conn: &mut BorrowedAsyncConnection,
     ) -> Result<Self> {
         let value_vec = value.into_vec()?;
 

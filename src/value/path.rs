@@ -14,7 +14,7 @@ use crate::{
     connection::asynchronous::BorrowedAsyncConnection, AsyncGraphSchema, FalkorAsyncParseable,
 };
 
-/// TODO: not exactly sure what this represents
+/// Represents a path between two nodes, contains all the nodes, and the relationships between them along the path
 #[derive(Clone, Debug, PartialEq)]
 pub struct Path {
     pub nodes: Vec<Node>,

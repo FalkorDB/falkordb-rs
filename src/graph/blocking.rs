@@ -413,7 +413,7 @@ impl SyncGraph {
     /// Calls the DB.INDICES procedure on the graph, returning all the indexing methods currently used
     ///
     /// # Returns
-    /// A [`Vec`] of [`Index`]
+    /// A [`Vec`] of [`FalkorIndex`]
     pub fn list_indices(&mut self) -> Result<Vec<FalkorIndex>> {
         let mut conn = self.client.borrow_connection()?;
         let [_, indices, _]: [FalkorValue; 3] = self

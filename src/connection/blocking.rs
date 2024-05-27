@@ -5,8 +5,7 @@
 
 use crate::{FalkorDBError, FalkorValue};
 use anyhow::Result;
-use std::fmt::Display;
-use std::sync::mpsc;
+use std::{fmt::Display, sync::mpsc};
 
 pub(crate) enum FalkorSyncConnection {
     #[cfg(feature = "redis")]

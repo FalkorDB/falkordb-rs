@@ -365,7 +365,7 @@ impl SyncGraph {
         let options_string = options
             .map(|hashmap| {
                 hashmap
-                    .into_iter()
+                    .iter()
                     .map(|(key, val)| format!("'{key}':'{val}'"))
                     .collect::<Vec<_>>()
                     .join(",")
@@ -497,7 +497,7 @@ impl SyncGraph {
             "PROPERTIES".to_string(),
             properties.len().to_string(),
         ]);
-        params.extend(properties.into_iter().map(|property| property.to_string()));
+        params.extend(properties.iter().map(|property| property.to_string()));
 
         // create constraint using index
         self.send_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))

@@ -369,7 +369,7 @@ impl AsyncGraph {
         let options_string = options
             .map(|hashmap| {
                 hashmap
-                    .into_iter()
+                    .iter()
                     .map(|(key, val)| format!("'{key}':'{val}'"))
                     .collect::<Vec<_>>()
                     .join(",")
@@ -503,7 +503,7 @@ impl AsyncGraph {
             "PROPERTIES".to_string(),
             properties.len().to_string(),
         ]);
-        params.extend(properties.into_iter().map(|property| property.to_string()));
+        params.extend(properties.iter().map(|property| property.to_string()));
 
         // create constraint using index
         self.send_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))
@@ -536,5 +536,217 @@ impl AsyncGraph {
 
         self.send_command("GRAPH.CONSTRAINT", Some("DROP"), Some(params.as_slice()))
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{test_utils::open_test_graph_async, IndexType};
+
+    #[tokio::test]
+    async fn test_create_drop_index_async() {
+        let graph = open_test_graph_async("test_create_drop_index_async").await;
+        graph
+            .inner
+            .create_index(
+                IndexType::Fulltext,
+                EntityType::Node,
+                "actor".to_string(),
+                &["Hello"],
+                None,
+            )
+            .await
+            .expect("Could not create index");
+
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices");
+
+        assert_eq!(indices.len(), 2);
+        assert_eq!(indices[0].field_types["Hello"], vec![IndexType::Fulltext]);
+
+        graph
+            .inner
+            .drop_index(
+                IndexType::Fulltext,
+                EntityType::Node,
+                "actor".to_string(),
+                &["Hello"],
+            )
+            .await
+            .expect("Could not drop index");
+    }
+
+    #[tokio::test]
+    async fn test_list_indices_async() {
+        let graph = open_test_graph_async("test_list_indices_async").await;
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices");
+
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].entity_type, EntityType::Node);
+        assert_eq!(indices[0].index_label, "actor".to_string());
+        assert_eq!(indices[0].field_types.len(), 2);
+        assert_eq!(
+            indices[0].field_types,
+            HashMap::from([
+                ("age".to_string(), vec![IndexType::Range]),
+                ("name".to_string(), vec![IndexType::Fulltext])
+            ])
+        );
+
+        graph.inner.delete().await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_create_drop_mandatory_constraint_async() {
+        let graph = open_test_graph_async("test_mandatory_constraint_async").await;
+
+        graph
+            .inner
+            .create_mandatory_constraint(EntityType::Edge, "act", &["hello", "goodbye"])
+            .await
+            .expect("Could not create constraint");
+
+        graph
+            .inner
+            .drop_constraint(
+                ConstraintType::Mandatory,
+                EntityType::Edge,
+                "act",
+                &["hello", "goodbye"],
+            )
+            .await
+            .expect("Could not drop constraint");
+    }
+
+    #[tokio::test]
+    async fn test_create_drop_unique_constraint_async() {
+        let graph = open_test_graph_async("test_unique_constraint_async").await;
+
+        graph
+            .inner
+            .create_unique_constraint(
+                EntityType::Node,
+                "actor".to_string(),
+                &["first_name", "last_name"],
+            )
+            .await
+            .expect("Could not create constraint");
+
+        graph
+            .inner
+            .drop_constraint(
+                ConstraintType::Unique,
+                EntityType::Node,
+                "actor",
+                &["first_name", "last_name"],
+            )
+            .await
+            .expect("Could not drop constraint");
+    }
+
+    #[tokio::test]
+    async fn test_list_constraints_async() {
+        let graph = open_test_graph_async("test_list_constraint_async").await;
+
+        graph
+            .inner
+            .create_unique_constraint(
+                EntityType::Node,
+                "actor".to_string(),
+                &["first_name", "last_name"],
+            )
+            .await
+            .expect("Could not create constraint");
+
+        let constraints = graph
+            .inner
+            .list_constraints()
+            .await
+            .expect("Could not list constraints");
+        assert_eq!(constraints.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_slowlog_async() {
+        let graph = open_test_graph_async("test_slowlog_async").await;
+
+        graph
+            .inner
+            .query("UNWIND range(0, 500) AS x RETURN x", None)
+            .await
+            .expect("Could not generate the fast query");
+        graph
+            .inner
+            .query("UNWIND range(0, 100000) AS x RETURN x", None)
+            .await
+            .expect("Could not generate the slow query");
+
+        let slowlog = graph
+            .inner
+            .slowlog()
+            .await
+            .expect("Could not get slowlog entries");
+
+        assert_eq!(slowlog.len(), 2);
+        assert_eq!(
+            slowlog[0].arguments,
+            "UNWIND range(0, 500) AS x RETURN x".to_string()
+        );
+        assert_eq!(
+            slowlog[1].arguments,
+            "UNWIND range(0, 100000) AS x RETURN x".to_string()
+        );
+
+        graph
+            .inner
+            .slowlog_reset()
+            .await
+            .expect("Could not reset slowlog memory");
+        let slowlog_after_reset = graph
+            .inner
+            .slowlog()
+            .await
+            .expect("Could not get slowlog entries after reset");
+        assert!(slowlog_after_reset.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_explain_async() {
+        let graph = open_test_graph_async("test_explain_async").await;
+
+        let execution_plan = graph.inner.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").await.expect("Could not create execution plan");
+        assert_eq!(execution_plan.steps().len(), 7);
+        assert_eq!(
+            execution_plan.text(),
+            "\nResults\n    Limit\n        Aggregate\n            Filter\n                Node By Index Scan | (b:actor)\n                    Project\n                        Node By Label Scan | (a:actor)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_profile_async() {
+        let graph = open_test_graph_async("test_profile_async").await;
+
+        let execution_plan = graph
+            .inner
+            .profile("UNWIND range(0, 1000) AS x RETURN x")
+            .await
+            .expect("Could not generate the query");
+
+        let steps = execution_plan.steps().to_vec();
+        assert_eq!(steps.len(), 3);
+
+        let expected = vec!["Results", "Project", "Unwind"];
+        for (step, expected) in steps.into_iter().zip(expected) {
+            assert!(step.starts_with(expected));
+            assert!(step.ends_with("ms"));
+        }
     }
 }

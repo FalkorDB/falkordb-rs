@@ -50,7 +50,7 @@ pub use {
 
 #[cfg(test)]
 pub(crate) mod test_utils {
-    use crate::{FalkorClientBuilder, FalkorSyncClient, SyncGraph};
+    use super::*;
 
     pub(crate) struct TestSyncGraphHandle {
         pub(crate) inner: SyncGraph,
@@ -80,8 +80,20 @@ pub(crate) mod test_utils {
         }
     }
 
+    pub(crate) struct TestAsyncGraphHandle {
+        pub(crate) inner: AsyncGraph,
+    }
+
+    impl Drop for TestAsyncGraphHandle {
+        fn drop(&mut self) {
+            tokio::runtime::Handle::current().block_on(async {
+                self.inner.delete().await.ok();
+            });
+        }
+    }
+
     #[cfg(feature = "tokio")]
-    pub(crate) async fn create_async_test_client() -> crate::FalkorAsyncClient {
+    pub(crate) async fn create_async_test_client() -> FalkorAsyncClient {
         FalkorClientBuilder::new_async()
             .build()
             .await
@@ -89,8 +101,10 @@ pub(crate) mod test_utils {
     }
 
     #[cfg(feature = "tokio")]
-    pub(crate) async fn open_test_graph_async(graph_name: &str) -> crate::AsyncGraph {
+    pub(crate) async fn open_test_graph_async(graph_name: &str) -> TestAsyncGraphHandle {
         let client = create_async_test_client().await;
-        client.open_graph(graph_name).await
+        TestAsyncGraphHandle {
+            inner: client.open_graph(graph_name).await,
+        }
     }
 }

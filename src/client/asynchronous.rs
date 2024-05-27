@@ -288,7 +288,7 @@ mod tests {
     use std::{mem, thread};
 
     #[tokio::test]
-    async fn test_list_graphs() {
+    async fn test_async_list_graphs() {
         let client = create_async_test_client().await;
         let res = client.list_graphs().await;
         assert!(res.is_ok());
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_open_graph_and_query() {
+    async fn test_async_open_graph_and_query() {
         let client = create_async_test_client().await;
 
         let graph = client.open_graph("imdb").await;
@@ -313,14 +313,18 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
-    async fn test_copy_graph() {
+    async fn test_async_copy_graph() {
         let client = create_async_test_client().await;
 
-        client.open_graph("imdb_ro_copy").await.delete().await.ok();
+        client
+            .open_graph("imdb_async_ro_copy")
+            .await
+            .delete()
+            .await
+            .ok();
 
         let graph = client
-            .copy_graph("imdb", "imdb_ro_copy")
+            .copy_graph("imdb", "imdb_async_ro_copy")
             .await
             .expect("Could not copy graph");
 
@@ -341,7 +345,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_config() {
+    async fn test_async_get_config() {
         let client = create_async_test_client().await;
 
         let config = client
@@ -358,12 +362,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_config_all() {
+    async fn test_async_get_config_all() {
         let client = create_async_test_client().await;
         let configuration = client
             .config_get("*")
             .await
             .expect("Could not get configuration");
+
         assert_eq!(
             configuration.get("THREAD_COUNT").cloned().unwrap(),
             ConfigValue::Int64(thread::available_parallelism().unwrap().get() as i64)
@@ -371,36 +376,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_config() {
+    async fn test_async_set_config() {
         let client = create_async_test_client().await;
 
         let config = client
-            .config_get("DELTA_MAX_PENDING_CHANGES")
+            .config_get("EFFECTS_THRESHOLD")
             .await
             .expect("Could not get configuration");
 
         let current_val = config
-            .get("DELTA_MAX_PENDING_CHANGES")
+            .get("EFFECTS_THRESHOLD")
             .cloned()
             .unwrap()
             .as_i64()
             .unwrap();
 
-        let desired_val = if current_val == 10000 { 50000 } else { 10000 };
+        let desired_val = if current_val == 300 { 250 } else { 300 };
 
         client
-            .config_set("DELTA_MAX_PENDING_CHANGES", desired_val)
+            .config_set("EFFECTS_THRESHOLD", desired_val)
             .await
             .expect("Could not set config value");
 
         let new_config = client
-            .config_get("DELTA_MAX_PENDING_CHANGES")
+            .config_get("EFFECTS_THRESHOLD")
             .await
             .expect("Could not get configuration");
 
         assert_eq!(
             new_config
-                .get("DELTA_MAX_PENDING_CHANGES")
+                .get("EFFECTS_THRESHOLD")
                 .cloned()
                 .unwrap()
                 .as_i64()
@@ -409,7 +414,7 @@ mod tests {
         );
 
         client
-            .config_set("DELTA_MAX_PENDING_CHANGES", current_val)
+            .config_set("EFFECTS_THRESHOLD", current_val)
             .await
             .ok();
     }

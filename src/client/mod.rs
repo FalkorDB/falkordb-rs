@@ -41,7 +41,7 @@ impl FalkorClientProvider {
             FalkorClientProvider::Redis(redis_client) => match connection_timeout {
                 Some(timeout) => {
                     redis_client
-                        .get_multiplexed_tokio_connection_with_response_timeouts(timeout, timeout)
+                        .get_multiplexed_async_connection_with_timeouts(timeout, timeout)
                         .await?
                 }
                 None => redis_client.get_multiplexed_tokio_connection().await?,

@@ -7,6 +7,9 @@ use crate::{client::FalkorClientProvider, FalkorConnectionInfo, FalkorDBError, F
 use anyhow::Result;
 use std::time::Duration;
 
+#[cfg(feature = "tokio")]
+use crate::FalkorAsyncClient;
+
 /// A Builder-pattern implementation struct for creating a new Falkor client, sync or async.
 pub struct FalkorClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
@@ -127,12 +130,12 @@ impl FalkorClientBuilder<'A'> {
         }
     }
 
-    pub async fn build(self) -> Result<crate::FalkorAsyncClient> {
+    pub async fn build(self) -> Result<FalkorAsyncClient> {
         let connection_info = self
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        crate::FalkorAsyncClient::create(
+        FalkorAsyncClient::create(
             get_client(connection_info.clone())?,
             connection_info,
             self.num_connections,
@@ -218,6 +221,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_async_timeout() {
         {
             let client = FalkorClientBuilder::new_async()

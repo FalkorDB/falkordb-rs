@@ -144,3 +144,40 @@ impl FalkorParsable for FalkorIndex {
         })
     }
 }
+
+#[cfg(feature = "tokio")]
+impl crate::FalkorAsyncParseable for FalkorIndex {
+    async fn from_falkor_value_async(
+        value: FalkorValue,
+        graph_schema: &crate::AsyncGraphSchema,
+        conn: crate::FalkorAsyncConnection,
+    ) -> Result<Self> {
+        let value_vec = value.into_vec()?;
+        let mut semi_parsed_items = Vec::with_capacity(value_vec.len());
+        for item in value_vec {
+            let (type_marker, val) = type_val_from_value(item)?;
+            semi_parsed_items.push(
+                crate::value::utils_async::parse_type_async(
+                    type_marker,
+                    val,
+                    graph_schema,
+                    conn.clone(),
+                )
+                .await?,
+            );
+        }
+
+        let [label, fields, field_types, language, stopwords, entity_type, status, info]: [FalkorValue; 8] = semi_parsed_items.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+        Ok(Self {
+            entity_type: EntityType::try_from(entity_type.into_string()?)?,
+            status: IndexStatus::try_from(status.into_string()?)?,
+            index_label: label.try_into()?,
+            fields: parse_vec(fields)?,
+            field_types: parse_types_map(field_types)?,
+            language: language.try_into()?,
+            stopwords: parse_vec(stopwords)?,
+            info: info.try_into()?,
+        })
+    }
+}

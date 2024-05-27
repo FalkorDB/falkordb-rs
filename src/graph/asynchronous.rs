@@ -4,17 +4,13 @@
  */
 
 use super::utils::{construct_query, generate_procedure_call};
-use crate::client::asynchronous::FalkorAsyncClientInner;
-use crate::connection::blocking::FalkorSyncConnection;
 use crate::{
-    AsyncGraphSchema, Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorAsyncClient,
-    FalkorAsyncConnection, FalkorAsyncParseable, FalkorDBError, FalkorIndex, FalkorParsable,
-    FalkorValue, IndexType, QueryResult, SlowlogEntry,
+    client::asynchronous::FalkorAsyncClientInner, AsyncGraphSchema, Constraint, ConstraintType,
+    EntityType, ExecutionPlan, FalkorAsyncConnection, FalkorAsyncParseable, FalkorDBError,
+    FalkorIndex, FalkorValue, IndexType, QueryResult, SlowlogEntry,
 };
 use anyhow::Result;
-use std::collections::HashMap;
-use std::fmt::Display;
-use std::sync::Arc;
+use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
 ///
@@ -31,6 +27,10 @@ pub struct AsyncGraph {
 }
 
 impl AsyncGraph {
+    /// Returns the name of the graph for which this API performs operations.
+    ///
+    /// # Returns
+    /// The graph name as a string slice, without cloning.
     pub fn graph_name(&self) -> &str {
         self.graph_name.as_str()
     }
@@ -317,7 +317,7 @@ impl AsyncGraph {
     /// # Returns
     /// A [`Vec`] of [`Index`]
     pub async fn list_indices(&self) -> Result<Vec<FalkorIndex>> {
-        let mut conn = self.client.get_connection().await?;
+        let conn = self.client.get_connection().await?;
         let [_, indices, _]: [FalkorValue; 3] = self
             .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, false, None)
             .await?
@@ -330,8 +330,8 @@ impl AsyncGraph {
         let mut out_vec = Vec::with_capacity(indices.len());
         for index in indices {
             out_vec.push(
-                FalkorIndex::from_falkor_value_async(index, &self.graph_schema, &mut conn)
-                    .expect("Could not parse"),
+                FalkorIndex::from_falkor_value_async(index, &self.graph_schema, conn.clone())
+                    .await?,
             );
         }
 
@@ -427,7 +427,7 @@ impl AsyncGraph {
     /// # Returns
     /// A [`Vec`] of [`Constraint`]s
     pub async fn list_constraints(&self) -> Result<Vec<Constraint>> {
-        let mut conn = self.client.get_connection().await?;
+        let conn = self.client.get_connection().await?;
         let [_, query_res, _]: [FalkorValue; 3] = self
             .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, false, None)
             .await?
@@ -439,11 +439,9 @@ impl AsyncGraph {
 
         let mut constraints_vec = Vec::with_capacity(query_res.len());
         for item in query_res {
-            constraints_vec.push(Constraint::from_falkor_value_async(
-                item,
-                &self.graph_schema,
-                &mut conn,
-            )?);
+            constraints_vec.push(
+                Constraint::from_falkor_value_async(item, &self.graph_schema, conn.clone()).await?,
+            );
         }
 
         Ok(constraints_vec)

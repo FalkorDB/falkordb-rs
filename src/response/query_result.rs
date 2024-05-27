@@ -153,7 +153,7 @@ impl FalkorParsable for QueryResult {
 async fn parse_result_set_async(
     data_vec: Vec<FalkorValue>,
     graph_schema: &crate::AsyncGraphSchema,
-    conn: &mut crate::FalkorAsyncConnection,
+    conn: crate::FalkorAsyncConnection,
     header_keys: &[String],
 ) -> Result<Vec<HashMap<String, FalkorValue>>> {
     let mut parsed_result_set = Vec::with_capacity(data_vec.len());
@@ -163,7 +163,8 @@ async fn parse_result_set_async(
         let mut parsed_column = Vec::with_capacity(column_vec.len());
         for column_item in column_vec {
             let (type_marker, val) = type_val_from_value(column_item)?;
-            parsed_column.push(parse_type_async(type_marker, val, graph_schema, conn).await?);
+            parsed_column
+                .push(parse_type_async(type_marker, val, graph_schema, conn.clone()).await?);
         }
 
         parsed_result_set.push(header_keys.iter().cloned().zip(parsed_column).collect())
@@ -177,7 +178,7 @@ impl crate::FalkorAsyncParseable for QueryResult {
     async fn from_falkor_value_async(
         value: FalkorValue,
         graph_schema: &crate::AsyncGraphSchema,
-        conn: &mut crate::FalkorAsyncConnection,
+        conn: crate::FalkorAsyncConnection,
     ) -> Result<Self> {
         let value_vec = value.into_vec()?;
 

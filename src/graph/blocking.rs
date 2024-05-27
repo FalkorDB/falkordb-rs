@@ -325,10 +325,11 @@ impl SyncGraph {
 
         let mut out_vec = Vec::with_capacity(indices.len());
         for index in indices {
-            out_vec.push(
-                FalkorIndex::from_falkor_value(index, &self.graph_schema, &mut conn)
-                    .expect("Could not parse"),
-            );
+            out_vec.push(FalkorIndex::from_falkor_value(
+                index,
+                &self.graph_schema,
+                &mut conn,
+            )?);
         }
 
         Ok(out_vec)

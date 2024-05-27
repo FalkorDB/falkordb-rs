@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 pub(crate) async fn parse_labels_async(
     raw_ids: Vec<FalkorValue>,
     graph_schema: &AsyncGraphSchema,
-    conn: &mut FalkorAsyncConnection,
+    conn: FalkorAsyncConnection,
     schema_type: SchemaType,
 ) -> Result<Vec<String>> {
     let mut ids_hashset = HashSet::with_capacity(raw_ids.len());
@@ -70,7 +70,8 @@ pub(crate) async fn parse_type_async(
             let mut parsed_vec = Vec::with_capacity(val.len());
             for item in val {
                 let (type_marker, val) = type_val_from_value(item)?;
-                parsed_vec.push(parse_type_async(type_marker, val, graph_schema, conn).await?);
+                parsed_vec
+                    .push(parse_type_async(type_marker, val, graph_schema, conn.clone()).await?);
             }
             parsed_vec
         }),

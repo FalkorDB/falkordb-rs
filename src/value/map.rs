@@ -147,7 +147,7 @@ async fn ktv_vec_to_map_async(
                 .get(&fktv.key)
                 .cloned()
                 .ok_or(FalkorDBError::ParsingError)?,
-            parse_type_async(fktv.type_marker, fktv.val, graph_schema, conn).await?,
+            parse_type_async(fktv.type_marker, fktv.val, graph_schema, conn.clone()).await?,
         );
     }
 
@@ -179,7 +179,7 @@ pub(crate) async fn parse_map_with_schema_async(
 
     // If we reached here, schema validation failed and we need to refresh our schema
     match graph_schema
-        .refresh(schema_type, conn, Some(&id_hashset))
+        .refresh(schema_type, conn.clone(), Some(&id_hashset))
         .await?
     {
         Some(relevant_ids_map) => {
@@ -194,7 +194,7 @@ impl crate::FalkorAsyncParseable for HashMap<String, FalkorValue> {
     async fn from_falkor_value_async(
         value: FalkorValue,
         graph_schema: &crate::AsyncGraphSchema,
-        conn: &mut crate::FalkorAsyncConnection,
+        conn: crate::FalkorAsyncConnection,
     ) -> Result<Self> {
         let val_vec = value.into_vec()?;
 
@@ -203,7 +203,7 @@ impl crate::FalkorAsyncParseable for HashMap<String, FalkorValue> {
             let fktv = FKeyTypeVal::try_from(val)?;
             new_map.insert(
                 fktv.key.to_string(),
-                parse_type_async(fktv.type_marker, fktv.val, graph_schema, conn).await?,
+                parse_type_async(fktv.type_marker, fktv.val, graph_schema, conn.clone()).await?,
             );
         }
 

@@ -127,15 +127,13 @@ impl FalkorClientBuilder<'A'> {
         }
     }
 
-    pub async fn build(
-        self
-    ) -> Result<std::sync::Arc<tokio::sync::Mutex<crate::FalkorAsyncClient>>> {
+    pub async fn build(self) -> Result<crate::FalkorAsyncClient> {
         let connection_info = self
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
         crate::FalkorAsyncClient::create(
-            get_client(connection_info)?,
+            get_client(connection_info.clone())?,
             connection_info,
             self.num_connections,
             self.timeout,

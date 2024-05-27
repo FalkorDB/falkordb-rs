@@ -185,7 +185,7 @@ impl crate::FalkorAsyncParseable for FalkorValue {
     async fn from_falkor_value_async(
         value: FalkorValue,
         _graph_schema: &crate::AsyncGraphSchema,
-        _conn: &mut crate::FalkorAsyncConnection,
+        _conn: crate::FalkorAsyncConnection,
     ) -> Result<Self> {
         Ok(value)
     }

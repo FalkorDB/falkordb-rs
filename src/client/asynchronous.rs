@@ -8,9 +8,9 @@ use crate::{
     FalkorConnectionInfo, FalkorDBError,
 };
 use anyhow::Result;
-use std::fmt::{Debug, Formatter};
 use std::{
     collections::{HashMap, VecDeque},
+    fmt::{Debug, Formatter},
     sync::Arc,
     time::Duration,
 };
@@ -238,14 +238,28 @@ impl FalkorAsyncClient {
         }
     }
 
-    pub async fn copy_graph<T: ToString>(
-        &mut self,
-        cloned_graph_name: T,
+    /// Copies an entire graph and returns the [`SyncGraph`] for the new copied graph.
+    ///
+    /// # Arguments
+    /// * `graph_to_clone`: A string identifier of the graph to copy.
+    /// * `new_graph_name`: The name to give the new graph.
+    ///
+    /// # Returns
+    /// If successful, will return the new [`SyncGraph`] object.
+    pub async fn copy_graph<T: ToString, Z: ToString>(
+        &self,
+        graph_to_clone: T,
+        new_graph_name: Z,
     ) -> Result<AsyncGraph> {
-        self.connection
-            .clone()
-            .send_command(Some(cloned_graph_name.to_string()), "GRAPH.COPY", None)
+        self.get_connection()
+            .await?
+            .send_command(
+                Some(graph_to_clone.to_string()),
+                "GRAPH.COPY",
+                None,
+                Some(&[new_graph_name.to_string()]),
+            )
             .await?;
-        Ok(self.open_graph(cloned_graph_name))
+        Ok(self.open_graph(new_graph_name.to_string()).await)
     }
 }

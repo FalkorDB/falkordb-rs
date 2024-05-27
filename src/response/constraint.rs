@@ -166,17 +166,16 @@ impl crate::FalkorAsyncParseable for Constraint {
 
         let mut parsed_values = Vec::with_capacity(value_vec.len());
         for column_raw in value_vec {
-            parsed_values.push(type_val_from_value(column_raw).and_then(
-                |(type_marker, raw_val)| {
-                    crate::value::utils_async::parse_type_async(
-                        type_marker,
-                        raw_val,
-                        graph_schema,
-                        conn.clone(),
-                    )
-                    .await
-                },
-            )?);
+            let (type_marker, val) = type_val_from_value(column_raw)?;
+            parsed_values.push(
+                crate::value::utils_async::parse_type_async(
+                    type_marker,
+                    val,
+                    graph_schema,
+                    conn.clone(),
+                )
+                .await?,
+            );
         }
 
         let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = parsed_values.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;

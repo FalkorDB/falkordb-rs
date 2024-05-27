@@ -115,7 +115,7 @@ impl crate::FalkorAsyncParseable for Node {
     async fn from_falkor_value_async(
         value: FalkorValue,
         graph_schema: &crate::AsyncGraphSchema,
-        conn: &mut crate::FalkorAsyncConnection,
+        conn: crate::FalkorAsyncConnection,
     ) -> Result<Self> {
         let [entity_id, labels, properties]: [FalkorValue; 3] = value
             .into_vec()?
@@ -133,7 +133,7 @@ impl crate::FalkorAsyncParseable for Node {
         }
 
         let parsed_labels =
-            parse_labels_async(labels, graph_schema, conn, SchemaType::Labels).await?;
+            parse_labels_async(labels, graph_schema, conn.clone(), SchemaType::Labels).await?;
         Ok(Node {
             entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
             labels: parsed_labels,
@@ -253,7 +253,7 @@ impl crate::FalkorAsyncParseable for Edge {
         match graph_schema
             .refresh(
                 SchemaType::Relationships,
-                conn,
+                conn.clone(),
                 Some(&HashSet::from([relation])),
             )
             .await?

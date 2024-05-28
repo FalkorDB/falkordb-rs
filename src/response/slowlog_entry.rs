@@ -4,7 +4,6 @@
  */
 
 use crate::{FalkorDBError, FalkorValue};
-use anyhow::Result;
 
 /// A slowlog entry, representing one of the N slowest queries in the current log
 #[derive(Clone, Debug, PartialEq)]
@@ -19,9 +18,12 @@ pub struct SlowlogEntry {
     pub time_taken: f64,
 }
 
-impl SlowlogEntry {
-    pub(crate) fn from_value_vec(values: Vec<FalkorValue>) -> Result<Self> {
-        let [timestamp, command, arguments, time_taken] = values
+impl TryFrom<FalkorValue> for SlowlogEntry {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> std::result::Result<Self, Self::Error> {
+        let [timestamp, command, arguments, time_taken] = value
+            .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 

@@ -69,10 +69,7 @@ impl AsyncGraph {
             return Ok(vec![]);
         }
 
-        Ok(res
-            .into_iter()
-            .flat_map(|entry_raw| SlowlogEntry::from_value_vec(entry_raw.into_vec()?))
-            .collect())
+        Ok(res.into_iter().flat_map(SlowlogEntry::try_from).collect())
     }
 
     /// Resets the slowlog, all query time data will be cleared.

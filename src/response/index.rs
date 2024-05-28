@@ -56,11 +56,11 @@ impl TryFrom<&String> for IndexStatus {
 /// The type of this indexed field
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum IndexType {
-    /// This index is a number
+    /// This index is a range
     Range,
     /// This index is raw vector data
     Vector,
-    /// This field is a string
+    /// This index is a string
     Fulltext,
 }
 
@@ -110,6 +110,7 @@ fn parse_types_map(value: FalkorValue) -> Result<HashMap<String, Vec<IndexType>>
     Ok(out_map)
 }
 
+/// Contains all the info regarding an index on the database
 #[derive(Clone, Debug, PartialEq)]
 pub struct FalkorIndex {
     pub entity_type: EntityType,
@@ -122,20 +123,9 @@ pub struct FalkorIndex {
     pub info: HashMap<String, FalkorValue>,
 }
 
-impl FalkorParsable for FalkorIndex {
-    fn from_falkor_value(
-        value: FalkorValue,
-        graph_schema: &mut SyncGraphSchema,
-        conn: &mut BorrowedSyncConnection,
-    ) -> Result<Self> {
-        let value_vec = value.into_vec()?;
-        let mut semi_parsed_items = Vec::with_capacity(value_vec.len());
-        for item in value_vec {
-            let (type_marker, val) = type_val_from_value(item)?;
-            semi_parsed_items.push(parse_type(type_marker, val, graph_schema, conn)?);
-        }
-
-        let [label, fields, field_types, language, stopwords, entity_type, status, info]: [FalkorValue; 8] = semi_parsed_items.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+impl FalkorIndex {
+    fn from_raw_values(items: Vec<FalkorValue>) -> Result<Self> {
+        let [label, fields, field_types, language, stopwords, entity_type, status, info]: [FalkorValue; 8] = items.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         Ok(Self {
             entity_type: EntityType::try_from(entity_type.into_string()?)?,
@@ -147,6 +137,25 @@ impl FalkorParsable for FalkorIndex {
             stopwords: parse_vec(stopwords)?,
             info: info.try_into()?,
         })
+    }
+}
+
+impl FalkorParsable for FalkorIndex {
+    fn from_falkor_value(
+        value: FalkorValue,
+        graph_schema: &mut SyncGraphSchema,
+        conn: &mut BorrowedSyncConnection,
+    ) -> Result<Self> {
+        let semi_parsed_items = value
+            .into_vec()?
+            .into_iter()
+            .flat_map(|item| {
+                let (type_marker, val) = type_val_from_value(item)?;
+                parse_type(type_marker, val, graph_schema, conn)
+            })
+            .collect::<Vec<_>>();
+
+        Self::from_raw_values(semi_parsed_items)
     }
 }
 
@@ -167,17 +176,6 @@ impl FalkorAsyncParseable for FalkorIndex {
             );
         }
 
-        let [label, fields, field_types, language, stopwords, entity_type, status, info]: [FalkorValue; 8] = semi_parsed_items.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
-
-        Ok(Self {
-            entity_type: EntityType::try_from(entity_type.into_string()?)?,
-            status: IndexStatus::try_from(status.into_string()?)?,
-            index_label: label.try_into()?,
-            fields: parse_vec(fields)?,
-            field_types: parse_types_map(field_types)?,
-            language: language.try_into()?,
-            stopwords: parse_vec(stopwords)?,
-            info: info.try_into()?,
-        })
+        Self::from_raw_values(semi_parsed_items)
     }
 }

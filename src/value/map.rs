@@ -108,30 +108,30 @@ impl FalkorParsable for HashMap<String, FalkorValue> {
             Err(FalkorDBError::ParsingFMap)?;
         }
 
-        let mut new_map = HashMap::with_capacity(val_vec.len() / 2);
-        for pair in val_vec.chunks_exact(2) {
-            let [key, val]: [FalkorValue; 2] = pair
-                .to_vec()
-                .try_into()
-                .map_err(|_| FalkorDBError::ParsingFMap)?;
+        Ok(val_vec
+            .chunks_exact(2)
+            .flat_map(|pair| {
+                let [key, val]: [FalkorValue; 2] = pair
+                    .to_vec()
+                    .try_into()
+                    .map_err(|_| FalkorDBError::ParsingFMap)?;
 
-            let [type_marker, val]: [FalkorValue; 2] = val
-                .into_vec()?
-                .try_into()
-                .map_err(|_| FalkorDBError::ParsingFMap)?;
+                let [type_marker, val]: [FalkorValue; 2] = val
+                    .into_vec()?
+                    .try_into()
+                    .map_err(|_| FalkorDBError::ParsingFMap)?;
 
-            new_map.insert(
-                key.into_string()?,
-                parse_type(
-                    type_marker.to_i64().ok_or(FalkorDBError::ParsingKTVTypes)?,
-                    val,
-                    graph_schema,
-                    conn,
-                )?,
-            );
-        }
-
-        Ok(new_map)
+                Result::<_>::Ok((
+                    key.into_string()?,
+                    parse_type(
+                        type_marker.to_i64().ok_or(FalkorDBError::ParsingKTVTypes)?,
+                        val,
+                        graph_schema,
+                        conn,
+                    )?,
+                ))
+            })
+            .collect())
     }
 }
 

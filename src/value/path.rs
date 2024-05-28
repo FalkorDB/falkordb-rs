@@ -31,29 +31,18 @@ impl FalkorParsable for Path {
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
-        let (nodes, relationships) = (nodes.into_vec()?, relationships.into_vec()?);
 
-        let mut parsed_nodes = Vec::with_capacity(nodes.len());
-        for node_raw in nodes {
-            parsed_nodes.push(FalkorParsable::from_falkor_value(
-                node_raw,
-                graph_schema,
-                conn,
-            )?);
-        }
-
-        let mut parsed_edges = Vec::with_capacity(relationships.len());
-        for edge_raw in relationships {
-            parsed_edges.push(FalkorParsable::from_falkor_value(
-                edge_raw,
-                graph_schema,
-                conn,
-            )?);
-        }
-
-        Ok(Path {
-            nodes: parsed_nodes,
-            relationships: parsed_edges,
+        Ok(Self {
+            nodes: nodes
+                .into_vec()?
+                .into_iter()
+                .flat_map(|node| Node::from_falkor_value(node, graph_schema, conn))
+                .collect(),
+            relationships: relationships
+                .into_vec()?
+                .into_iter()
+                .flat_map(|edge| Edge::from_falkor_value(edge, graph_schema, conn))
+                .collect(),
         })
     }
 }

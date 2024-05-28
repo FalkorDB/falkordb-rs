@@ -21,20 +21,17 @@ pub(crate) struct FalkorSyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
     connection_pool_size: u8,
     connection_pool_tx: mpsc::SyncSender<FalkorSyncConnection>,
-    connection_pool_rx: mpsc::Receiver<FalkorSyncConnection>,
+    connection_pool_rx: Mutex<mpsc::Receiver<FalkorSyncConnection>>,
 }
 
 impl FalkorSyncClientInner {
     pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnection> {
         Ok(BorrowedSyncConnection::new(
-            self.connection_pool_rx.recv()?,
+            self.connection_pool_rx.lock().recv()?,
             self.connection_pool_tx.clone(),
         ))
     }
 }
-
-unsafe impl Sync for FalkorSyncClientInner {}
-unsafe impl Send for FalkorSyncClientInner {}
 
 /// This is the publicly exposed API of the sync Falkor Client
 /// It makes no assumptions in regard to which database the Falkor module is running on,
@@ -66,7 +63,7 @@ impl FalkorSyncClient {
                 _inner: client.into(),
                 connection_pool_size: num_connections,
                 connection_pool_tx,
-                connection_pool_rx,
+                connection_pool_rx: Mutex::new(connection_pool_rx),
             }),
             _connection_info: connection_info,
         })
@@ -222,7 +219,7 @@ mod tests {
             })
             .collect();
 
-        let non_existing_conn = client.inner.connection_pool_rx.try_recv();
+        let non_existing_conn = client.inner.connection_pool_rx.lock().try_recv();
         assert!(non_existing_conn.is_err());
 
         let Err(TryRecvError::Empty) = non_existing_conn else {

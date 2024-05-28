@@ -83,14 +83,11 @@ pub(crate) fn parse_type(
 pub(crate) fn parse_vec<T: TryFrom<FalkorValue, Error = FalkorDBError>>(
     value: FalkorValue
 ) -> Result<Vec<T>, FalkorDBError> {
-    let val_vec = value.into_vec()?;
-
-    let mut out_vec = Vec::with_capacity(val_vec.len());
-    for element in val_vec {
-        out_vec.push(element.try_into()?);
-    }
-
-    Ok(out_vec)
+    Ok(value
+        .into_vec()?
+        .into_iter()
+        .flat_map(TryFrom::try_from)
+        .collect())
 }
 
 #[cfg(test)]

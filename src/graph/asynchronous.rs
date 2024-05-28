@@ -3,11 +3,12 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use super::utils::{construct_query, generate_procedure_call};
 use crate::{
-    client::asynchronous::FalkorAsyncClientInner, AsyncGraphSchema, Constraint, ConstraintType,
-    EntityType, ExecutionPlan, FalkorAsyncConnection, FalkorAsyncParseable, FalkorDBError,
-    FalkorIndex, FalkorValue, IndexType, QueryResult, SlowlogEntry,
+    client::asynchronous::FalkorAsyncClientInner,
+    graph::utils::{construct_query, generate_procedure_call},
+    parser::utils::{parse_header, parse_result_set_async},
+    AsyncGraphSchema, Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorAsyncParseable,
+    FalkorDBError, FalkorIndex, FalkorResponse, FalkorValue, IndexType, ResultSet, SlowlogEntry,
 };
 use anyhow::Result;
 use std::{collections::HashMap, fmt::Display, sync::Arc};
@@ -41,17 +42,16 @@ impl AsyncGraph {
         subcommand: Option<&str>,
         params: Option<&[String]>,
     ) -> Result<FalkorValue> {
-        self.client
-            .borrow_connection()
-            .await?
-            .send_command(Some(self.graph_name.clone()), command, subcommand, params)
+        let mut conn = self.client.borrow_connection().await?;
+        conn.send_command(Some(self.graph_name.as_str()), command, subcommand, params)
             .await
     }
 
     /// Deletes the graph stored in the database, and drop all the schema caches.
     /// NOTE: This still maintains the graph API, operations are still viable.
-    pub async fn delete(&self) -> Result<()> {
+    pub async fn delete(&mut self) -> Result<()> {
         self.send_command("GRAPH.DELETE", None, None).await?;
+        self.graph_schema.clear().await;
         Ok(())
     }
 
@@ -69,17 +69,15 @@ impl AsyncGraph {
             return Ok(vec![]);
         }
 
-        let mut slowlog_entries = Vec::with_capacity(res.len());
-        for entry_raw in res {
-            slowlog_entries.push(SlowlogEntry::from_value_vec(entry_raw.into_vec()?)?);
-        }
-
-        Ok(slowlog_entries)
+        Ok(res
+            .into_iter()
+            .flat_map(|entry_raw| SlowlogEntry::from_value_vec(entry_raw.into_vec()?))
+            .collect())
     }
 
     /// Resets the slowlog, all query time data will be cleared.
     pub async fn slowlog_reset(&self) -> Result<FalkorValue> {
-        self.send_command("GRAPH.SLOWLOG", Some("RESET"), None)
+        self.send_command("GRAPH.SLOWLOG", None, Some(&["RESET".to_string()]))
             .await
     }
 
@@ -162,37 +160,110 @@ impl AsyncGraph {
             .await
     }
 
-    async fn query_inner<Q: ToString, T: ToString, Z: ToString, P: FalkorAsyncParseable>(
-        &self,
+    async fn query_inner_with_timeout<Q: ToString, T: ToString, Z: ToString>(
+        &mut self,
         command: &str,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
-        timeout: Option<i64>,
-    ) -> Result<P> {
+        timeout: i64,
+    ) -> Result<FalkorResponse<ResultSet>> {
         let query = construct_query(query_string, params);
-
         let mut conn = self.client.borrow_connection().await?;
-        let falkor_result = match conn.as_inner()? {
-            #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(redis_conn) => {
-                use redis::FromRedisValue as _;
-                let redis_val = redis_conn
-                    .send_packed_command(
-                        redis::cmd(command)
-                            .arg(self.graph_name.as_str())
-                            .arg(query)
-                            .arg("--compact")
-                            .arg(timeout.map(|timeout| format!("timeout {timeout}"))),
-                    )
-                    .await?;
-                FalkorValue::from_owned_redis_value(redis_val)?
-            }
-        };
 
-        P::from_falkor_value_async(falkor_result, &self.graph_schema, &mut conn).await
+        let [header, data, stats]: [FalkorValue; 3] = conn
+            .send_command(
+                Some(self.graph_name.as_str()),
+                command,
+                None,
+                Some(&[
+                    query.as_str(),
+                    "--compact",
+                    format!("timeout {timeout}").as_str(),
+                ]),
+            )
+            .await?
+            .into_vec()?
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+        let header_keys = parse_header(header)?;
+        FalkorResponse::from_response_with_headers(
+            parse_result_set_async(data, &mut self.graph_schema, &mut conn, &header_keys).await?,
+            header_keys,
+            stats,
+        )
+        .map_err(Into::into)
+    }
+
+    async fn query_inner<Q: ToString, T: ToString, Z: ToString>(
+        &mut self,
+        command: &str,
+        query_string: Q,
+        params: Option<&HashMap<T, Z>>,
+    ) -> Result<FalkorResponse<ResultSet>> {
+        let query = construct_query(query_string, params);
+        let mut conn = self.client.borrow_connection().await?;
+
+        let res = conn
+            .send_command(
+                Some(self.graph_name.as_str()),
+                command,
+                None,
+                Some(&[query, "--compact".to_string()]),
+            )
+            .await?
+            .into_vec()?;
+
+        match res.len() {
+            1 => {
+                let stats = res
+                    .into_iter()
+                    .next()
+                    .ok_or(FalkorDBError::ParsingArrayToStructElementCount)?;
+
+                FalkorResponse::from_response(None, vec![], stats)
+            }
+            2 => {
+                let [header, stats]: [FalkorValue; 2] = res
+                    .try_into()
+                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+                FalkorResponse::from_response(Some(header), vec![], stats)
+            }
+            3 => {
+                let [header, data, stats]: [FalkorValue; 3] = res
+                    .try_into()
+                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+                let header_keys = parse_header(header)?;
+                FalkorResponse::from_response_with_headers(
+                    parse_result_set_async(data, &mut self.graph_schema, &mut conn, &header_keys)
+                        .await?,
+                    header_keys,
+                    stats,
+                )
+            }
+            _ => Err(FalkorDBError::ParsingArrayToStructElementCount),
+        }
+        .map_err(Into::into)
     }
 
     /// Run a query on the graph
+    ///
+    /// # Arguments
+    /// * `query_string`: The query to run
+    ///
+    /// # Returns
+    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    pub async fn query<Q: Display>(
+        &mut self,
+        query_string: Q,
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner::<Q, &str, &str>("GRAPH.QUERY", query_string, None)
+            .await
+    }
+
+    /// Run a query on the graph, but abort it if it exceeds the timeout
     ///
     /// # Arguments
     /// * `query_string`: The query to run
@@ -200,16 +271,34 @@ impl AsyncGraph {
     ///
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub async fn query<Q: Display>(
-        &self,
+    pub async fn query_with_timeout<Q: Display>(
+        &mut self,
         query_string: Q,
-        timeout: Option<i64>,
-    ) -> Result<QueryResult> {
-        self.query_inner::<Q, &str, &str, QueryResult>("GRAPH.QUERY", query_string, None, timeout)
+        timeout: i64,
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner_with_timeout::<Q, &str, &str>("GRAPH.QUERY", query_string, None, timeout)
             .await
     }
 
     /// Run a query on the graph
+    /// This function variant allows adding extra parameters after the query
+    ///
+    /// # Arguments
+    /// * `query_string`: The query to run
+    /// * `params`: a map of parameters and values, note that all keys should be of the same type, and all values should be of the same type.
+    ///
+    /// # Returns
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
+    pub async fn query_with_params<Q: Display, T: Display, Z: Display>(
+        &mut self,
+        query_string: Q,
+        params: &HashMap<T, Z>,
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner("GRAPH.QUERY", query_string, Some(params))
+            .await
+    }
+
+    /// Run a query on the graph but abort it if it exceeds the timeout
     /// This function variant allows adding extra parameters after the query
     ///
     /// # Arguments
@@ -219,13 +308,13 @@ impl AsyncGraph {
     ///
     /// # Returns
     /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub async fn query_with_params<Q: Display, T: Display, Z: Display>(
-        &self,
+    pub async fn query_with_params_and_timeout<Q: Display, T: Display, Z: Display>(
+        &mut self,
         query_string: Q,
-        timeout: Option<i64>,
+        timeout: i64,
         params: &HashMap<T, Z>,
-    ) -> Result<QueryResult> {
-        self.query_inner("GRAPH.QUERY", query_string, Some(params), timeout)
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner_with_timeout("GRAPH.QUERY", query_string, Some(params), timeout)
             .await
     }
 
@@ -234,16 +323,32 @@ impl AsyncGraph {
     ///
     /// # Arguments
     /// * `query_string`: The query to run
+    ///
+    /// # Returns
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
+    pub async fn query_readonly<Q: Display>(
+        &mut self,
+        query_string: Q,
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner::<Q, &str, &str>("GRAPH.QUERY_RO", query_string, None)
+            .await
+    }
+
+    /// Run a query on the graph, but abort it if it exceeds the timeout
+    /// Read-only queries are more limited with the operations they are allowed to perform.
+    ///
+    /// # Arguments
+    /// * `query_string`: The query to run
     /// * `timeout`: Specify how long should the query run before aborting.
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
-    pub async fn query_readonly<Q: Display>(
-        &self,
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
+    pub async fn query_readonly_with_timeout<Q: Display>(
+        &mut self,
         query_string: Q,
-        timeout: Option<i64>,
-    ) -> Result<QueryResult> {
-        self.query_inner::<Q, &str, &str, QueryResult>(
+        timeout: i64,
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner_with_timeout::<Q, &str, &str>(
             "GRAPH.QUERY_RO",
             query_string,
             None,
@@ -262,14 +367,34 @@ impl AsyncGraph {
     /// * `params`: a map of parameters and values, note that all keys should be of the same type, and all values should be of the same type.
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
     pub async fn query_readonly_with_params<Q: ToString, T: ToString, Z: ToString>(
-        &self,
+        &mut self,
         query_string: Q,
-        timeout: Option<i64>,
-        params: Option<&HashMap<T, Z>>,
-    ) -> Result<QueryResult> {
-        self.query_inner("GRAPH.QUERY_RO", query_string, params, timeout)
+        params: &HashMap<T, Z>,
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner("GRAPH.QUERY_RO", query_string, Some(params))
+            .await
+    }
+
+    /// Run a read-only query on the graph, but abort it if it exceeds the timeout
+    /// Read-only queries are more limited with the operations they are allowed to perform.
+    /// This function variant allows adding extra parameters after the query
+    ///
+    /// # Arguments
+    /// * `query_string`: The query to run
+    /// * `timeout`: Specify how long should the query run before aborting.
+    /// * `params`: a map of parameters and values, note that all keys should be of the same type, and all values should be of the same type.
+    ///
+    /// # Returns
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
+    pub async fn query_readonly_with_params_and_timeout<Q: ToString, T: ToString, Z: ToString>(
+        &mut self,
+        query_string: Q,
+        params: &HashMap<T, Z>,
+        timeout: i64,
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner_with_timeout("GRAPH.QUERY_RO", query_string, Some(params), timeout)
             .await
     }
 
@@ -285,26 +410,80 @@ impl AsyncGraph {
     /// * `timeout`: If provided, the query will abort if overruns the timeout.
     ///
     /// # Returns
-    /// A caller-provided type which implements [`FalkorAsyncParseable`]
+    /// A caller-provided type which implements [`FalkorParsable`]
     pub async fn call_procedure<C: ToString, P: FalkorAsyncParseable>(
-        &self,
+        &mut self,
         procedure: C,
         args: Option<&[&str]>,
         yields: Option<&[&str]>,
         read_only: bool,
-        timeout: Option<i64>,
     ) -> Result<P> {
         let (query_string, params) = generate_procedure_call(procedure, args, yields);
+        let query = construct_query(query_string, params.as_ref());
+        let mut conn = self.client.borrow_connection().await?;
 
-        self.query_inner(
-            if read_only {
-                "GRAPH.QUERY_RO"
-            } else {
-                "GRAPH.QUERY"
-            },
-            query_string,
-            params.as_ref(),
-            timeout,
+        P::from_falkor_value_async(
+            conn.send_command(
+                Some(self.graph_name.as_str()),
+                if read_only {
+                    "GRAPH.QUERY_RO"
+                } else {
+                    "GRAPH.QUERY"
+                },
+                None,
+                Some(&[query, "--compact".to_string()]),
+            )
+            .await?,
+            &mut self.graph_schema,
+            &mut conn,
+        )
+        .await
+    }
+
+    /// Run a query which calls a procedure on the graph, read-only, or otherwise.
+    /// Read-only queries are more limited with the operations they are allowed to perform.
+    /// This function allows adding extra parameters after the query, and adding a YIELD block afterward
+    /// This function will cause the query to abort if it exceeds a certain timeout
+    ///
+    /// # Arguments
+    /// * `procedure`: The procedure to call
+    /// * `args`: An optional slice of strings containing the parameters.
+    /// * `yields`: The optional yield block arguments.
+    /// * `read_only`: Whether this procedure is read-only.
+    /// * `timeout`: If provided, the query will abort if overruns the timeout.
+    ///
+    /// # Returns
+    /// A caller-provided type which implements [`FalkorParsable`]
+    pub async fn call_procedure_with_timeout<C: ToString, P: FalkorAsyncParseable>(
+        &mut self,
+        procedure: C,
+        args: Option<&[&str]>,
+        yields: Option<&[&str]>,
+        read_only: bool,
+        timeout: i64,
+    ) -> Result<P> {
+        let (query_string, params) = generate_procedure_call(procedure, args, yields);
+        let query = construct_query(query_string, params.as_ref());
+        let mut conn = self.client.borrow_connection().await?;
+
+        P::from_falkor_value_async(
+            conn.send_command(
+                Some(self.graph_name.as_str()),
+                if read_only {
+                    "GRAPH.QUERY_RO"
+                } else {
+                    "GRAPH.QUERY"
+                },
+                None,
+                Some(&[
+                    query.as_str(),
+                    "--compact",
+                    format!("timeout {timeout}").as_str(),
+                ]),
+            )
+            .await?,
+            &mut self.graph_schema,
+            &mut conn,
         )
         .await
     }
@@ -312,36 +491,39 @@ impl AsyncGraph {
     /// Calls the DB.INDICES procedure on the graph, returning all the indexing methods currently used
     ///
     /// # Returns
-    /// A [`Vec`] of [`Index`]
-    pub async fn list_indices(&self) -> Result<Vec<FalkorIndex>> {
+    /// A [`Vec`] of [`FalkorIndex`]
+    pub async fn list_indices(&mut self) -> Result<FalkorResponse<Vec<FalkorIndex>>> {
         let mut conn = self.client.borrow_connection().await?;
         let [header, indices, stats]: [FalkorValue; 3] = self
-            .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, false, None)
+            .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, false)
             .await?
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-        let indices = indices.into_vec()?;
-
-        let mut out_vec = Vec::with_capacity(indices.len());
-        for index in indices {
-            out_vec.push(
-                FalkorIndex::from_falkor_value_async(index, &self.graph_schema, &mut conn).await?,
-            );
-        }
-
-        Ok(out_vec)
+        FalkorResponse::from_response(
+            Some(header),
+            indices
+                .into_vec()?
+                .into_iter()
+                .flat_map(|index| {
+                    FalkorIndex::from_falkor_value_async(index, &mut self.graph_schema, &mut conn)
+                        .await
+                })
+                .collect(),
+            stats,
+        )
+        .map_err(Into::into)
     }
 
     pub async fn create_index<L: ToString, P: ToString>(
-        &self,
+        &mut self,
         index_field_type: IndexType,
         entity_type: EntityType,
         label: L,
         properties: &[P],
         options: Option<&HashMap<String, String>>,
-    ) -> Result<QueryResult> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         // Create index from these properties
         let properties_string = properties
             .iter()
@@ -372,11 +554,11 @@ impl AsyncGraph {
             .map(|options_string| format!(" OPTIONS {{ {} }}", options_string))
             .unwrap_or_default();
 
-        let full_query = format!(
+        self.query(format!(
             "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
             properties_string, options_string
-        );
-        self.query(full_query, None).await
+        ))
+        .await
     }
 
     /// Drop an existing index, by specifying its type, entity, label and specific properties
@@ -384,12 +566,12 @@ impl AsyncGraph {
     /// # Arguments
     /// * `index_field_type`
     pub async fn drop_index<L: ToString, P: ToString>(
-        &self,
+        &mut self,
         index_field_type: IndexType,
         entity_type: EntityType,
         label: L,
         properties: &[P],
-    ) -> Result<QueryResult> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         let properties_string = properties
             .iter()
             .map(|element| format!("e.{}", element.to_string()))
@@ -408,39 +590,39 @@ impl AsyncGraph {
         }
         .to_string();
 
-        self.query(
-            format!(
-                "DROP {idx_type} INDEX for {pattern} ON ({})",
-                properties_string
-            ),
-            None,
-        )
+        self.query(format!(
+            "DROP {idx_type} INDEX for {pattern} ON ({})",
+            properties_string
+        ))
         .await
     }
 
     /// Calls the DB.CONSTRAINTS procedure on the graph, returning an array of the graph's constraints
     ///
     /// # Returns
-    /// A [`Vec`] of [`Constraint`]s
-    pub async fn list_constraints(&self) -> Result<Vec<Constraint>> {
+    /// A tuple where the first element is a [`Vec`] of [`Constraint`]s, and the second element is a [`Vec`] of stats as [`String`]s
+    pub async fn list_constraints(&mut self) -> Result<FalkorResponse<Vec<Constraint>>> {
         let mut conn = self.client.borrow_connection().await?;
         let [header, query_res, stats]: [FalkorValue; 3] = self
-            .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, false, None)
+            .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, false)
             .await?
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-        let query_res = query_res.into_vec()?;
-
-        let mut constraints_vec = Vec::with_capacity(query_res.len());
-        for item in query_res {
-            constraints_vec.push(
-                Constraint::from_falkor_value_async(item, &self.graph_schema, &mut conn).await?,
-            );
-        }
-
-        Ok(constraints_vec)
+        FalkorResponse::from_response(
+            Some(header),
+            query_res
+                .into_vec()?
+                .into_iter()
+                .flat_map(|item| {
+                    Constraint::from_falkor_value_async(item, &mut self.graph_schema, &mut conn)
+                        .await
+                })
+                .collect(),
+            stats,
+        )
+        .map_err(Into::into)
     }
 
     /// Creates a new constraint for this graph, making the provided properties mandatory
@@ -449,11 +631,11 @@ impl AsyncGraph {
     /// * `entity_type`: Whether to apply this constraint on nodes or relationships.
     /// * `label`: Entities with this label will have this constraint applied to them.
     /// * `properties`: A slice of the names of properties this constraint will apply to.
-    pub async fn create_mandatory_constraint<L: ToString, P: ToString>(
+    pub async fn create_mandatory_constraint(
         &self,
         entity_type: EntityType,
-        label: L,
-        properties: &[P],
+        label: &str,
+        properties: &[&str],
     ) -> Result<FalkorValue> {
         let mut params = Vec::with_capacity(5 + properties.len());
         params.extend([
@@ -476,7 +658,7 @@ impl AsyncGraph {
     /// * `label`: Entities with this label will have this constraint applied to them.
     /// * `properties`: A slice of the names of properties this constraint will apply to.
     pub async fn create_unique_constraint<P: ToString>(
-        &self,
+        &mut self,
         entity_type: EntityType,
         label: String,
         properties: &[P],
@@ -541,7 +723,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_drop_index_async() {
-        let graph = open_test_graph_async("test_create_drop_index_async").await;
+        let mut graph = open_test_graph_async("test_create_drop_index_async").await;
         graph
             .inner
             .create_index(
@@ -560,8 +742,11 @@ mod tests {
             .await
             .expect("Could not list indices");
 
-        assert_eq!(indices.len(), 2);
-        assert_eq!(indices[0].field_types["Hello"], vec![IndexType::Fulltext]);
+        assert_eq!(indices.data.len(), 2);
+        assert_eq!(
+            indices.data[0].field_types["Hello"],
+            vec![IndexType::Fulltext]
+        );
 
         graph
             .inner
@@ -577,19 +762,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_indices_async() {
-        let graph = open_test_graph_async("test_list_indices_async").await;
+        let mut graph = open_test_graph_async("test_list_indices_async").await;
         let indices = graph
             .inner
             .list_indices()
             .await
             .expect("Could not list indices");
 
-        assert_eq!(indices.len(), 1);
-        assert_eq!(indices[0].entity_type, EntityType::Node);
-        assert_eq!(indices[0].index_label, "actor".to_string());
-        assert_eq!(indices[0].field_types.len(), 2);
+        assert_eq!(indices.data.len(), 1);
+        assert_eq!(indices.data[0].entity_type, EntityType::Node);
+        assert_eq!(indices.data[0].index_label, "actor".to_string());
+        assert_eq!(indices.data[0].field_types.len(), 2);
         assert_eq!(
-            indices[0].field_types,
+            indices.data[0].field_types,
             HashMap::from([
                 ("age".to_string(), vec![IndexType::Range]),
                 ("name".to_string(), vec![IndexType::Fulltext])
@@ -623,7 +808,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_drop_unique_constraint_async() {
-        let graph = open_test_graph_async("test_unique_constraint_async").await;
+        let mut graph = open_test_graph_async("test_unique_constraint_async").await;
 
         graph
             .inner
@@ -649,7 +834,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_constraints_async() {
-        let graph = open_test_graph_async("test_list_constraint_async").await;
+        let mut graph = open_test_graph_async("test_list_constraint_async").await;
 
         graph
             .inner
@@ -666,21 +851,21 @@ mod tests {
             .list_constraints()
             .await
             .expect("Could not list constraints");
-        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints.data.len(), 1);
     }
 
     #[tokio::test]
     async fn test_slowlog_async() {
-        let graph = open_test_graph_async("test_slowlog_async").await;
+        let mut graph = open_test_graph_async("test_slowlog_async").await;
 
         graph
             .inner
-            .query("UNWIND range(0, 500) AS x RETURN x", None)
+            .query("UNWIND range(0, 500) AS x RETURN x")
             .await
             .expect("Could not generate the fast query");
         graph
             .inner
-            .query("UNWIND range(0, 100000) AS x RETURN x", None)
+            .query("UNWIND range(0, 100000) AS x RETURN x")
             .await
             .expect("Could not generate the slow query");
 

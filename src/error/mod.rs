@@ -15,6 +15,8 @@ pub enum FalkorDBError {
     UnavailableProvider,
     #[error("The number of connections for the client has to be between 1 and 32")]
     InvalidConnectionPoolSize,
+    #[error("Could not connect to the server with the provided address")]
+    NoConnection,
     #[error("Attempting to use an empty connection object")]
     EmptyConnection,
     #[error("General parsing error")]

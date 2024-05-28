@@ -165,7 +165,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "redis")]
-    #[allow(irrefutable_let_patterns)]
     fn test_sync_builder_redis_fallback() {
         let client = FalkorClientBuilder::new().build();
         assert!(client.is_ok());

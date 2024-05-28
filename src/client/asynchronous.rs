@@ -6,20 +6,20 @@
 use crate::{
     client::FalkorClientProvider, connection::asynchronous::BorrowedAsyncConnection,
     parser::utils::string_vec_from_val, AsyncGraph, AsyncGraphSchema, ConfigValue,
-    FalkorAsyncConnection, FalkorConnectionInfo, FalkorDBError,
+    FalkorAsyncConnection, FalkorConnectionInfo, FalkorDBError, FalkorValue,
 };
 use anyhow::Result;
 use std::{
     collections::{HashMap, VecDeque},
-    fmt::{Debug, Formatter},
+    fmt::Display,
     sync::Arc,
     time::Duration,
 };
 use tokio::sync::Mutex;
 
 pub(crate) struct FalkorAsyncClientInner {
-    _inner: Mutex<FalkorClientProvider>,
-    graph_cache: Mutex<HashMap<String, AsyncGraphSchema>>,
+    _inner: Arc<FalkorClientProvider>,
+    graph_cache: Mutex<HashMap<String, Arc<Mutex<AsyncGraphSchema>>>>,
     connection_pool_size: u8,
     connection_pool: Arc<Mutex<VecDeque<FalkorAsyncConnection>>>,
 }
@@ -38,24 +38,9 @@ impl FalkorAsyncClientInner {
     }
 }
 
-unsafe impl Sync for FalkorAsyncClientInner {}
-unsafe impl Send for FalkorAsyncClientInner {}
-
 pub struct FalkorAsyncClient {
     inner: Arc<FalkorAsyncClientInner>,
     _connection_info: FalkorConnectionInfo,
-}
-
-impl Debug for FalkorAsyncClient {
-    fn fmt(
-        &self,
-        f: &mut Formatter<'_>,
-    ) -> std::fmt::Result {
-        f.debug_struct("FalkorAsyncClient")
-            .field("inner", &"<InnerClient>")
-            .field("connection_info", &self._connection_info)
-            .finish()
-    }
 }
 
 impl FalkorAsyncClient {
@@ -65,22 +50,26 @@ impl FalkorAsyncClient {
         num_connections: u8,
         timeout: Option<Duration>,
     ) -> Result<Self> {
-        let connection_pool = Arc::new(Mutex::new(VecDeque::with_capacity(
-            num_connections as usize,
-        )));
-        {
-            let mut connection_pool = connection_pool.lock().await;
-            for _ in 0..num_connections {
-                connection_pool.push_back(client.get_async_connection(timeout).await?);
-            }
+        let client = Arc::new(client);
+        let connection_pool: VecDeque<_> = futures::future::join_all(
+            (0..num_connections).map(|_| tokio::spawn(client.get_async_connection(timeout))),
+        )
+        .await
+        .into_iter()
+        .flat_map(|x| x)
+        .flat_map(|x| x)
+        .collect();
+
+        if connection_pool.len() != num_connections as usize {
+            Err(FalkorDBError::NoConnection)?;
         }
 
         Ok(Self {
             inner: Arc::new(FalkorAsyncClientInner {
-                _inner: client.into(),
+                _inner: client,
                 graph_cache: Default::default(),
                 connection_pool_size: num_connections,
-                connection_pool,
+                connection_pool: Arc::new(Mutex::new(connection_pool)),
             }),
             _connection_info: connection_info,
         })
@@ -101,7 +90,7 @@ impl FalkorAsyncClient {
     /// A [`Vec`] of [`String`]s, containing the names of available graphs
     pub async fn list_graphs(&self) -> Result<Vec<String>> {
         let mut conn = self.borrow_connection().await?;
-        conn.send_command(None, "GRAPH.LIST", None, None)
+        conn.send_command::<&str>(None, "GRAPH.LIST", None, None)
             .await
             .and_then(|res| string_vec_from_val(res).map_err(Into::into))
     }
@@ -114,69 +103,38 @@ impl FalkorAsyncClient {
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
-    pub async fn config_get<T: ToString>(
+    pub async fn config_get<T: Display>(
         &self,
         config_key: T,
     ) -> Result<HashMap<String, ConfigValue>> {
         let mut conn = self.borrow_connection().await?;
-        Ok(match conn.as_inner()? {
-            #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(redis_conn) => {
-                let bulk_data = match redis_conn
-                    .send_packed_command(
-                        redis::cmd("GRAPH.CONFIG")
-                            .arg("GET")
-                            .arg(config_key.to_string()),
-                    )
-                    .await?
-                {
-                    redis::Value::Bulk(bulk_data) => bulk_data,
-                    _ => {
-                        return Err(FalkorDBError::InvalidDataReceived)?;
-                    }
-                };
+        let config = conn
+            .send_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))
+            .await?
+            .into_vec()?;
 
-                if bulk_data.is_empty() {
-                    Err(FalkorDBError::InvalidDataReceived)?;
-                } else if bulk_data.len() == 2 {
-                    return if let Some(value) = bulk_data.first() {
-                        let str_key = match value {
-                            redis::Value::Data(bytes_data) => {
-                                String::from_utf8_lossy(bytes_data.as_slice()).to_string()
-                            }
-                            redis::Value::Status(status_data) => status_data.to_owned(),
-                            _ => Err(FalkorDBError::InvalidDataReceived)?,
-                        };
-                        Ok(HashMap::from([(
-                            str_key.to_string(),
-                            ConfigValue::try_from(&bulk_data[1])?,
-                        )]))
-                    } else {
-                        Err(FalkorDBError::InvalidDataReceived)?
-                    };
-                }
+        if config.len() == 2 {
+            let [key, val]: [FalkorValue; 2] = config
+                .try_into()
+                .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-                let mut config_map = HashMap::with_capacity(bulk_data.len());
-                for raw_map in bulk_data {
-                    for (key, val) in raw_map
-                        .into_map_iter()
-                        .map_err(|_| FalkorDBError::ParsingError)?
-                    {
-                        let key = match key {
-                            redis::Value::Status(config_key) => Ok(config_key),
-                            redis::Value::Data(config_key) => {
-                                Ok(String::from_utf8_lossy(config_key.as_slice()).to_string())
-                            }
-                            _ => Err(FalkorDBError::InvalidDataReceived),
-                        }?;
+            return Ok(HashMap::from([(
+                key.into_string()?,
+                ConfigValue::try_from(val)?,
+            )]));
+        }
 
-                        config_map.insert(key, ConfigValue::try_from(&val)?);
-                    }
-                }
+        Ok(config
+            .into_iter()
+            .flat_map(|config| {
+                let [key, val]: [FalkorValue; 2] = config
+                    .into_vec()?
+                    .try_into()
+                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-                config_map
-            }
-        })
+                Result::<_, FalkorDBError>::Ok((key.into_string()?, ConfigValue::try_from(val)?))
+            })
+            .collect::<HashMap<String, ConfigValue>>())
     }
 
     /// Return the current value of a configuration option in the database.
@@ -189,23 +147,16 @@ impl FalkorAsyncClient {
         &self,
         config_key: T,
         value: C,
-    ) -> Result<()> {
-        let mut conn = self.borrow_connection().await?;
-        match conn.as_inner()? {
-            #[cfg(feature = "redis")]
-            FalkorAsyncConnection::Redis(redis_conn) => {
-                redis_conn
-                    .send_packed_command(
-                        redis::cmd("GRAPH.CONFIG")
-                            .arg("SET")
-                            .arg(config_key.into())
-                            .arg(value.into()),
-                    )
-                    .await?;
-            }
-        }
-
-        Ok(())
+    ) -> Result<FalkorValue> {
+        self.borrow_connection()
+            .await?
+            .send_command(
+                None,
+                "GRAPH.CONFIG",
+                Some("SET"),
+                Some(&[config_key.into(), value.into()]),
+            )
+            .await
     }
 
     /// Opens a graph context for queries and operations
@@ -214,7 +165,7 @@ impl FalkorAsyncClient {
     /// * `graph_name`: A string identifier of the graph to open.
     ///
     /// # Returns
-    /// a [`AsyncGraph`] object, allowing various graph operations.
+    /// a [`SyncGraph`] object, allowing various graph operations.
     pub async fn select_graph<T: ToString>(
         &self,
         graph_name: T,
@@ -222,14 +173,7 @@ impl FalkorAsyncClient {
         AsyncGraph {
             client: self.inner.clone(),
             graph_name: graph_name.to_string(),
-            graph_schema: self
-                .inner
-                .graph_cache
-                .lock()
-                .await
-                .entry(graph_name.to_string())
-                .or_insert(AsyncGraphSchema::new(graph_name.to_string()))
-                .clone(),
+            graph_schema: AsyncGraphSchema::new(graph_name.to_string()), // Required for requesting refreshes
         }
     }
 
@@ -241,18 +185,18 @@ impl FalkorAsyncClient {
     ///
     /// # Returns
     /// If successful, will return the new [`AsyncGraph`] object.
-    pub async fn copy_graph<T: ToString, Z: ToString>(
+    pub async fn copy_graph(
         &self,
-        graph_to_clone: T,
-        new_graph_name: Z,
+        graph_to_clone: &str,
+        new_graph_name: &str,
     ) -> Result<AsyncGraph> {
         self.borrow_connection()
             .await?
             .send_command(
-                Some(graph_to_clone.to_string()),
+                Some(graph_to_clone),
                 "GRAPH.COPY",
                 None,
-                Some(&[new_graph_name.to_string()]),
+                Some(&[new_graph_name]),
             )
             .await?;
         Ok(self.select_graph(new_graph_name).await)
@@ -279,15 +223,15 @@ mod tests {
     async fn test_async_select_graph_and_query() {
         let client = create_async_test_client().await;
 
-        let graph = client.select_graph("imdb").await;
+        let mut graph = client.select_graph("imdb").await;
         assert_eq!(graph.graph_name(), "imdb".to_string());
 
         let res = graph
-            .query("MATCH (a:actor) return a".to_string(), None)
+            .query("MATCH (a:actor) return a".to_string())
             .await
             .expect("Could not get actors from unmodified graph");
 
-        assert_eq!(res.result_set.len(), 1317);
+        assert_eq!(res.data.len(), 1317);
     }
 
     #[tokio::test]
@@ -301,24 +245,24 @@ mod tests {
             .await
             .ok();
 
-        let graph = client
+        let mut graph = client
             .copy_graph("imdb", "imdb_async_ro_copy")
             .await
             .expect("Could not copy graph");
 
-        let original_graph = client.select_graph("imdb").await;
+        let mut original_graph = client.select_graph("imdb").await;
 
         assert_eq!(
             graph
-                .query("MATCH (a:actor) RETURN a".to_string(), None)
+                .query("MATCH (a:actor) RETURN a".to_string())
                 .await
                 .expect("Could not get actors from unmodified graph")
-                .result_set,
+                .data,
             original_graph
-                .query("MATCH (a:actor) RETURN a".to_string(), None)
+                .query("MATCH (a:actor) RETURN a".to_string())
                 .await
                 .expect("Could not get actors from unmodified graph")
-                .result_set
+                .data
         )
     }
 

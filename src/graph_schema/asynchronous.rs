@@ -95,7 +95,7 @@ impl AsyncGraphSchema {
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
         let [_, keys, _]: [FalkorValue; 3] = conn
             .send_command(
-                Some(self.graph_name.clone()),
+                Some(self.graph_name.as_str()),
                 "GRAPH.QUERY",
                 None,
                 Some(&[format!("CALL {command}()")]),

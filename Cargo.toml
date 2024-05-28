@@ -7,6 +7,7 @@ edition = "2021"
 [dependencies]
 anyhow = { version = "1.0.83", default-features = false, features = ["std"] }
 async-recursion = { version = "1.1.1" }
+futures = { version = "0.3.30", default-features = false, features = ["std"], optional = true }
 log = { version = "0.4.21", default-features = false }
 parking_lot = { version = "0.12.2", default-features = false, features = ["deadlock_detection"] }
 redis = { version = "0.25.3", default-features = false, optional = true }
@@ -19,7 +20,7 @@ url-parse = "1.0.8"
 default = ["redis"]
 native-tls = ["redis/tls-native-tls"]
 rustls = ["redis/tls-rustls"]
-tokio = ["dep:tokio", "redis/tokio-comp"]
+tokio = ["dep:futures", "dep:tokio", "redis/tokio-comp"]
 tokio-native-tls = ["redis/tokio-native-tls-comp"]
 tokio-rustls = ["redis/tokio-rustls-comp"]
 redis = ["dep:redis"]

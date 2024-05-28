@@ -76,11 +76,12 @@ pub(crate) fn parse_result_set(
 
 #[cfg(feature = "tokio")]
 pub(crate) async fn parse_result_set_async(
-    data_vec: Vec<FalkorValue>,
+    data: FalkorValue,
     graph_schema: &AsyncGraphSchema,
     conn: &mut BorrowedAsyncConnection,
     header_keys: &[String],
 ) -> Result<Vec<HashMap<String, FalkorValue>>> {
+    let data_vec = data.into_vec()?;
     let mut parsed_result_set = Vec::with_capacity(data_vec.len());
     for column in data_vec {
         let column_vec = column.into_vec()?;

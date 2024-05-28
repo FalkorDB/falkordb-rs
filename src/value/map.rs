@@ -160,7 +160,7 @@ pub(crate) async fn parse_map_with_schema_async(
 ) -> Result<HashMap<String, FalkorValue>> {
     let val_vec = value.into_vec()?;
     let (mut id_hashset, mut map_vec) = (
-        HashSet::with_capacity(val_vec.len()),
+        std::collections::HashSet::with_capacity(val_vec.len()),
         Vec::with_capacity(val_vec.len()),
     );
 

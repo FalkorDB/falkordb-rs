@@ -5,6 +5,7 @@
 
 use crate::{FalkorDBError, FalkorValue};
 use anyhow::Result;
+use std::fmt::Display;
 use std::{collections::VecDeque, sync::Arc};
 use tokio::sync::Mutex;
 
@@ -28,32 +29,29 @@ impl BorrowedAsyncConnection {
         self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)
     }
 
-    pub(crate) async fn send_command(
+    pub(crate) async fn send_command<P: Display>(
         &mut self,
-        graph_name: Option<String>,
+        graph_name: Option<&str>,
         command: &str,
         subcommand: Option<&str>,
-        params: Option<&[String]>,
+        params: Option<&[P]>,
     ) -> Result<FalkorValue> {
-        Ok(
-            match self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)? {
-                #[cfg(feature = "redis")]
-                FalkorAsyncConnection::Redis(redis_conn) => {
-                    let mut cmd = redis::cmd(command);
-                    cmd.arg(subcommand);
-                    cmd.arg(graph_name);
-                    if let Some(params) = params {
-                        for param in params {
-                            cmd.arg(param);
-                        }
+        Ok(match self.as_inner()? {
+            #[cfg(feature = "redis")]
+            FalkorAsyncConnection::Redis(redis_conn) => {
+                let mut cmd = redis::cmd(command);
+                cmd.arg(subcommand);
+                cmd.arg(graph_name);
+                if let Some(params) = params {
+                    for param in params {
+                        cmd.arg(param.to_string());
                     }
-
-                    redis::FromRedisValue::from_owned_redis_value(
-                        redis_conn.send_packed_command(&cmd).await?,
-                    )?
                 }
-            },
-        )
+                redis::FromRedisValue::from_owned_redis_value(
+                    redis_conn.send_packed_command(&cmd).await?,
+                )?
+            }
+        })
     }
 }
 

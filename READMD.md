@@ -1,0 +1,5 @@
+[![license](https://img.shields.io/github/license/falkordb/falkordb-client-rs.svg)](https://github.com/falkordb/falkordb-client-rs)
+[![Release](https://img.shields.io/github/release/falkordb/falkordb-client-rs.svg)](https://github.com/falkordb/falkordb-client-rs/releases/latest)
+[![Codecov](https://codecov.io/gh/falkordb/falkordb-client-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/falkordb/falkordb-client-rs)
+[![Forum](https://img.shields.io/badge/Forum-falkordb-blue)](https://github.com/orgs/FalkorDB/discussions)
+[![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/ErBEqN9E)

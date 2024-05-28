@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::parser::utils::string_vec_from_val;
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
@@ -84,13 +85,8 @@ impl FalkorSyncClient {
     /// A [`Vec`] of [`String`]s, containing the names of available graphs
     pub fn list_graphs(&self) -> Result<Vec<String>> {
         let mut conn = self.borrow_connection()?;
-
-        let graph_list = conn.send_command::<&str>(None, "GRAPH.LIST", None, None)?;
-        Ok(graph_list
-            .into_vec()?
-            .into_iter()
-            .flat_map(|name| name.into_string())
-            .collect())
+        conn.send_command::<&str>(None, "GRAPH.LIST", None, None)
+            .and_then(|res| string_vec_from_val(res).map_err(Into::into))
     }
 
     /// Return the current value of a configuration option in the database.
@@ -248,7 +244,7 @@ mod tests {
             .query("MATCH (a:actor) return a".to_string())
             .expect("Could not get actors from unmodified graph");
 
-        assert_eq!(res.result_set.len(), 1317);
+        assert_eq!(res.data.len(), 1317);
     }
 
     #[test]
@@ -271,11 +267,11 @@ mod tests {
                 .inner
                 .query("MATCH (a:actor) RETURN a".to_string())
                 .expect("Could not get actors from unmodified graph")
-                .result_set,
+                .data,
             original_graph
                 .query("MATCH (a:actor) RETURN a".to_string())
                 .expect("Could not get actors from unmodified graph")
-                .result_set
+                .data
         )
     }
 

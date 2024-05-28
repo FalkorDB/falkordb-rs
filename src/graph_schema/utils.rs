@@ -77,10 +77,9 @@ mod tests {
     #[test]
     fn test_update_map() {
         let mut map_to_update = HashMap::from([(5, "Ye Olde Value".to_string())]);
-        let res = update_map(&mut map_to_update, get_test_keys(), None);
-        assert!(res.is_ok());
+        let relevant_ids =
+            update_map(&mut map_to_update, get_test_keys(), None).expect("Could not update map");
 
-        let relevant_ids = res.unwrap();
         assert!(relevant_ids.is_none());
 
         assert_eq!(map_to_update.get(&0), Some(&"Hello".to_string()));

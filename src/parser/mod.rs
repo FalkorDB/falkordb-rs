@@ -3,6 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+pub mod utils;
+
 use crate::{connection::blocking::BorrowedSyncConnection, FalkorValue, SyncGraphSchema};
 use anyhow::Result;
 

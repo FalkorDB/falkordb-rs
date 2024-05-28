@@ -21,20 +21,16 @@ pub(crate) fn parse_labels(
         .filter_map(|label_id| label_id.to_i64())
         .collect::<HashSet<i64>>();
 
-    match match graph_schema.verify_id_set(&ids_hashset, schema_type) {
+    let relevant_ids = match graph_schema.verify_id_set(&ids_hashset, schema_type) {
         None => graph_schema.refresh(schema_type, conn, Some(&ids_hashset))?,
         relevant_ids => relevant_ids,
-    } {
-        Some(relevant_ids) => {
-            let parsed_ids = raw_ids
-                .into_iter()
-                .filter_map(|id| id.to_i64().and_then(|id| relevant_ids.get(&id).cloned()))
-                .collect();
-
-            Ok(parsed_ids)
-        }
-        _ => Err(FalkorDBError::ParsingError)?,
     }
+    .ok_or(FalkorDBError::ParsingError)?;
+
+    Ok(raw_ids
+        .into_iter()
+        .filter_map(|id| id.to_i64().and_then(|id| relevant_ids.get(&id).cloned()))
+        .collect())
 }
 
 pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValue)> {
@@ -60,13 +56,14 @@ pub(crate) fn parse_type(
         4 => FalkorValue::FBool(val.to_bool().ok_or(FalkorDBError::ParsingBool)?),
         5 => FalkorValue::F64(val.try_into()?),
         6 => FalkorValue::FArray({
-            let val = val.into_vec()?;
-            let mut parsed_vec = Vec::with_capacity(val.len());
-            for item in val {
-                let (type_marker, val) = type_val_from_value(item)?;
-                parsed_vec.push(parse_type(type_marker, val, graph_schema, conn)?);
-            }
-            parsed_vec
+            val.into_vec()?
+                .into_iter()
+                .flat_map(|item| {
+                    type_val_from_value(item).and_then(|(type_marker, val)| {
+                        parse_type(type_marker, val, graph_schema, conn)
+                    })
+                })
+                .collect()
         }),
         // The following types are sent as an array and require specific parsing functions
         7 => FalkorValue::FEdge(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),

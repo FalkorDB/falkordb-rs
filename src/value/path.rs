@@ -58,6 +58,7 @@ impl FalkorAsyncParseable for Path {
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
         let (nodes, relationships) = (nodes.into_vec()?, relationships.into_vec()?);
 
         let mut parsed_nodes = Vec::with_capacity(nodes.len());

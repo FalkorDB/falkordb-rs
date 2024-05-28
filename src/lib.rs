@@ -29,9 +29,8 @@ pub use response::{
     constraint::{Constraint, ConstraintStatus, ConstraintType},
     execution_plan::ExecutionPlan,
     index::{FalkorIndex, IndexStatus, IndexType},
-    query_result::QueryResult,
     slowlog_entry::SlowlogEntry,
-    ResponseVariant,
+    FalkorResponse, ResponseEnum, ResultSet,
 };
 pub use value::{
     config::ConfigValue,

@@ -4,16 +4,16 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection,
-    value::utils::{parse_type, type_val_from_value},
-    EntityType, FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
+    connection::blocking::BorrowedSyncConnection, value::utils::parse_type, EntityType,
+    FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
 };
 use anyhow::Result;
 use std::fmt::{Display, Formatter};
 
 #[cfg(feature = "tokio")]
 use crate::{
-    connection::asynchronous::BorrowedAsyncConnection, AsyncGraphSchema, FalkorAsyncParseable,
+    connection::asynchronous::BorrowedAsyncConnection, value::utils_async::parse_type_async,
+    AsyncGraphSchema, FalkorAsyncParseable,
 };
 
 /// The type of restriction to apply for the property
@@ -122,40 +122,35 @@ pub struct Constraint {
     pub status: ConstraintStatus,
 }
 
+impl Constraint {
+    fn from_value_vec(vlaue_vec: Vec<FalkorValue>) -> Result<Self> {
+        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = vlaue_vec.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+        Ok(Constraint {
+            constraint_type: constraint_type_raw.into_string()?.try_into()?,
+            label: label_raw.into_string()?,
+            properties: properties_raw
+                .into_vec()?
+                .into_iter()
+                .flat_map(FalkorValue::into_string)
+                .collect(),
+            entity_type: entity_type_raw.into_string()?.try_into()?,
+            status: status_raw.into_string()?.try_into()?,
+        })
+    }
+}
+
 impl FalkorParsable for Constraint {
     fn from_falkor_value(
         value: FalkorValue,
         graph_schema: &mut SyncGraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
-        let value_vec = value.into_vec()?;
-
-        let mut parsed_values = Vec::with_capacity(value_vec.len());
-        for column_raw in value_vec {
-            parsed_values.push(type_val_from_value(column_raw).and_then(
-                |(type_marker, raw_val)| parse_type(type_marker, raw_val, graph_schema, conn),
-            )?);
-        }
-
-        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = parsed_values.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
-
-        let constraint_type = constraint_type_raw.into_string()?.try_into()?;
-        let label = label_raw.try_into()?;
-        let entity_type = entity_type_raw.into_string()?.try_into()?;
-        let status = status_raw.into_string()?.try_into()?;
-
-        let properties_vec = properties_raw.into_vec()?;
-        let mut properties = Vec::with_capacity(properties_vec.len());
-        for property in properties_vec {
-            properties.push(property.into_string()?);
-        }
-
-        Ok(Constraint {
-            constraint_type,
-            label,
-            properties,
-            entity_type,
-            status,
+        parse_type(6, value, graph_schema, conn).and_then(|parsed| {
+            parsed
+                .into_vec()
+                .map_err(Into::into)
+                .and_then(Constraint::from_value_vec)
         })
     }
 }
@@ -167,36 +162,13 @@ impl FalkorAsyncParseable for Constraint {
         graph_schema: &AsyncGraphSchema,
         conn: &mut BorrowedAsyncConnection,
     ) -> Result<Self> {
-        let value_vec = value.into_vec()?;
-
-        let mut parsed_values = Vec::with_capacity(value_vec.len());
-        for column_raw in value_vec {
-            let (type_marker, val) = type_val_from_value(column_raw)?;
-            parsed_values.push(
-                crate::value::utils_async::parse_type_async(type_marker, val, graph_schema, conn)
-                    .await?,
-            );
-        }
-
-        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = parsed_values.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
-
-        let constraint_type = constraint_type_raw.into_string()?.try_into()?;
-        let label = label_raw.try_into()?;
-        let entity_type = entity_type_raw.into_string()?.try_into()?;
-        let status = status_raw.into_string()?.try_into()?;
-
-        let properties_vec = properties_raw.into_vec()?;
-        let mut properties = Vec::with_capacity(properties_vec.len());
-        for property in properties_vec {
-            properties.push(property.into_string()?);
-        }
-
-        Ok(Constraint {
-            constraint_type,
-            label,
-            properties,
-            entity_type,
-            status,
-        })
+        parse_type_async(6, value, graph_schema, conn)
+            .await
+            .and_then(|value_vec| {
+                value_vec
+                    .into_vec()
+                    .map_err(Into::into)
+                    .and_then(Constraint::from_value_vec)
+            })
     }
 }

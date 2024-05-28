@@ -8,7 +8,7 @@ use crate::{
     FalkorParsable, FalkorValue, SchemaType, SyncGraphSchema,
 };
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[cfg(feature = "tokio")]
 use crate::{
@@ -74,17 +74,12 @@ pub(crate) fn parse_map_with_schema(
     conn: &mut BorrowedSyncConnection,
     schema_type: SchemaType,
 ) -> Result<HashMap<String, FalkorValue>> {
-    let val_vec = value.into_vec()?;
-    let (mut id_hashset, mut map_vec) = (
-        HashSet::with_capacity(val_vec.len()),
-        Vec::with_capacity(val_vec.len()),
-    );
-
-    for item in val_vec {
-        let fktv = FKeyTypeVal::try_from(item)?;
-        id_hashset.insert(fktv.key);
-        map_vec.push(fktv);
-    }
+    let (id_hashset, map_vec) = value
+        .into_vec()?
+        .into_iter()
+        .flat_map(FKeyTypeVal::try_from)
+        .map(|fktv| (fktv.key, fktv))
+        .unzip();
 
     if let Some(relevant_ids_map) = graph_schema.verify_id_set(&id_hashset, schema_type) {
         return ktv_vec_to_map(map_vec, relevant_ids_map, graph_schema, conn);

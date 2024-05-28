@@ -70,13 +70,11 @@ impl FromRedisValue for FalkorValue {
             redis::Value::Data(str_val) => {
                 FalkorValue::FString(String::from_utf8_lossy(str_val.as_slice()).to_string())
             }
-            redis::Value::Bulk(bulk) => FalkorValue::FArray({
-                let mut new_vec = Vec::with_capacity(bulk.len());
-                for element in bulk {
-                    new_vec.push(FalkorValue::from_redis_value(element)?);
-                }
-                new_vec
-            }),
+            redis::Value::Bulk(bulk) => FalkorValue::FArray(
+                bulk.iter()
+                    .flat_map(FalkorValue::from_redis_value)
+                    .collect(),
+            ),
             redis::Value::Status(status) => FalkorValue::FString(status.to_string()),
             redis::Value::Okay => FalkorValue::None,
         })

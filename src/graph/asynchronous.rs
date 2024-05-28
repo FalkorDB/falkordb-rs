@@ -71,12 +71,7 @@ impl AsyncGraph {
 
         let mut slowlog_entries = Vec::with_capacity(res.len());
         for entry_raw in res {
-            slowlog_entries.push(SlowlogEntry::from_value_array(
-                entry_raw
-                    .into_vec()?
-                    .try_into()
-                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?,
-            )?);
+            slowlog_entries.push(SlowlogEntry::from_value_vec(entry_raw.into_vec()?)?);
         }
 
         Ok(slowlog_entries)
@@ -320,7 +315,7 @@ impl AsyncGraph {
     /// A [`Vec`] of [`Index`]
     pub async fn list_indices(&self) -> Result<Vec<FalkorIndex>> {
         let mut conn = self.client.borrow_connection().await?;
-        let [_, indices, _]: [FalkorValue; 3] = self
+        let [header, indices, stats]: [FalkorValue; 3] = self
             .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, false, None)
             .await?
             .into_vec()?
@@ -429,7 +424,7 @@ impl AsyncGraph {
     /// A [`Vec`] of [`Constraint`]s
     pub async fn list_constraints(&self) -> Result<Vec<Constraint>> {
         let mut conn = self.client.borrow_connection().await?;
-        let [_, query_res, _]: [FalkorValue; 3] = self
+        let [header, query_res, stats]: [FalkorValue; 3] = self
             .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, false, None)
             .await?
             .into_vec()?

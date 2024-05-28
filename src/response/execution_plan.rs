@@ -28,22 +28,18 @@ impl TryFrom<FalkorValue> for ExecutionPlan {
     type Error = FalkorDBError;
 
     fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
-        let string_vec = value.into_vec()?;
-
-        let (mut execution_plan, mut execution_plan_text) = (
-            Vec::with_capacity(string_vec.len()),
-            Vec::with_capacity(string_vec.len()),
-        );
-        execution_plan_text.push(String::new());
-        for item in string_vec {
-            let raw_text = item.into_string()?;
-            execution_plan.push(raw_text.trim().to_string());
-            execution_plan_text.push(raw_text);
-        }
+        let (execution_plan, execution_plan_text): (Vec<_>, Vec<_>) = value
+            .into_vec()?
+            .into_iter()
+            .flat_map(|item| {
+                let item = item.into_string()?;
+                Result::<_, FalkorDBError>::Ok((item.trim().to_string(), item))
+            })
+            .unzip();
 
         Ok(ExecutionPlan {
             steps: execution_plan,
-            text: execution_plan_text.join("\n"),
+            text: format!("\n{}", execution_plan_text.join("\n")),
         })
     }
 }

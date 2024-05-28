@@ -4,8 +4,9 @@
  */
 
 use crate::{
-    client::FalkorClientProvider, connection::asynchronous::BorrowedAsyncConnection, AsyncGraph,
-    AsyncGraphSchema, ConfigValue, FalkorAsyncConnection, FalkorConnectionInfo, FalkorDBError,
+    client::FalkorClientProvider, connection::asynchronous::BorrowedAsyncConnection,
+    parser::utils::string_vec_from_val, AsyncGraph, AsyncGraphSchema, ConfigValue,
+    FalkorAsyncConnection, FalkorConnectionInfo, FalkorDBError,
 };
 use anyhow::Result;
 use std::{
@@ -100,14 +101,9 @@ impl FalkorAsyncClient {
     /// A [`Vec`] of [`String`]s, containing the names of available graphs
     pub async fn list_graphs(&self) -> Result<Vec<String>> {
         let mut conn = self.borrow_connection().await?;
-
-        Ok(conn
-            .send_command(None, "GRAPH.LIST", None, None)
-            .await?
-            .into_vec()?
-            .into_iter()
-            .flat_map(|data| data.into_string())
-            .collect::<Vec<_>>())
+        conn.send_command(None, "GRAPH.LIST", None, None)
+            .await
+            .and_then(|res| string_vec_from_val(res).map_err(Into::into))
     }
 
     /// Return the current value of a configuration option in the database.

@@ -20,8 +20,11 @@ pub struct SlowlogEntry {
 }
 
 impl SlowlogEntry {
-    pub fn from_value_array(values: [FalkorValue; 4]) -> Result<Self> {
-        let [timestamp, command, arguments, time_taken] = values;
+    pub(crate) fn from_value_vec(values: Vec<FalkorValue>) -> Result<Self> {
+        let [timestamp, command, arguments, time_taken] = values
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
         Ok(Self {
             timestamp: timestamp
                 .into_string()?

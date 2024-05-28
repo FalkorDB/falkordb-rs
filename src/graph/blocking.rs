@@ -6,8 +6,10 @@
 use crate::{
     client::blocking::FalkorSyncClientInner,
     graph::utils::{construct_query, generate_procedure_call},
+    parser::utils::{parse_header, parse_result_set},
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorIndex,
-    FalkorParsable, FalkorValue, IndexType, QueryResult, SlowlogEntry, SyncGraphSchema,
+    FalkorParsable, FalkorResponse, FalkorValue, IndexType, ResultSet, SlowlogEntry,
+    SyncGraphSchema,
 };
 use anyhow::Result;
 use std::{collections::HashMap, fmt::Display, sync::Arc};
@@ -62,17 +64,10 @@ impl SyncGraph {
             return Ok(vec![]);
         }
 
-        let mut slowlog_entries = Vec::with_capacity(res.len());
-        for entry_raw in res {
-            slowlog_entries.push(SlowlogEntry::from_value_array(
-                entry_raw
-                    .into_vec()?
-                    .try_into()
-                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?,
-            )?);
-        }
-
-        Ok(slowlog_entries)
+        Ok(res
+            .into_iter()
+            .flat_map(|entry_raw| SlowlogEntry::from_value_vec(entry_raw.into_vec()?))
+            .collect())
     }
 
     /// Resets the slowlog, all query time data will be cleared.
@@ -151,47 +146,89 @@ impl SyncGraph {
         self.explain_with_params::<Q, &str, &str>(query_string, None)
     }
 
-    fn query_inner_with_timeout<Q: ToString, T: ToString, Z: ToString, P: FalkorParsable>(
+    fn query_inner_with_timeout<Q: ToString, T: ToString, Z: ToString>(
         &mut self,
         command: &str,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
         timeout: i64,
-    ) -> Result<P> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         let query = construct_query(query_string, params);
-
         let mut conn = self.client.borrow_connection()?;
-        P::from_falkor_value(
-            conn.send_command(
+
+        let [header, data, stats]: [FalkorValue; 3] = conn
+            .send_command(
                 Some(self.graph_name.as_str()),
                 command,
                 None,
-                Some(&[query, "--compact".to_string(), format!("timeout {timeout}")]),
-            )?,
-            &mut self.graph_schema,
-            &mut conn,
+                Some(&[
+                    query.as_str(),
+                    "--compact",
+                    format!("timeout {timeout}").as_str(),
+                ]),
+            )?
+            .into_vec()?
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+        let header_keys = parse_header(header)?;
+        FalkorResponse::from_response_with_headers(
+            parse_result_set(data, &mut self.graph_schema, &mut conn, &header_keys)?,
+            header_keys,
+            stats,
         )
+        .map_err(Into::into)
     }
 
-    fn query_inner<Q: ToString, T: ToString, Z: ToString, P: FalkorParsable>(
+    fn query_inner<Q: ToString, T: ToString, Z: ToString>(
         &mut self,
         command: &str,
         query_string: Q,
         params: Option<&HashMap<T, Z>>,
-    ) -> Result<P> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         let query = construct_query(query_string, params);
-
         let mut conn = self.client.borrow_connection()?;
-        P::from_falkor_value(
-            conn.send_command(
+
+        let res = conn
+            .send_command(
                 Some(self.graph_name.as_str()),
                 command,
                 None,
                 Some(&[query, "--compact".to_string()]),
-            )?,
-            &mut self.graph_schema,
-            &mut conn,
-        )
+            )?
+            .into_vec()?;
+
+        match res.len() {
+            1 => {
+                let stats = res
+                    .into_iter()
+                    .next()
+                    .ok_or(FalkorDBError::ParsingArrayToStructElementCount)?;
+
+                FalkorResponse::from_response(None, vec![], stats)
+            }
+            2 => {
+                let [header, stats]: [FalkorValue; 2] = res
+                    .try_into()
+                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+                FalkorResponse::from_response(Some(header), vec![], stats)
+            }
+            3 => {
+                let [header, data, stats]: [FalkorValue; 3] = res
+                    .try_into()
+                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+                let header_keys = parse_header(header)?;
+                FalkorResponse::from_response_with_headers(
+                    parse_result_set(data, &mut self.graph_schema, &mut conn, &header_keys)?,
+                    header_keys,
+                    stats,
+                )
+            }
+            _ => Err(FalkorDBError::ParsingArrayToStructElementCount),
+        }
+        .map_err(Into::into)
     }
 
     /// Run a query on the graph
@@ -204,8 +241,8 @@ impl SyncGraph {
     pub fn query<Q: Display>(
         &mut self,
         query_string: Q,
-    ) -> Result<QueryResult> {
-        self.query_inner::<Q, &str, &str, QueryResult>("GRAPH.QUERY", query_string, None)
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner::<Q, &str, &str>("GRAPH.QUERY", query_string, None)
     }
 
     /// Run a query on the graph, but abort it if it exceeds the timeout
@@ -220,13 +257,8 @@ impl SyncGraph {
         &mut self,
         query_string: Q,
         timeout: i64,
-    ) -> Result<QueryResult> {
-        self.query_inner_with_timeout::<Q, &str, &str, QueryResult>(
-            "GRAPH.QUERY",
-            query_string,
-            None,
-            timeout,
-        )
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner_with_timeout::<Q, &str, &str>("GRAPH.QUERY", query_string, None, timeout)
     }
 
     /// Run a query on the graph
@@ -237,12 +269,12 @@ impl SyncGraph {
     /// * `params`: a map of parameters and values, note that all keys should be of the same type, and all values should be of the same type.
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
     pub fn query_with_params<Q: Display, T: Display, Z: Display>(
         &mut self,
         query_string: Q,
         params: &HashMap<T, Z>,
-    ) -> Result<QueryResult> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         self.query_inner("GRAPH.QUERY", query_string, Some(params))
     }
 
@@ -261,7 +293,7 @@ impl SyncGraph {
         query_string: Q,
         timeout: i64,
         params: &HashMap<T, Z>,
-    ) -> Result<QueryResult> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         self.query_inner_with_timeout("GRAPH.QUERY", query_string, Some(params), timeout)
     }
 
@@ -272,12 +304,12 @@ impl SyncGraph {
     /// * `query_string`: The query to run
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
     pub fn query_readonly<Q: Display>(
         &mut self,
         query_string: Q,
-    ) -> Result<QueryResult> {
-        self.query_inner::<Q, &str, &str, QueryResult>("GRAPH.QUERY_RO", query_string, None)
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner::<Q, &str, &str>("GRAPH.QUERY_RO", query_string, None)
     }
 
     /// Run a query on the graph, but abort it if it exceeds the timeout
@@ -288,13 +320,13 @@ impl SyncGraph {
     /// * `timeout`: Specify how long should the query run before aborting.
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
     pub fn query_readonly_with_timeout<Q: Display>(
         &mut self,
         query_string: Q,
         timeout: i64,
-    ) -> Result<QueryResult> {
-        self.query_inner_with_timeout::<Q, &str, &str, QueryResult>(
+    ) -> Result<FalkorResponse<ResultSet>> {
+        self.query_inner_with_timeout::<Q, &str, &str>(
             "GRAPH.QUERY_RO",
             query_string,
             None,
@@ -312,12 +344,12 @@ impl SyncGraph {
     /// * `params`: a map of parameters and values, note that all keys should be of the same type, and all values should be of the same type.
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
     pub fn query_readonly_with_params<Q: ToString, T: ToString, Z: ToString>(
         &mut self,
         query_string: Q,
         params: &HashMap<T, Z>,
-    ) -> Result<QueryResult> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         self.query_inner("GRAPH.QUERY_RO", query_string, Some(params))
     }
 
@@ -331,13 +363,13 @@ impl SyncGraph {
     /// * `params`: a map of parameters and values, note that all keys should be of the same type, and all values should be of the same type.
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
     pub fn query_readonly_with_params_and_timeout<Q: ToString, T: ToString, Z: ToString>(
         &mut self,
         query_string: Q,
         params: &HashMap<T, Z>,
         timeout: i64,
-    ) -> Result<QueryResult> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         self.query_inner_with_timeout("GRAPH.QUERY_RO", query_string, Some(params), timeout)
     }
 
@@ -362,15 +394,22 @@ impl SyncGraph {
         read_only: bool,
     ) -> Result<P> {
         let (query_string, params) = generate_procedure_call(procedure, args, yields);
+        let query = construct_query(query_string, params.as_ref());
+        let mut conn = self.client.borrow_connection()?;
 
-        self.query_inner(
-            if read_only {
-                "GRAPH.QUERY_RO"
-            } else {
-                "GRAPH.QUERY"
-            },
-            query_string,
-            params.as_ref(),
+        P::from_falkor_value(
+            conn.send_command(
+                Some(self.graph_name.as_str()),
+                if read_only {
+                    "GRAPH.QUERY_RO"
+                } else {
+                    "GRAPH.QUERY"
+                },
+                None,
+                Some(&[query, "--compact".to_string()]),
+            )?,
+            &mut self.graph_schema,
+            &mut conn,
         )
     }
 
@@ -397,16 +436,26 @@ impl SyncGraph {
         timeout: i64,
     ) -> Result<P> {
         let (query_string, params) = generate_procedure_call(procedure, args, yields);
+        let query = construct_query(query_string, params.as_ref());
+        let mut conn = self.client.borrow_connection()?;
 
-        self.query_inner_with_timeout(
-            if read_only {
-                "GRAPH.QUERY_RO"
-            } else {
-                "GRAPH.QUERY"
-            },
-            query_string,
-            params.as_ref(),
-            timeout,
+        P::from_falkor_value(
+            conn.send_command(
+                Some(self.graph_name.as_str()),
+                if read_only {
+                    "GRAPH.QUERY_RO"
+                } else {
+                    "GRAPH.QUERY"
+                },
+                None,
+                Some(&[
+                    query.as_str(),
+                    "--compact",
+                    format!("timeout {timeout}").as_str(),
+                ]),
+            )?,
+            &mut self.graph_schema,
+            &mut conn,
         )
     }
 
@@ -414,26 +463,26 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`Vec`] of [`FalkorIndex`]
-    pub fn list_indices(&mut self) -> Result<Vec<FalkorIndex>> {
+    pub fn list_indices(&mut self) -> Result<FalkorResponse<Vec<FalkorIndex>>> {
         let mut conn = self.client.borrow_connection()?;
-        let [_, indices, _]: [FalkorValue; 3] = self
+        let [header, indices, stats]: [FalkorValue; 3] = self
             .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, false)?
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-        let indices = indices.into_vec()?;
-
-        let mut out_vec = Vec::with_capacity(indices.len());
-        for index in indices {
-            out_vec.push(FalkorIndex::from_falkor_value(
-                index,
-                &mut self.graph_schema,
-                &mut conn,
-            )?);
-        }
-
-        Ok(out_vec)
+        FalkorResponse::from_response(
+            Some(header),
+            indices
+                .into_vec()?
+                .into_iter()
+                .flat_map(|index| {
+                    FalkorIndex::from_falkor_value(index, &mut self.graph_schema, &mut conn)
+                })
+                .collect(),
+            stats,
+        )
+        .map_err(Into::into)
     }
 
     pub fn create_index<L: ToString, P: ToString>(
@@ -443,7 +492,7 @@ impl SyncGraph {
         label: L,
         properties: &[P],
         options: Option<&HashMap<String, String>>,
-    ) -> Result<QueryResult> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         // Create index from these properties
         let properties_string = properties
             .iter()
@@ -490,7 +539,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: L,
         properties: &[P],
-    ) -> Result<QueryResult> {
+    ) -> Result<FalkorResponse<ResultSet>> {
         let properties_string = properties
             .iter()
             .map(|element| format!("e.{}", element.to_string()))
@@ -519,15 +568,16 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A tuple where the first element is a [`Vec`] of [`Constraint`]s, and the second element is a [`Vec`] of stats as [`String`]s
-    pub fn list_constraints(&mut self) -> Result<(Vec<Constraint>, Vec<String>)> {
+    pub fn list_constraints(&mut self) -> Result<FalkorResponse<Vec<Constraint>>> {
         let mut conn = self.client.borrow_connection()?;
-        let [_, query_res, stats]: [FalkorValue; 3] = self
+        let [header, query_res, stats]: [FalkorValue; 3] = self
             .call_procedure::<&str, FalkorValue>("DB.CONSTRAINTS", None, None, false)?
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-        Ok((
+        FalkorResponse::from_response(
+            Some(header),
             query_res
                 .into_vec()?
                 .into_iter()
@@ -535,12 +585,9 @@ impl SyncGraph {
                     Constraint::from_falkor_value(item, &mut self.graph_schema, &mut conn)
                 })
                 .collect(),
-            stats
-                .into_vec()?
-                .into_iter()
-                .flat_map(|stat| stat.into_string())
-                .collect(),
-        ))
+            stats,
+        )
+        .map_err(Into::into)
     }
 
     /// Creates a new constraint for this graph, making the provided properties mandatory
@@ -549,11 +596,11 @@ impl SyncGraph {
     /// * `entity_type`: Whether to apply this constraint on nodes or relationships.
     /// * `label`: Entities with this label will have this constraint applied to them.
     /// * `properties`: A slice of the names of properties this constraint will apply to.
-    pub fn create_mandatory_constraint<L: ToString, P: ToString>(
+    pub fn create_mandatory_constraint(
         &self,
         entity_type: EntityType,
-        label: L,
-        properties: &[P],
+        label: &str,
+        properties: &[&str],
     ) -> Result<FalkorValue> {
         let mut params = Vec::with_capacity(5 + properties.len());
         params.extend([
@@ -638,29 +685,34 @@ mod tests {
     #[test]
     fn test_create_drop_index() {
         let mut graph = open_test_graph("test_create_drop_index");
-        let res = graph.inner.create_index(
-            IndexType::Fulltext,
-            EntityType::Node,
-            "actor".to_string(),
-            &["Hello"],
-            None,
+        graph
+            .inner
+            .create_index(
+                IndexType::Fulltext,
+                EntityType::Node,
+                "actor".to_string(),
+                &["Hello"],
+                None,
+            )
+            .expect("Could not create index");
+
+        let indices = graph.inner.list_indices().expect("Could not list indices");
+
+        assert_eq!(indices.data.len(), 2);
+        assert_eq!(
+            indices.data[0].field_types["Hello"],
+            vec![IndexType::Fulltext]
         );
-        assert!(res.is_ok());
 
-        let res = graph.inner.list_indices();
-        assert!(res.is_ok());
-
-        let indices = res.unwrap();
-        assert_eq!(indices.len(), 2);
-        assert_eq!(indices[0].field_types["Hello"], vec![IndexType::Fulltext]);
-
-        let res = graph.inner.drop_index(
-            IndexType::Fulltext,
-            EntityType::Node,
-            "actor".to_string(),
-            &["Hello"],
-        );
-        assert!(res.is_ok());
+        graph
+            .inner
+            .drop_index(
+                IndexType::Fulltext,
+                EntityType::Node,
+                "actor".to_string(),
+                &["Hello"],
+            )
+            .expect("Could not drop index");
     }
 
     #[test]
@@ -668,12 +720,12 @@ mod tests {
         let mut graph = open_test_graph("test_list_indices");
         let indices = graph.inner.list_indices().expect("Could not list indices");
 
-        assert_eq!(indices.len(), 1);
-        assert_eq!(indices[0].entity_type, EntityType::Node);
-        assert_eq!(indices[0].index_label, "actor".to_string());
-        assert_eq!(indices[0].field_types.len(), 2);
+        assert_eq!(indices.data.len(), 1);
+        assert_eq!(indices.data[0].entity_type, EntityType::Node);
+        assert_eq!(indices.data[0].index_label, "actor".to_string());
+        assert_eq!(indices.data[0].field_types.len(), 2);
         assert_eq!(
-            indices[0].field_types,
+            indices.data[0].field_types,
             HashMap::from([
                 ("age".to_string(), vec![IndexType::Range]),
                 ("name".to_string(), vec![IndexType::Fulltext])
@@ -738,11 +790,11 @@ mod tests {
             )
             .expect("Could not create constraint");
 
-        let (constraints, _) = graph
+        let res = graph
             .inner
             .list_constraints()
             .expect("Could not list constraints");
-        assert_eq!(constraints.len(), 1);
+        assert_eq!(res.data.len(), 1);
     }
 
     #[test]

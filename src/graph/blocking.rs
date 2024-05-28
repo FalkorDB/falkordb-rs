@@ -8,8 +8,7 @@ use crate::{
     graph::utils::{construct_query, generate_procedure_call},
     parser::utils::{parse_header, parse_result_set},
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorIndex,
-    FalkorParsable, FalkorResponse, FalkorValue, IndexType, ResultSet, SlowlogEntry,
-    SyncGraphSchema,
+    FalkorParsable, FalkorResponse, FalkorValue, GraphSchema, IndexType, ResultSet, SlowlogEntry,
 };
 use anyhow::Result;
 use std::{collections::HashMap, fmt::Display, sync::Arc};
@@ -23,7 +22,7 @@ pub struct SyncGraph {
     pub(crate) client: Arc<FalkorSyncClientInner>,
     pub(crate) graph_name: String,
     /// Provides user with access to the current graph schema,
-    pub graph_schema: SyncGraphSchema,
+    pub graph_schema: GraphSchema,
 }
 
 impl SyncGraph {

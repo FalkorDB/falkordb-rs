@@ -5,16 +5,10 @@
 
 use crate::{
     connection::blocking::BorrowedSyncConnection, value::utils::parse_type, EntityType,
-    FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
+    FalkorDBError, FalkorParsable, FalkorValue, GraphSchema,
 };
 use anyhow::Result;
 use std::fmt::{Display, Formatter};
-
-#[cfg(feature = "tokio")]
-use crate::{
-    connection::asynchronous::BorrowedAsyncConnection, value::utils_async::parse_type_async,
-    AsyncGraphSchema, FalkorAsyncParseable,
-};
 
 /// The type of restriction to apply for the property
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -143,7 +137,7 @@ impl Constraint {
 impl FalkorParsable for Constraint {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &mut SyncGraphSchema,
+        graph_schema: &mut GraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         parse_type(6, value, graph_schema, conn).and_then(|parsed| {
@@ -152,23 +146,5 @@ impl FalkorParsable for Constraint {
                 .map_err(Into::into)
                 .and_then(Constraint::from_value_vec)
         })
-    }
-}
-
-#[cfg(feature = "tokio")]
-impl FalkorAsyncParseable for Constraint {
-    async fn from_falkor_value_async(
-        value: FalkorValue,
-        graph_schema: &AsyncGraphSchema,
-        conn: &mut BorrowedAsyncConnection,
-    ) -> Result<Self> {
-        parse_type_async(6, value, graph_schema, conn)
-            .await
-            .and_then(|value_vec| {
-                value_vec
-                    .into_vec()
-                    .map_err(Into::into)
-                    .and_then(Constraint::from_value_vec)
-            })
     }
 }

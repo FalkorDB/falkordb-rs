@@ -6,15 +6,10 @@
 use crate::{
     connection::blocking::BorrowedSyncConnection,
     value::utils::{parse_type, parse_vec, type_val_from_value},
-    EntityType, FalkorDBError, FalkorParsable, FalkorValue, SyncGraphSchema,
+    EntityType, FalkorDBError, FalkorParsable, FalkorValue, GraphSchema,
 };
 use anyhow::Result;
 use std::collections::HashMap;
-
-#[cfg(feature = "tokio")]
-use crate::{
-    connection::asynchronous::BorrowedAsyncConnection, AsyncGraphSchema, FalkorAsyncParseable,
-};
 
 /// The status of this index
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -143,7 +138,7 @@ impl FalkorIndex {
 impl FalkorParsable for FalkorIndex {
     fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &mut SyncGraphSchema,
+        graph_schema: &mut GraphSchema,
         conn: &mut BorrowedSyncConnection,
     ) -> Result<Self> {
         let semi_parsed_items = value
@@ -154,27 +149,6 @@ impl FalkorParsable for FalkorIndex {
                 parse_type(type_marker, val, graph_schema, conn)
             })
             .collect::<Vec<_>>();
-
-        Self::from_raw_values(semi_parsed_items)
-    }
-}
-
-#[cfg(feature = "tokio")]
-impl FalkorAsyncParseable for FalkorIndex {
-    async fn from_falkor_value_async(
-        value: FalkorValue,
-        graph_schema: &AsyncGraphSchema,
-        conn: &mut BorrowedAsyncConnection,
-    ) -> Result<Self> {
-        let value_vec = value.into_vec()?;
-        let mut semi_parsed_items = Vec::with_capacity(value_vec.len());
-        for item in value_vec {
-            let (type_marker, val) = type_val_from_value(item)?;
-            semi_parsed_items.push(
-                crate::value::utils_async::parse_type_async(type_marker, val, graph_schema, conn)
-                    .await?,
-            );
-        }
 
         Self::from_raw_values(semi_parsed_items)
     }

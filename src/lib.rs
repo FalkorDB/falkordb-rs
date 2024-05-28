@@ -23,7 +23,7 @@ pub use client::{blocking::FalkorSyncClient, builder::FalkorClientBuilder};
 pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
 pub use graph::blocking::SyncGraph;
-pub use graph_schema::{blocking::SyncGraphSchema, SchemaType};
+pub use graph_schema::{GraphSchema, SchemaType};
 pub use parser::FalkorParsable;
 pub use response::{
     constraint::{Constraint, ConstraintStatus, ConstraintType},
@@ -43,8 +43,7 @@ pub use value::{
 #[cfg(feature = "tokio")]
 pub use {
     client::asynchronous::FalkorAsyncClient, connection::asynchronous::FalkorAsyncConnection,
-    graph::asynchronous::AsyncGraph, graph_schema::asynchronous::AsyncGraphSchema,
-    parser::FalkorAsyncParseable,
+    graph::asynchronous::AsyncGraph,
 };
 
 #[cfg(test)]
@@ -87,9 +86,10 @@ pub(crate) mod test_utils {
     #[cfg(feature = "tokio")]
     impl Drop for TestAsyncGraphHandle {
         fn drop(&mut self) {
-            tokio::runtime::Handle::current().block_on(async {
-                self.inner.delete().await.ok();
-            });
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(self.inner.delete())
+            })
+            .ok();
         }
     }
 
@@ -105,7 +105,10 @@ pub(crate) mod test_utils {
     pub(crate) async fn open_test_graph_async(graph_name: &str) -> TestAsyncGraphHandle {
         let client = create_async_test_client().await;
         TestAsyncGraphHandle {
-            inner: client.select_graph(graph_name).await,
+            inner: client
+                .copy_graph("imdb", graph_name)
+                .await
+                .expect("Could not copy graph"),
         }
     }
 }

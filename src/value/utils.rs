@@ -5,14 +5,14 @@
 
 use crate::{
     connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, FalkorValue,
-    Point, SchemaType, SyncGraphSchema,
+    GraphSchema, Point, SchemaType,
 };
 use anyhow::Result;
 use std::collections::HashSet;
 
 pub(crate) fn parse_labels(
     raw_ids: Vec<FalkorValue>,
-    graph_schema: &mut SyncGraphSchema,
+    graph_schema: &mut GraphSchema,
     conn: &mut BorrowedSyncConnection,
     schema_type: SchemaType,
 ) -> Result<Vec<String>> {
@@ -22,7 +22,7 @@ pub(crate) fn parse_labels(
         .collect::<HashSet<i64>>();
 
     let relevant_ids = match graph_schema.verify_id_set(&ids_hashset, schema_type) {
-        None => graph_schema.refresh(schema_type, conn, Some(&ids_hashset))?,
+        None => graph_schema.refresh(conn, schema_type, Some(&ids_hashset))?,
         relevant_ids => relevant_ids,
     }
     .ok_or(FalkorDBError::ParsingError)?;
@@ -46,7 +46,7 @@ pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValu
 pub(crate) fn parse_type(
     type_marker: i64,
     val: FalkorValue,
-    graph_schema: &mut SyncGraphSchema,
+    graph_schema: &mut GraphSchema,
     conn: &mut BorrowedSyncConnection,
 ) -> Result<FalkorValue> {
     let res = match type_marker {
@@ -90,7 +90,7 @@ pub(crate) fn parse_vec<T: TryFrom<FalkorValue, Error = FalkorDBError>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph_schema::blocking::tests::open_readonly_graph_with_modified_schema;
+    use crate::graph_schema::tests::open_readonly_graph_with_modified_schema;
 
     #[test]
     fn test_parse_edge() {

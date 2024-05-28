@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, SyncGraphSchema,
+    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, GraphSchema,
 };
 use anyhow::Result;
 use graph_entities::{Edge, Node};
@@ -12,20 +12,12 @@ use path::Path;
 use point::Point;
 use std::{collections::HashMap, fmt::Debug};
 
-#[cfg(feature = "tokio")]
-use crate::{
-    connection::asynchronous::BorrowedAsyncConnection, AsyncGraphSchema, FalkorAsyncParseable,
-};
-
 pub(crate) mod config;
 pub(crate) mod graph_entities;
 pub(crate) mod map;
 pub(crate) mod path;
 pub(crate) mod point;
 pub(crate) mod utils;
-
-#[cfg(feature = "tokio")]
-pub(crate) mod utils_async;
 
 /// An enum of all the supported Falkor types
 #[derive(Clone, Debug, PartialEq)]
@@ -175,27 +167,6 @@ impl TryFrom<FalkorValue> for Point {
     }
 }
 
-impl FalkorParsable for FalkorValue {
-    fn from_falkor_value(
-        value: FalkorValue,
-        _graph_schema: &mut SyncGraphSchema,
-        _conn: &mut BorrowedSyncConnection,
-    ) -> Result<Self> {
-        Ok(value)
-    }
-}
-
-#[cfg(feature = "tokio")]
-impl FalkorAsyncParseable for FalkorValue {
-    async fn from_falkor_value_async(
-        value: FalkorValue,
-        _graph_schema: &AsyncGraphSchema,
-        _conn: &mut BorrowedAsyncConnection,
-    ) -> Result<Self> {
-        Ok(value)
-    }
-}
-
 impl FalkorValue {
     /// Returns a reference to the internal [`Vec`] if this is an FArray variant.
     ///
@@ -326,5 +297,15 @@ impl FalkorValue {
     /// The inner [`String`]
     pub fn into_string(self) -> Result<String, FalkorDBError> {
         self.try_into()
+    }
+}
+
+impl FalkorParsable for FalkorValue {
+    fn from_falkor_value(
+        value: FalkorValue,
+        _graph_schema: &mut GraphSchema,
+        _conn: &mut BorrowedSyncConnection,
+    ) -> Result<Self> {
+        Ok(value)
     }
 }

@@ -139,7 +139,6 @@ impl FalkorClientBuilder<'A'> {
 
         FalkorAsyncClient::create(
             Self::get_client(connection_info.clone())?,
-            connection_info,
             self.num_connections,
             self.timeout,
         )

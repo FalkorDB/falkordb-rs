@@ -7,7 +7,7 @@ use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
     parser::utils::string_vec_from_val,
-    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorValue, SyncGraph, SyncGraphSchema,
+    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorValue, GraphSchema, SyncGraph,
 };
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -163,7 +163,7 @@ impl FalkorSyncClient {
         SyncGraph {
             client: self.inner.clone(),
             graph_name: graph_name.to_string(),
-            graph_schema: SyncGraphSchema::new(graph_name.to_string()), // Required for requesting refreshes
+            graph_schema: GraphSchema::new(graph_name.to_string()), // Required for requesting refreshes
         }
     }
 

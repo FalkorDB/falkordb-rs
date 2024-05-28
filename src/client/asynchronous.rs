@@ -3,10 +3,11 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::connection::blocking::FalkorSyncConnection;
 use crate::{
     client::FalkorClientProvider, connection::asynchronous::BorrowedAsyncConnection,
-    parser::utils::string_vec_from_val, AsyncGraph, AsyncGraphSchema, ConfigValue,
-    FalkorAsyncConnection, FalkorConnectionInfo, FalkorDBError, FalkorValue,
+    parser::utils::string_vec_from_val, AsyncGraph, ConfigValue, FalkorAsyncConnection,
+    FalkorDBError, FalkorValue, GraphSchema,
 };
 use anyhow::Result;
 use std::{
@@ -19,7 +20,6 @@ use tokio::sync::Mutex;
 
 pub(crate) struct FalkorAsyncClientInner {
     _inner: Arc<FalkorClientProvider>,
-    graph_cache: Mutex<HashMap<String, Arc<Mutex<AsyncGraphSchema>>>>,
     connection_pool_size: u8,
     connection_pool: Arc<Mutex<VecDeque<FalkorAsyncConnection>>>,
 }
@@ -36,29 +36,42 @@ impl FalkorAsyncClientInner {
             conn_pool: self.connection_pool.clone(),
         })
     }
+
+    pub(crate) fn create_sync_connection(&self) -> Result<FalkorSyncConnection> {
+        Ok(match self._inner.as_ref() {
+            #[cfg(feature = "redis")]
+            FalkorClientProvider::Redis(redis_client) => {
+                FalkorSyncConnection::Redis(redis_client.get_connection()?)
+            }
+        })
+    }
 }
 
 pub struct FalkorAsyncClient {
     inner: Arc<FalkorAsyncClientInner>,
-    _connection_info: FalkorConnectionInfo,
 }
 
 impl FalkorAsyncClient {
     pub(crate) async fn create(
         client: FalkorClientProvider,
-        connection_info: FalkorConnectionInfo,
         num_connections: u8,
         timeout: Option<Duration>,
     ) -> Result<Self> {
         let client = Arc::new(client);
-        let connection_pool: VecDeque<_> = futures::future::join_all(
-            (0..num_connections).map(|_| tokio::spawn(client.get_async_connection(timeout))),
-        )
-        .await
-        .into_iter()
-        .flat_map(|x| x)
-        .flat_map(|x| x)
-        .collect();
+
+        // Wait for all tasks to complete and collect results
+        let connection_pool: VecDeque<_> =
+            futures::future::join_all((0..num_connections).map(|_| {
+                let client = Arc::clone(&client);
+                tokio::task::spawn(async move {
+                    client.get_async_connection(timeout).await // Replace `timeout` with your actual timeout value
+                })
+            }))
+            .await
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
 
         if connection_pool.len() != num_connections as usize {
             Err(FalkorDBError::NoConnection)?;
@@ -67,11 +80,9 @@ impl FalkorAsyncClient {
         Ok(Self {
             inner: Arc::new(FalkorAsyncClientInner {
                 _inner: client,
-                graph_cache: Default::default(),
                 connection_pool_size: num_connections,
                 connection_pool: Arc::new(Mutex::new(connection_pool)),
             }),
-            _connection_info: connection_info,
         })
     }
 
@@ -166,14 +177,14 @@ impl FalkorAsyncClient {
     ///
     /// # Returns
     /// a [`SyncGraph`] object, allowing various graph operations.
-    pub async fn select_graph<T: ToString>(
+    pub fn select_graph<T: ToString>(
         &self,
         graph_name: T,
     ) -> AsyncGraph {
         AsyncGraph {
             client: self.inner.clone(),
             graph_name: graph_name.to_string(),
-            graph_schema: AsyncGraphSchema::new(graph_name.to_string()), // Required for requesting refreshes
+            graph_schema: GraphSchema::new(graph_name.to_string()), // Required for requesting refreshes
         }
     }
 
@@ -199,7 +210,7 @@ impl FalkorAsyncClient {
                 Some(&[new_graph_name]),
             )
             .await?;
-        Ok(self.select_graph(new_graph_name).await)
+        Ok(self.select_graph(new_graph_name))
     }
 }
 
@@ -223,7 +234,7 @@ mod tests {
     async fn test_async_select_graph_and_query() {
         let client = create_async_test_client().await;
 
-        let mut graph = client.select_graph("imdb").await;
+        let mut graph = client.select_graph("imdb");
         assert_eq!(graph.graph_name(), "imdb".to_string());
 
         let res = graph
@@ -240,7 +251,6 @@ mod tests {
 
         client
             .select_graph("imdb_async_ro_copy")
-            .await
             .delete()
             .await
             .ok();
@@ -250,7 +260,7 @@ mod tests {
             .await
             .expect("Could not copy graph");
 
-        let mut original_graph = client.select_graph("imdb").await;
+        let mut original_graph = client.select_graph("imdb");
 
         assert_eq!(
             graph

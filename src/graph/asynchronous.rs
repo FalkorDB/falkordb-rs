@@ -6,9 +6,9 @@
 use crate::{
     client::asynchronous::FalkorAsyncClientInner,
     graph::utils::{construct_query, generate_procedure_call},
-    parser::utils::{parse_header, parse_result_set_async},
-    AsyncGraphSchema, Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorAsyncParseable,
-    FalkorDBError, FalkorIndex, FalkorResponse, FalkorValue, IndexType, ResultSet, SlowlogEntry,
+    parser::utils::{parse_header, parse_result_set},
+    Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorIndex,
+    FalkorParsable, FalkorResponse, FalkorValue, GraphSchema, IndexType, ResultSet, SlowlogEntry,
 };
 use anyhow::Result;
 use std::{collections::HashMap, fmt::Display, sync::Arc};
@@ -24,7 +24,7 @@ pub struct AsyncGraph {
     pub(crate) graph_name: String,
     /// Provides user with access to the current graph schema,
     /// which contains a safe cache of id to labels/properties/relationship maps
-    pub graph_schema: AsyncGraphSchema,
+    pub graph_schema: GraphSchema,
 }
 
 impl AsyncGraph {
@@ -51,7 +51,7 @@ impl AsyncGraph {
     /// NOTE: This still maintains the graph API, operations are still viable.
     pub async fn delete(&mut self) -> Result<()> {
         self.send_command("GRAPH.DELETE", None, None).await?;
-        self.graph_schema.clear().await;
+        self.graph_schema.clear();
         Ok(())
     }
 
@@ -185,7 +185,7 @@ impl AsyncGraph {
 
         let header_keys = parse_header(header)?;
         FalkorResponse::from_response_with_headers(
-            parse_result_set_async(data, &mut self.graph_schema, &mut conn, &header_keys).await?,
+            parse_result_set(data, &mut self.graph_schema, &mut conn, &header_keys)?,
             header_keys,
             stats,
         )
@@ -234,8 +234,7 @@ impl AsyncGraph {
 
                 let header_keys = parse_header(header)?;
                 FalkorResponse::from_response_with_headers(
-                    parse_result_set_async(data, &mut self.graph_schema, &mut conn, &header_keys)
-                        .await?,
+                    parse_result_set(data, &mut self.graph_schema, &mut conn, &header_keys)?,
                     header_keys,
                     stats,
                 )
@@ -408,7 +407,7 @@ impl AsyncGraph {
     ///
     /// # Returns
     /// A caller-provided type which implements [`FalkorParsable`]
-    pub async fn call_procedure<C: ToString, P: FalkorAsyncParseable>(
+    pub async fn call_procedure<C: ToString, P: FalkorParsable>(
         &mut self,
         procedure: C,
         args: Option<&[&str]>,
@@ -419,7 +418,7 @@ impl AsyncGraph {
         let query = construct_query(query_string, params.as_ref());
         let mut conn = self.client.borrow_connection().await?;
 
-        P::from_falkor_value_async(
+        P::from_falkor_value(
             conn.send_command(
                 Some(self.graph_name.as_str()),
                 if read_only {
@@ -434,7 +433,6 @@ impl AsyncGraph {
             &mut self.graph_schema,
             &mut conn,
         )
-        .await
     }
 
     /// Run a query which calls a procedure on the graph, read-only, or otherwise.
@@ -451,7 +449,7 @@ impl AsyncGraph {
     ///
     /// # Returns
     /// A caller-provided type which implements [`FalkorParsable`]
-    pub async fn call_procedure_with_timeout<C: ToString, P: FalkorAsyncParseable>(
+    pub async fn call_procedure_with_timeout<C: ToString, P: FalkorParsable>(
         &mut self,
         procedure: C,
         args: Option<&[&str]>,
@@ -463,7 +461,7 @@ impl AsyncGraph {
         let query = construct_query(query_string, params.as_ref());
         let mut conn = self.client.borrow_connection().await?;
 
-        P::from_falkor_value_async(
+        P::from_falkor_value(
             conn.send_command(
                 Some(self.graph_name.as_str()),
                 if read_only {
@@ -482,7 +480,6 @@ impl AsyncGraph {
             &mut self.graph_schema,
             &mut conn,
         )
-        .await
     }
 
     /// Calls the DB.INDICES procedure on the graph, returning all the indexing methods currently used
@@ -504,8 +501,7 @@ impl AsyncGraph {
                 .into_vec()?
                 .into_iter()
                 .flat_map(|index| {
-                    FalkorIndex::from_falkor_value_async(index, &mut self.graph_schema, &mut conn)
-                        .await
+                    FalkorIndex::from_falkor_value(index, &mut self.graph_schema, &mut conn)
                 })
                 .collect(),
             stats,
@@ -613,8 +609,7 @@ impl AsyncGraph {
                 .into_vec()?
                 .into_iter()
                 .flat_map(|item| {
-                    Constraint::from_falkor_value_async(item, &mut self.graph_schema, &mut conn)
-                        .await
+                    Constraint::from_falkor_value(item, &mut self.graph_schema, &mut conn)
                 })
                 .collect(),
             stats,
@@ -718,7 +713,7 @@ mod tests {
     use super::*;
     use crate::{test_utils::open_test_graph_async, IndexType};
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_create_drop_index_async() {
         let mut graph = open_test_graph_async("test_create_drop_index_async").await;
         graph
@@ -757,7 +752,7 @@ mod tests {
             .expect("Could not drop index");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_list_indices_async() {
         let mut graph = open_test_graph_async("test_list_indices_async").await;
         let indices = graph
@@ -781,7 +776,7 @@ mod tests {
         graph.inner.delete().await.ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_create_drop_mandatory_constraint_async() {
         let graph = open_test_graph_async("test_mandatory_constraint_async").await;
 
@@ -803,7 +798,7 @@ mod tests {
             .expect("Could not drop constraint");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_create_drop_unique_constraint_async() {
         let mut graph = open_test_graph_async("test_unique_constraint_async").await;
 
@@ -829,7 +824,7 @@ mod tests {
             .expect("Could not drop constraint");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_list_constraints_async() {
         let mut graph = open_test_graph_async("test_list_constraint_async").await;
 
@@ -851,7 +846,7 @@ mod tests {
         assert_eq!(constraints.data.len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_slowlog_async() {
         let mut graph = open_test_graph_async("test_slowlog_async").await;
 
@@ -895,7 +890,7 @@ mod tests {
         assert!(slowlog_after_reset.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_explain_async() {
         let graph = open_test_graph_async("test_explain_async").await;
 
@@ -907,7 +902,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_profile_async() {
         let graph = open_test_graph_async("test_profile_async").await;
 

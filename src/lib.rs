@@ -43,7 +43,7 @@ pub use value::{
 #[cfg(feature = "tokio")]
 pub use {
     client::asynchronous::FalkorAsyncClient, connection::asynchronous::FalkorAsyncConnection,
-    graph::asynchronous::AsyncGraph,
+    graph::asynchronous::AsyncGraph, parser::FalkorParsableAsync,
 };
 
 #[cfg(test)]

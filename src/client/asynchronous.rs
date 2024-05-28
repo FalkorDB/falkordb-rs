@@ -3,7 +3,6 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::blocking::FalkorSyncConnection;
 use crate::{
     client::FalkorClientProvider, connection::asynchronous::BorrowedAsyncConnection,
     parser::utils::string_vec_from_val, AsyncGraph, ConfigValue, FalkorAsyncConnection,
@@ -34,15 +33,6 @@ impl FalkorAsyncClientInner {
         Ok(BorrowedAsyncConnection {
             conn: Some(connection),
             conn_pool: self.connection_pool.clone(),
-        })
-    }
-
-    pub(crate) fn create_sync_connection(&self) -> Result<FalkorSyncConnection> {
-        Ok(match self._inner.as_ref() {
-            #[cfg(feature = "redis")]
-            FalkorClientProvider::Redis(redis_client) => {
-                FalkorSyncConnection::Redis(redis_client.get_connection()?)
-            }
         })
     }
 }

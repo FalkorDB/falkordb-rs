@@ -9,6 +9,13 @@ use crate::{
 };
 use anyhow::Result;
 
+#[cfg(feature = "tokio")]
+use {
+    crate::{connection::asynchronous::BorrowedAsyncConnection, FalkorParsableAsync},
+    std::sync::Arc,
+    tokio::sync::Mutex,
+};
+
 /// Represents a path between two nodes, contains all the nodes, and the relationships between them along the path
 #[derive(Clone, Debug, PartialEq)]
 pub struct Path {
@@ -37,6 +44,33 @@ impl FalkorParsable for Path {
                 .into_vec()?
                 .into_iter()
                 .flat_map(|edge| Edge::from_falkor_value(edge, graph_schema, conn))
+                .collect(),
+        })
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl FalkorParsableAsync for Path {
+    async fn from_falkor_value_async(
+        value: FalkorValue,
+        graph_schema: &mut GraphSchema,
+        conn: Arc<Mutex<BorrowedAsyncConnection>>,
+    ) -> Result<Self> {
+        let [nodes, relationships]: [FalkorValue; 2] = value
+            .into_vec()?
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+        Ok(Self {
+            nodes: nodes
+                .into_vec()?
+                .into_iter()
+                .flat_map(|node| Node::from_falkor_value_async(node, graph_schema, conn).await)
+                .collect(),
+            relationships: relationships
+                .into_vec()?
+                .into_iter()
+                .flat_map(|edge| Edge::from_falkor_value_async(edge, graph_schema, conn).await)
                 .collect(),
         })
     }

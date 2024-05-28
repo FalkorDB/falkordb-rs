@@ -6,12 +6,14 @@
 use crate::{
     client::asynchronous::FalkorAsyncClientInner,
     graph::utils::{construct_query, generate_procedure_call},
-    parser::utils::{parse_header, parse_result_set},
+    parser::utils::{parse_header, parse_result_set_async},
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorIndex,
-    FalkorParsable, FalkorResponse, FalkorValue, GraphSchema, IndexType, ResultSet, SlowlogEntry,
+    FalkorParsableAsync, FalkorResponse, FalkorValue, GraphSchema, IndexType, ResultSet,
+    SlowlogEntry,
 };
 use anyhow::Result;
 use std::{collections::HashMap, fmt::Display, sync::Arc};
+use tokio::sync::Mutex;
 
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
 ///
@@ -184,8 +186,9 @@ impl AsyncGraph {
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let header_keys = parse_header(header)?;
+        let conn = Arc::new(Mutex::new(conn));
         FalkorResponse::from_response_with_headers(
-            parse_result_set(data, &mut self.graph_schema, &mut conn, &header_keys)?,
+            parse_result_set_async(data, &mut self.graph_schema, conn, &header_keys).await?,
             header_keys,
             stats,
         )
@@ -233,8 +236,10 @@ impl AsyncGraph {
                     .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
                 let header_keys = parse_header(header)?;
+                let conn = Arc::new(Mutex::new(conn));
                 FalkorResponse::from_response_with_headers(
-                    parse_result_set(data, &mut self.graph_schema, &mut conn, &header_keys)?,
+                    parse_result_set_async(data, &mut self.graph_schema, conn, &header_keys)
+                        .await?,
                     header_keys,
                     stats,
                 )
@@ -406,8 +411,8 @@ impl AsyncGraph {
     /// * `timeout`: If provided, the query will abort if overruns the timeout.
     ///
     /// # Returns
-    /// A caller-provided type which implements [`FalkorParsable`]
-    pub async fn call_procedure<C: ToString, P: FalkorParsable>(
+    /// A caller-provided type which implements [`FalkorParsableAsync`]
+    pub async fn call_procedure<C: ToString, P: FalkorParsableAsync>(
         &mut self,
         procedure: C,
         args: Option<&[&str]>,
@@ -418,8 +423,8 @@ impl AsyncGraph {
         let query = construct_query(query_string, params.as_ref());
         let mut conn = self.client.borrow_connection().await?;
 
-        P::from_falkor_value(
-            conn.send_command(
+        let res = conn
+            .send_command(
                 Some(self.graph_name.as_str()),
                 if read_only {
                     "GRAPH.QUERY_RO"
@@ -429,10 +434,10 @@ impl AsyncGraph {
                 None,
                 Some(&[query, "--compact".to_string()]),
             )
-            .await?,
-            &mut self.graph_schema,
-            &mut conn,
-        )
+            .await?;
+
+        let conn = Arc::new(Mutex::new(conn));
+        P::from_falkor_value_async(res, &mut self.graph_schema, conn).await
     }
 
     /// Run a query which calls a procedure on the graph, read-only, or otherwise.
@@ -448,8 +453,8 @@ impl AsyncGraph {
     /// * `timeout`: If provided, the query will abort if overruns the timeout.
     ///
     /// # Returns
-    /// A caller-provided type which implements [`FalkorParsable`]
-    pub async fn call_procedure_with_timeout<C: ToString, P: FalkorParsable>(
+    /// A caller-provided type which implements [`FalkorParsableAsync`]
+    pub async fn call_procedure_with_timeout<C: ToString, P: FalkorParsableAsync>(
         &mut self,
         procedure: C,
         args: Option<&[&str]>,
@@ -461,8 +466,8 @@ impl AsyncGraph {
         let query = construct_query(query_string, params.as_ref());
         let mut conn = self.client.borrow_connection().await?;
 
-        P::from_falkor_value(
-            conn.send_command(
+        let res = conn
+            .send_command(
                 Some(self.graph_name.as_str()),
                 if read_only {
                     "GRAPH.QUERY_RO"
@@ -476,10 +481,10 @@ impl AsyncGraph {
                     format!("timeout {timeout}").as_str(),
                 ]),
             )
-            .await?,
-            &mut self.graph_schema,
-            &mut conn,
-        )
+            .await?;
+
+        let conn = Arc::new(Mutex::new(conn));
+        P::from_falkor_value_async(res, &mut self.graph_schema, conn).await
     }
 
     /// Calls the DB.INDICES procedure on the graph, returning all the indexing methods currently used
@@ -487,7 +492,6 @@ impl AsyncGraph {
     /// # Returns
     /// A [`Vec`] of [`FalkorIndex`]
     pub async fn list_indices(&mut self) -> Result<FalkorResponse<Vec<FalkorIndex>>> {
-        let mut conn = self.client.borrow_connection().await?;
         let [header, indices, stats]: [FalkorValue; 3] = self
             .call_procedure::<&str, FalkorValue>("DB.INDEXES", None, None, false)
             .await?
@@ -495,13 +499,15 @@ impl AsyncGraph {
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
+        let conn = Arc::new(Mutex::new(self.client.borrow_connection().await?));
         FalkorResponse::from_response(
             Some(header),
             indices
                 .into_vec()?
                 .into_iter()
                 .flat_map(|index| {
-                    FalkorIndex::from_falkor_value(index, &mut self.graph_schema, &mut conn)
+                    let conn = Arc::clone(&conn);
+                    FalkorIndex::from_falkor_value_async(index, &mut self.graph_schema, conn).await
                 })
                 .collect(),
             stats,
@@ -603,13 +609,14 @@ impl AsyncGraph {
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
+        let conn = Arc::new(Mutex::new(conn));
         FalkorResponse::from_response(
             Some(header),
             query_res
                 .into_vec()?
                 .into_iter()
                 .flat_map(|item| {
-                    Constraint::from_falkor_value(item, &mut self.graph_schema, &mut conn)
+                    Constraint::from_falkor_value_async(item, &mut self.graph_schema, conn).await
                 })
                 .collect(),
             stats,

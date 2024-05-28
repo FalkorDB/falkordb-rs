@@ -10,6 +10,13 @@ use crate::{
 use anyhow::Result;
 use std::collections::HashSet;
 
+#[cfg(feature = "tokio")]
+use {
+    crate::{connection::asynchronous::BorrowedAsyncConnection, FalkorParsableAsync},
+    std::sync::Arc,
+    tokio::sync::Mutex,
+};
+
 pub(crate) fn parse_labels(
     raw_ids: Vec<FalkorValue>,
     graph_schema: &mut GraphSchema,
@@ -23,6 +30,34 @@ pub(crate) fn parse_labels(
 
     let relevant_ids = match graph_schema.verify_id_set(&ids_hashset, schema_type) {
         None => graph_schema.refresh(conn, schema_type, Some(&ids_hashset))?,
+        relevant_ids => relevant_ids,
+    }
+    .ok_or(FalkorDBError::ParsingError)?;
+
+    Ok(raw_ids
+        .into_iter()
+        .filter_map(|id| id.to_i64().and_then(|id| relevant_ids.get(&id).cloned()))
+        .collect())
+}
+
+#[cfg(feature = "tokio")]
+pub(crate) async fn parse_labels_async(
+    raw_ids: Vec<FalkorValue>,
+    graph_schema: &mut GraphSchema,
+    conn: Arc<Mutex<BorrowedAsyncConnection>>,
+    schema_type: SchemaType,
+) -> Result<Vec<String>> {
+    let ids_hashset = raw_ids
+        .iter()
+        .filter_map(|label_id| label_id.to_i64())
+        .collect::<HashSet<i64>>();
+
+    let relevant_ids = match graph_schema.verify_id_set(&ids_hashset, schema_type) {
+        None => {
+            graph_schema
+                .refresh_async(&conn, schema_type, Some(&ids_hashset))
+                .await?
+        }
         relevant_ids => relevant_ids,
     }
     .ok_or(FalkorDBError::ParsingError)?;
@@ -70,6 +105,50 @@ pub(crate) fn parse_type(
         8 => FalkorValue::FNode(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
         9 => FalkorValue::FPath(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
         10 => FalkorValue::FMap(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
+        11 => FalkorValue::FPoint(Point::parse(val)?),
+        _ => Err(FalkorDBError::ParsingUnknownType)?,
+    };
+
+    Ok(res)
+}
+
+#[cfg(feature = "tokio")]
+#[async_recursion::async_recursion]
+pub(crate) async fn parse_type_async(
+    type_marker: i64,
+    val: FalkorValue,
+    graph_schema: &mut GraphSchema,
+    conn: Arc<Mutex<BorrowedAsyncConnection>>,
+) -> Result<FalkorValue> {
+    let res = match type_marker {
+        1 => FalkorValue::None,
+        2 => FalkorValue::FString(val.into_string()?),
+        3 => FalkorValue::Int64(val.to_i64().ok_or(FalkorDBError::ParsingI64)?),
+        4 => FalkorValue::FBool(val.to_bool().ok_or(FalkorDBError::ParsingBool)?),
+        5 => FalkorValue::F64(val.try_into()?),
+        6 => FalkorValue::FArray({
+            val.into_vec()?
+                .into_iter()
+                .flat_map(|item| {
+                    type_val_from_value(item).and_then(|(type_marker, val)| {
+                        parse_type_async(type_marker, val, graph_schema, conn).await
+                    })
+                })
+                .collect()
+        }),
+        // The following types are sent as an array and require specific parsing functions
+        7 => FalkorValue::FEdge(
+            FalkorParsableAsync::from_falkor_value_async(val, graph_schema, conn).await?,
+        ),
+        8 => FalkorValue::FNode(
+            FalkorParsableAsync::from_falkor_value_async(val, graph_schema, conn).await?,
+        ),
+        9 => FalkorValue::FPath(
+            FalkorParsableAsync::from_falkor_value_async(val, graph_schema, conn).await?,
+        ),
+        10 => FalkorValue::FMap(
+            FalkorParsableAsync::from_falkor_value_async(val, graph_schema, conn).await?,
+        ),
         11 => FalkorValue::FPoint(Point::parse(val)?),
         _ => Err(FalkorDBError::ParsingUnknownType)?,
     };

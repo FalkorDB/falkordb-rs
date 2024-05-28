@@ -9,7 +9,9 @@ use std::collections::{HashMap, HashSet};
 use utils::{get_refresh_command, get_relevant_hashmap, update_map};
 
 #[cfg(feature = "tokio")]
-use crate::connection::asynchronous::BorrowedAsyncConnection;
+use {
+    crate::connection::asynchronous::BorrowedAsyncConnection, std::sync::Arc, tokio::sync::Mutex,
+};
 
 mod utils;
 
@@ -85,10 +87,6 @@ impl RefreshSchemaKeys for BorrowedAsyncConnection {
 pub(crate) type IdMap = HashMap<i64, String>;
 
 /// A struct containing the various schema maps, allowing conversions between ids and their string representations.
-///
-/// # Thread Safety
-/// This struct is fully thread safe, it can be cloned and passed within threads without constraints,
-/// Its API uses only immutable references
 #[derive(Clone, Debug, Default)]
 pub struct GraphSchema {
     graph_name: String,
@@ -160,6 +158,31 @@ impl GraphSchema {
 
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
         let [_, keys, _]: [FalkorValue; 3] = conn
+            .refresh_schema_keys(schema_type, self.graph_name.as_str())?
+            .into_vec()?
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+        Ok(update_map(id_map, keys, id_hashset)?)
+    }
+
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn refresh_async(
+        &mut self,
+        conn: &Arc<Mutex<BorrowedAsyncConnection>>,
+        schema_type: SchemaType,
+        id_hashset: Option<&HashSet<i64>>,
+    ) -> Result<Option<HashMap<i64, String>>> {
+        let id_map = match schema_type {
+            SchemaType::Labels => &mut self.labels,
+            SchemaType::Properties => &mut self.properties,
+            SchemaType::Relationships => &mut self.relationships,
+        };
+
+        // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
+        let [_, keys, _]: [FalkorValue; 3] = conn
+            .lock()
+            .await
             .refresh_schema_keys(schema_type, self.graph_name.as_str())?
             .into_vec()?
             .try_into()

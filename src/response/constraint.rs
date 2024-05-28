@@ -10,6 +10,16 @@ use crate::{
 use anyhow::Result;
 use std::fmt::{Display, Formatter};
 
+#[cfg(feature = "tokio")]
+use {
+    crate::{
+        connection::asynchronous::BorrowedAsyncConnection, value::utils::parse_type_async,
+        FalkorParsableAsync,
+    },
+    std::sync::Arc,
+    tokio::sync::Mutex,
+};
+
 /// The type of restriction to apply for the property
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ConstraintType {
@@ -146,5 +156,23 @@ impl FalkorParsable for Constraint {
                 .map_err(Into::into)
                 .and_then(Constraint::from_value_vec)
         })
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl FalkorParsableAsync for Constraint {
+    async fn from_falkor_value_async(
+        value: FalkorValue,
+        graph_schema: &mut GraphSchema,
+        conn: Arc<Mutex<BorrowedAsyncConnection>>,
+    ) -> Result<Self> {
+        parse_type_async(6, value, graph_schema, conn)
+            .await
+            .and_then(|parsed| {
+                parsed
+                    .into_vec()
+                    .map_err(Into::into)
+                    .and_then(Constraint::from_value_vec)
+            })
     }
 }

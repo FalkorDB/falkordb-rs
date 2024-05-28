@@ -11,6 +11,16 @@ use crate::{
 use anyhow::Result;
 use std::collections::HashMap;
 
+#[cfg(feature = "tokio")]
+use {
+    crate::{
+        connection::asynchronous::BorrowedAsyncConnection, value::utils::parse_type_async,
+        FalkorParsableAsync,
+    },
+    std::sync::Arc,
+    tokio::sync::Mutex,
+};
+
 /// The status of this index
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum IndexStatus {
@@ -147,6 +157,26 @@ impl FalkorParsable for FalkorIndex {
             .flat_map(|item| {
                 let (type_marker, val) = type_val_from_value(item)?;
                 parse_type(type_marker, val, graph_schema, conn)
+            })
+            .collect::<Vec<_>>();
+
+        Self::from_raw_values(semi_parsed_items)
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl FalkorParsableAsync for FalkorIndex {
+    async fn from_falkor_value_async(
+        value: FalkorValue,
+        graph_schema: &mut GraphSchema,
+        conn: Arc<Mutex<BorrowedAsyncConnection>>,
+    ) -> Result<Self> {
+        let semi_parsed_items = value
+            .into_vec()?
+            .into_iter()
+            .flat_map(|item| {
+                let (type_marker, val) = type_val_from_value(item)?;
+                parse_type_async(type_marker, val, graph_schema, conn).await
             })
             .collect::<Vec<_>>();
 

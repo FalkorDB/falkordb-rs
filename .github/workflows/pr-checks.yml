@@ -44,7 +44,7 @@ jobs:
       falkordb:
         image: falkordb/falkordb:edge
         volumes:
-          - resources/imdb.rdb:/FalkorDB/dump.rdb
+          - ./resources/imdb.rdb:/FalkorDB/dump.rdb
         ports:
           - 6379:6379
     steps:

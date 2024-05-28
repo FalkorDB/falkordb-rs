@@ -3,10 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::parser::utils::string_vec_from_val;
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
+    parser::utils::string_vec_from_val,
     ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorValue, SyncGraph, SyncGraphSchema,
 };
 use anyhow::Result;

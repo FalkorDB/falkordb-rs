@@ -3,10 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use super::utils::parse_labels;
 use crate::{
-    connection::blocking::BorrowedSyncConnection, value::map::parse_map_with_schema, FalkorDBError,
-    FalkorParsable, FalkorValue, SchemaType, SyncGraphSchema,
+    connection::blocking::BorrowedSyncConnection,
+    value::{map::parse_map_with_schema, utils::parse_labels},
+    FalkorDBError, FalkorParsable, FalkorValue, SchemaType, SyncGraphSchema,
 };
 use anyhow::Result;
 use std::{

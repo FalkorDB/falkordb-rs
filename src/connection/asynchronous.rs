@@ -5,8 +5,7 @@
 
 use crate::{FalkorDBError, FalkorValue};
 use anyhow::Result;
-use std::fmt::Display;
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, fmt::Display, sync::Arc};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]

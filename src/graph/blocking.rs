@@ -237,7 +237,7 @@ impl SyncGraph {
     /// * `query_string`: The query to run
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    /// A [`FalkorResponse<ResultSet>`] object, containing the headers, statistics and the result set for the query
     pub fn query<Q: Display>(
         &mut self,
         query_string: Q,
@@ -252,7 +252,7 @@ impl SyncGraph {
     /// * `timeout`: Specify how long should the query run before aborting.
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    /// A [`FalkorResponse<QueryResult>`] object, containing the headers, statistics and the result set for the query
     pub fn query_with_timeout<Q: Display>(
         &mut self,
         query_string: Q,
@@ -287,7 +287,7 @@ impl SyncGraph {
     /// * `params`: a map of parameters and values, note that all keys should be of the same type, and all values should be of the same type.
     ///
     /// # Returns
-    /// A [`QueryResult`] object, containing the headers, statistics and the result set for the query
+    /// A [`FalkorResponse<QueryResult>`] object, containing the headers, statistics and the result set for the query
     pub fn query_with_params_and_timeout<Q: Display, T: Display, Z: Display>(
         &mut self,
         query_string: Q,

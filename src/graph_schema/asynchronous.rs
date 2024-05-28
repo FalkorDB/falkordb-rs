@@ -3,10 +3,11 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use super::utils::{get_refresh_command, get_relevant_hashmap, update_map};
 use crate::{
-    connection::asynchronous::BorrowedAsyncConnection, value::FalkorValue, FalkorDBError,
-    SchemaType,
+    connection::asynchronous::BorrowedAsyncConnection,
+    graph_schema::utils::{get_refresh_command, get_relevant_hashmap, update_map},
+    value::FalkorValue,
+    FalkorDBError, SchemaType,
 };
 use anyhow::Result;
 use std::{

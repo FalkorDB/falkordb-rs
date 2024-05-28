@@ -10,6 +10,14 @@ env:
 jobs:
   coverage:
     runs-on: linux-latest
+
+    services:
+      falkordb:
+        image: falkordb/falkordb:edge
+        volumes:
+          - resources/imdb.rdb:/FalkorDB/dump.rdb
+        ports:
+          - 6379:6379
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@cargo-llvm-cov

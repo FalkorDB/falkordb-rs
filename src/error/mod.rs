@@ -27,6 +27,14 @@ pub enum FalkorDBError {
     /// The provided URL scheme points at a database provider that is currently unavailable, make sure the correct feature is enabled
     #[error("The provided URL scheme points at a database provider that is currently unavailable, make sure the correct feature is enabled")]
     UnavailableProvider,
+    /// An error occurred when dealing with reference counts or RefCells, perhaps mutual borrows?
+    #[error(
+        "An error occurred when dealing with reference counts or RefCells, perhaps mutual borrows?"
+    )]
+    RefCountBooBoo,
+    /// The execution plan did not adhere to usual strucutre, and could not be parsed
+    #[error("The execution plan did not adhere to usual strucutre, and could not be parsed")]
+    CorruptExecutionPlan,
     /// The number of connections for the client has to be between 1 and 32
     #[error("The number of connections for the client has to be between 1 and 32")]
     InvalidConnectionPoolSize,

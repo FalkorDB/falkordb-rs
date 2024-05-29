@@ -133,6 +133,7 @@ dependencies = [
  "log",
  "parking_lot",
  "redis",
+ "regex",
  "thiserror",
  "tracing",
  "url-parse",

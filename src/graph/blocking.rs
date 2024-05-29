@@ -543,9 +543,12 @@ mod tests {
         let mut graph = open_test_graph("test_explain");
 
         let execution_plan = graph.inner.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").perform().expect("Could not create execution plan");
-        assert_eq!(execution_plan.steps().len(), 7);
+        assert_eq!(execution_plan.plan().len(), 7);
+        assert!(execution_plan.operations().get("Aggregate").is_some());
+        assert_eq!(execution_plan.operations()["Aggregate"].len(), 1);
+
         assert_eq!(
-            execution_plan.text(),
+            execution_plan.string_representation(),
             "\nResults\n    Limit\n        Aggregate\n            Filter\n                Node By Index Scan | (b:actor)\n                    Project\n                        Node By Label Scan | (a:actor)"
         );
     }
@@ -560,13 +563,15 @@ mod tests {
             .perform()
             .expect("Could not generate the query");
 
-        let steps = execution_plan.steps().to_vec();
-        assert_eq!(steps.len(), 3);
+        assert_eq!(execution_plan.plan().len(), 3);
 
         let expected = vec!["Results", "Project", "Unwind"];
-        for (step, expected) in steps.into_iter().zip(expected) {
-            assert!(step.starts_with(expected));
-            assert!(step.ends_with("ms"));
+        let mut current_rc = execution_plan.operation_tree().clone();
+        for step in expected {
+            assert_eq!(current_rc.name, step);
+            if step != "Unwind" {
+                current_rc = current_rc.children[0].clone();
+            }
         }
     }
 }

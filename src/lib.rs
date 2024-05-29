@@ -3,6 +3,9 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+#![deny(missing_docs)]
+#![doc = include_str!("../README.md")]
+
 #[cfg(not(feature = "redis"))]
 compile_error!("The `redis` feature must be enabled.");
 
@@ -19,10 +22,16 @@ mod value;
 #[cfg(feature = "redis")]
 mod redis_ext;
 
+/// A [`Result`] which only returns [`FalkorDBError`] as its E type
+pub type FalkorResult<T> = Result<T, FalkorDBError>;
+
 pub use client::{blocking::FalkorSyncClient, builder::FalkorClientBuilder};
 pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
-pub use graph::blocking::SyncGraph;
+pub use graph::{
+    blocking::SyncGraph,
+    query_builder::{ProcedureBuilder, QueryBuilder},
+};
 pub use graph_schema::{GraphSchema, SchemaType};
 pub use parser::FalkorParsable;
 pub use response::{
@@ -30,7 +39,7 @@ pub use response::{
     execution_plan::ExecutionPlan,
     index::{FalkorIndex, IndexStatus, IndexType},
     slowlog_entry::SlowlogEntry,
-    FalkorResponse, ResponseEnum, ResultSet,
+    FalkorResponse, ResultSet,
 };
 pub use value::{
     config::ConfigValue,
@@ -43,7 +52,7 @@ pub use value::{
 #[cfg(feature = "tokio")]
 pub use {
     client::asynchronous::FalkorAsyncClient, connection::asynchronous::FalkorAsyncConnection,
-    graph::asynchronous::AsyncGraph, parser::FalkorParsableAsync,
+    graph::asynchronous::AsyncGraph,
 };
 
 #[cfg(test)]
@@ -75,40 +84,6 @@ pub(crate) mod test_utils {
             inner: client
                 .copy_graph("imdb", graph_name)
                 .expect("Could not copy graph for test"),
-        }
-    }
-
-    #[cfg(feature = "tokio")]
-    pub(crate) struct TestAsyncGraphHandle {
-        pub(crate) inner: AsyncGraph,
-    }
-
-    #[cfg(feature = "tokio")]
-    impl Drop for TestAsyncGraphHandle {
-        fn drop(&mut self) {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(self.inner.delete())
-            })
-            .ok();
-        }
-    }
-
-    #[cfg(feature = "tokio")]
-    pub(crate) async fn create_async_test_client() -> FalkorAsyncClient {
-        FalkorClientBuilder::new_async()
-            .build()
-            .await
-            .expect("Could not construct client")
-    }
-
-    #[cfg(feature = "tokio")]
-    pub(crate) async fn open_test_graph_async(graph_name: &str) -> TestAsyncGraphHandle {
-        let client = create_async_test_client().await;
-        TestAsyncGraphHandle {
-            inner: client
-                .copy_graph("imdb", graph_name)
-                .await
-                .expect("Could not copy graph"),
         }
     }
 }

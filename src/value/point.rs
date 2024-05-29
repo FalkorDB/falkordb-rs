@@ -3,7 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{FalkorDBError, FalkorValue};
+use crate::{FalkorDBError, FalkorResult, FalkorValue};
 
 /// A point in the world.
 #[derive(Clone, Debug, PartialEq)]
@@ -15,7 +15,15 @@ pub struct Point {
 }
 
 impl Point {
-    pub fn parse(value: FalkorValue) -> anyhow::Result<Point> {
+    /// Parses a point from a FalkorValue::Array,
+    /// taking the first element as an f64 latitude, and second element as an f64 longitude
+    ///
+    /// # Arguments
+    /// * `value`: The value to parse
+    ///
+    /// # Returns
+    /// Self, if successful
+    pub fn parse(value: FalkorValue) -> FalkorResult<Point> {
         let [lat, long]: [FalkorValue; 2] = value
             .into_vec()?
             .try_into()

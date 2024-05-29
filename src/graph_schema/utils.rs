@@ -66,11 +66,11 @@ mod tests {
     use super::*;
 
     fn get_test_keys() -> FalkorValue {
-        FalkorValue::FArray(vec![
-            FalkorValue::FArray(vec![FalkorValue::FString("Hello".to_string())]),
-            FalkorValue::FArray(vec![FalkorValue::FString("Iterator".to_string())]),
-            FalkorValue::FArray(vec![FalkorValue::FString("My-".to_string())]),
-            FalkorValue::FArray(vec![FalkorValue::FString("Panic".to_string())]),
+        FalkorValue::Array(vec![
+            FalkorValue::Array(vec![FalkorValue::String("Hello".to_string())]),
+            FalkorValue::Array(vec![FalkorValue::String("Iterator".to_string())]),
+            FalkorValue::Array(vec![FalkorValue::String("My-".to_string())]),
+            FalkorValue::Array(vec![FalkorValue::String("Panic".to_string())]),
         ])
     }
 

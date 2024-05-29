@@ -3,21 +3,23 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use anyhow::Result;
+use crate::{FalkorDBError, FalkorResult};
 
 /// An agnostic container which allows maintaining of various connection details.
 /// The different enum variants are enabled based on compilation features
 #[derive(Clone, Debug)]
 pub enum FalkorConnectionInfo {
+    /// A Redis database connection
     #[cfg(feature = "redis")]
     Redis(redis::ConnectionInfo),
 }
 
 impl FalkorConnectionInfo {
-    fn fallback_provider(full_url: String) -> Result<FalkorConnectionInfo> {
+    fn fallback_provider(full_url: String) -> FalkorResult<FalkorConnectionInfo> {
         #[cfg(feature = "redis")]
         Ok(FalkorConnectionInfo::Redis(
-            redis::IntoConnectionInfo::into_connection_info(format!("redis://{full_url}"))?,
+            redis::IntoConnectionInfo::into_connection_info(format!("redis://{full_url}"))
+                .map_err(|_| FalkorDBError::InvalidConnectionInfo)?,
         ))
     }
 
@@ -34,10 +36,12 @@ impl FalkorConnectionInfo {
 }
 
 impl TryFrom<&str> for FalkorConnectionInfo {
-    type Error = anyhow::Error;
+    type Error = FalkorDBError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let url = url_parse::core::Parser::new(None).parse(value)?;
+    fn try_from(value: &str) -> FalkorResult<Self> {
+        let url = url_parse::core::Parser::new(None)
+            .parse(value)
+            .map_err(|_| FalkorDBError::InvalidConnectionInfo)?;
 
         let scheme = url.scheme.unwrap_or("falkor".to_string());
         let addr = url.domain.unwrap_or("127.0.0.1".to_string());
@@ -56,10 +60,11 @@ impl TryFrom<&str> for FalkorConnectionInfo {
                     redis::IntoConnectionInfo::into_connection_info(format!(
                         "{}://{}{}:{}",
                         scheme, user_pass_string, addr, port
-                    ))?,
+                    ))
+                    .map_err(|_| FalkorDBError::InvalidConnectionInfo)?,
                 ));
                 #[cfg(not(feature = "redis"))]
-                return Err(FalkorDBError::UnavailableProvider.into());
+                return Err(FalkorDBError::UnavailableProvider);
             }
             _ => FalkorConnectionInfo::fallback_provider(format!(
                 "{}{}:{}",
@@ -70,19 +75,19 @@ impl TryFrom<&str> for FalkorConnectionInfo {
 }
 
 impl TryFrom<String> for FalkorConnectionInfo {
-    type Error = anyhow::Error;
+    type Error = FalkorDBError;
 
     #[inline]
-    fn try_from(value: String) -> Result<Self, Self::Error> {
+    fn try_from(value: String) -> FalkorResult<Self> {
         Self::try_from(value.as_str())
     }
 }
 
 impl<T: ToString> TryFrom<(T, u16)> for FalkorConnectionInfo {
-    type Error = anyhow::Error;
+    type Error = FalkorDBError;
 
     #[inline]
-    fn try_from(value: (T, u16)) -> Result<Self, Self::Error> {
+    fn try_from(value: (T, u16)) -> FalkorResult<Self> {
         Self::try_from(format!("{}:{}", value.0.to_string(), value.1))
     }
 }

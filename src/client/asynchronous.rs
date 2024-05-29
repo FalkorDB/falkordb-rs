@@ -6,9 +6,8 @@
 use crate::{
     client::FalkorClientProvider, connection::asynchronous::BorrowedAsyncConnection,
     parser::utils::string_vec_from_val, AsyncGraph, ConfigValue, FalkorAsyncConnection,
-    FalkorDBError, FalkorValue, GraphSchema,
+    FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
 };
-use anyhow::Result;
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Display,
@@ -24,7 +23,7 @@ pub(crate) struct FalkorAsyncClientInner {
 }
 
 impl FalkorAsyncClientInner {
-    pub(crate) async fn borrow_connection(&self) -> Result<BorrowedAsyncConnection> {
+    pub(crate) async fn borrow_connection(&self) -> FalkorResult<BorrowedAsyncConnection> {
         let mut conn_pool = self.connection_pool.lock().await;
         let connection = conn_pool
             .pop_front()
@@ -46,7 +45,7 @@ impl FalkorAsyncClient {
         client: FalkorClientProvider,
         num_connections: u8,
         timeout: Option<Duration>,
-    ) -> Result<Self> {
+    ) -> FalkorResult<Self> {
         let client = Arc::new(client);
 
         // Wait for all tasks to complete and collect results
@@ -81,7 +80,7 @@ impl FalkorAsyncClient {
         self.inner.connection_pool_size
     }
 
-    pub(crate) async fn borrow_connection(&self) -> Result<BorrowedAsyncConnection> {
+    pub(crate) async fn borrow_connection(&self) -> FalkorResult<BorrowedAsyncConnection> {
         self.inner.borrow_connection().await
     }
 
@@ -89,11 +88,11 @@ impl FalkorAsyncClient {
     ///
     /// # Returns
     /// A [`Vec`] of [`String`]s, containing the names of available graphs
-    pub async fn list_graphs(&self) -> Result<Vec<String>> {
+    pub async fn list_graphs(&self) -> FalkorResult<Vec<String>> {
         let mut conn = self.borrow_connection().await?;
         conn.send_command::<&str>(None, "GRAPH.LIST", None, None)
             .await
-            .and_then(|res| string_vec_from_val(res).map_err(Into::into))
+            .and_then(|res| string_vec_from_val(res))
     }
 
     /// Return the current value of a configuration option in the database.
@@ -107,7 +106,7 @@ impl FalkorAsyncClient {
     pub async fn config_get<T: Display>(
         &self,
         config_key: T,
-    ) -> Result<HashMap<String, ConfigValue>> {
+    ) -> FalkorResult<HashMap<String, ConfigValue>> {
         let mut conn = self.borrow_connection().await?;
         let config = conn
             .send_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))
@@ -148,7 +147,7 @@ impl FalkorAsyncClient {
         &self,
         config_key: T,
         value: C,
-    ) -> Result<FalkorValue> {
+    ) -> FalkorResult<FalkorValue> {
         self.borrow_connection()
             .await?
             .send_command(
@@ -190,7 +189,7 @@ impl FalkorAsyncClient {
         &self,
         graph_to_clone: &str,
         new_graph_name: &str,
-    ) -> Result<AsyncGraph> {
+    ) -> FalkorResult<AsyncGraph> {
         self.borrow_connection()
             .await?
             .send_command(
@@ -201,143 +200,5 @@ impl FalkorAsyncClient {
             )
             .await?;
         Ok(self.select_graph(new_graph_name))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_utils::create_async_test_client;
-    use std::{mem, thread};
-
-    #[tokio::test]
-    async fn test_async_list_graphs() {
-        let client = create_async_test_client().await;
-        let res = client.list_graphs().await;
-        assert!(res.is_ok());
-
-        let graphs = res.unwrap();
-        assert_eq!(graphs[0], "imdb");
-    }
-
-    #[tokio::test]
-    async fn test_async_select_graph_and_query() {
-        let client = create_async_test_client().await;
-
-        let mut graph = client.select_graph("imdb");
-        assert_eq!(graph.graph_name(), "imdb".to_string());
-
-        let res = graph
-            .query("MATCH (a:actor) return a".to_string())
-            .await
-            .expect("Could not get actors from unmodified graph");
-
-        assert_eq!(res.data.len(), 1317);
-    }
-
-    #[tokio::test]
-    async fn test_async_copy_graph() {
-        let client = create_async_test_client().await;
-
-        client
-            .select_graph("imdb_async_ro_copy")
-            .delete()
-            .await
-            .ok();
-
-        let mut graph = client
-            .copy_graph("imdb", "imdb_async_ro_copy")
-            .await
-            .expect("Could not copy graph");
-
-        let mut original_graph = client.select_graph("imdb");
-
-        assert_eq!(
-            graph
-                .query("MATCH (a:actor) RETURN a".to_string())
-                .await
-                .expect("Could not get actors from unmodified graph")
-                .data,
-            original_graph
-                .query("MATCH (a:actor) RETURN a".to_string())
-                .await
-                .expect("Could not get actors from unmodified graph")
-                .data
-        )
-    }
-
-    #[tokio::test]
-    async fn test_async_get_config() {
-        let client = create_async_test_client().await;
-
-        let config = client
-            .config_get("QUERY_MEM_CAPACITY")
-            .await
-            .expect("Could not get configuration");
-
-        assert_eq!(config.len(), 1);
-        assert!(config.contains_key("QUERY_MEM_CAPACITY"));
-        assert_eq!(
-            mem::discriminant(config.get("QUERY_MEM_CAPACITY").unwrap()),
-            mem::discriminant(&ConfigValue::Int64(0))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_async_get_config_all() {
-        let client = create_async_test_client().await;
-        let configuration = client
-            .config_get("*")
-            .await
-            .expect("Could not get configuration");
-
-        assert_eq!(
-            configuration.get("THREAD_COUNT").cloned().unwrap(),
-            ConfigValue::Int64(thread::available_parallelism().unwrap().get() as i64)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_async_set_config() {
-        let client = create_async_test_client().await;
-
-        let config = client
-            .config_get("EFFECTS_THRESHOLD")
-            .await
-            .expect("Could not get configuration");
-
-        let current_val = config
-            .get("EFFECTS_THRESHOLD")
-            .cloned()
-            .unwrap()
-            .as_i64()
-            .unwrap();
-
-        let desired_val = if current_val == 300 { 250 } else { 300 };
-
-        client
-            .config_set("EFFECTS_THRESHOLD", desired_val)
-            .await
-            .expect("Could not set config value");
-
-        let new_config = client
-            .config_get("EFFECTS_THRESHOLD")
-            .await
-            .expect("Could not get configuration");
-
-        assert_eq!(
-            new_config
-                .get("EFFECTS_THRESHOLD")
-                .cloned()
-                .unwrap()
-                .as_i64()
-                .unwrap(),
-            desired_val
-        );
-
-        client
-            .config_set("EFFECTS_THRESHOLD", current_val)
-            .await
-            .ok();
     }
 }

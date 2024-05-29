@@ -9,11 +9,14 @@ use std::fmt::{Display, Formatter};
 /// An enum representing the two viable types for a config value
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConfigValue {
+    /// A string value
     String(String),
+    /// An int value, also used to represent booleans
     Int64(i64),
 }
 
 impl ConfigValue {
+    /// Returns a copy of the contained int value, if there is one.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             ConfigValue::String(_) => None,
@@ -57,8 +60,8 @@ impl TryFrom<FalkorValue> for ConfigValue {
 
     fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
         match value {
-            FalkorValue::FString(str_val) => Ok(ConfigValue::String(str_val)),
-            FalkorValue::Int64(int_val) => Ok(ConfigValue::Int64(int_val)),
+            FalkorValue::String(str_val) => Ok(ConfigValue::String(str_val)),
+            FalkorValue::I64(int_val) => Ok(ConfigValue::Int64(int_val)),
             _ => Err(FalkorDBError::ParsingConfigValue),
         }
     }

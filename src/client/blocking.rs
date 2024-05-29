@@ -7,9 +7,8 @@ use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
     parser::utils::string_vec_from_val,
-    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorValue, GraphSchema, SyncGraph,
+    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorValue, SyncGraph,
 };
-use anyhow::Result;
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -26,9 +25,12 @@ pub(crate) struct FalkorSyncClientInner {
 }
 
 impl FalkorSyncClientInner {
-    pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnection> {
+    pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnection, FalkorDBError> {
         Ok(BorrowedSyncConnection::new(
-            self.connection_pool_rx.lock().recv()?,
+            self.connection_pool_rx
+                .lock()
+                .recv()
+                .map_err(|_| FalkorDBError::EmptyConnection)?,
             self.connection_pool_tx.clone(),
         ))
     }
@@ -53,10 +55,16 @@ impl FalkorSyncClient {
         connection_info: FalkorConnectionInfo,
         num_connections: u8,
         timeout: Option<Duration>,
-    ) -> Result<Self> {
+    ) -> FalkorResult<Self> {
         let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(num_connections as usize);
         for _ in 0..num_connections {
-            connection_pool_tx.send(client.get_connection(timeout)?)?;
+            connection_pool_tx
+                .send(
+                    client
+                        .get_connection(timeout)
+                        .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?,
+                )
+                .map_err(|_| FalkorDBError::EmptyConnection)?;
         }
 
         Ok(Self {
@@ -75,7 +83,7 @@ impl FalkorSyncClient {
         self.inner.connection_pool_size
     }
 
-    pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnection> {
+    pub(crate) fn borrow_connection(&self) -> FalkorResult<BorrowedSyncConnection> {
         self.inner.borrow_connection()
     }
 
@@ -83,10 +91,10 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// A [`Vec`] of [`String`]s, containing the names of available graphs
-    pub fn list_graphs(&self) -> Result<Vec<String>> {
+    pub fn list_graphs(&self) -> FalkorResult<Vec<String>> {
         let mut conn = self.borrow_connection()?;
         conn.send_command::<&str>(None, "GRAPH.LIST", None, None)
-            .and_then(|res| string_vec_from_val(res).map_err(Into::into))
+            .and_then(string_vec_from_val)
     }
 
     /// Return the current value of a configuration option in the database.
@@ -100,7 +108,7 @@ impl FalkorSyncClient {
     pub fn config_get<T: Display>(
         &self,
         config_key: T,
-    ) -> Result<HashMap<String, ConfigValue>> {
+    ) -> FalkorResult<HashMap<String, ConfigValue>> {
         let mut conn = self.borrow_connection()?;
         let config = conn
             .send_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))?
@@ -140,7 +148,7 @@ impl FalkorSyncClient {
         &self,
         config_key: T,
         value: C,
-    ) -> Result<FalkorValue> {
+    ) -> FalkorResult<FalkorValue> {
         self.borrow_connection()?.send_command(
             None,
             "GRAPH.CONFIG",
@@ -160,11 +168,7 @@ impl FalkorSyncClient {
         &self,
         graph_name: T,
     ) -> SyncGraph {
-        SyncGraph {
-            client: self.inner.clone(),
-            graph_name: graph_name.to_string(),
-            graph_schema: GraphSchema::new(graph_name.to_string()), // Required for requesting refreshes
-        }
+        SyncGraph::new(self.inner.clone(), graph_name)
     }
 
     /// Copies an entire graph and returns the [`SyncGraph`] for the new copied graph.
@@ -179,7 +183,7 @@ impl FalkorSyncClient {
         &self,
         graph_to_clone: &str,
         new_graph_name: &str,
-    ) -> Result<SyncGraph> {
+    ) -> FalkorResult<SyncGraph> {
         self.borrow_connection()?.send_command(
             Some(graph_to_clone),
             "GRAPH.COPY",
@@ -207,7 +211,7 @@ mod tests {
             .expect("Could not create client for this test");
 
         // Client was created with 6 connections
-        let _conn_vec: Vec<Result<BorrowedSyncConnection, anyhow::Error>> = (0..6)
+        let _conn_vec: Vec<FalkorResult<BorrowedSyncConnection>> = (0..6)
             .map(|_| {
                 let conn = client.borrow_connection();
                 assert!(conn.is_ok());
@@ -241,7 +245,8 @@ mod tests {
         assert_eq!(graph.graph_name(), "imdb".to_string());
 
         let res = graph
-            .query("MATCH (a:actor) return a".to_string())
+            .query("MATCH (a:actor) return a")
+            .perform()
             .expect("Could not get actors from unmodified graph");
 
         assert_eq!(res.data.len(), 1317);
@@ -265,11 +270,13 @@ mod tests {
         assert_eq!(
             graph
                 .inner
-                .query("MATCH (a:actor) RETURN a".to_string())
+                .query("MATCH (a:actor) RETURN a")
+                .perform()
                 .expect("Could not get actors from unmodified graph")
                 .data,
             original_graph
-                .query("MATCH (a:actor) RETURN a".to_string())
+                .query("MATCH (a:actor) RETURN a")
+                .perform()
                 .expect("Could not get actors from unmodified graph")
                 .data
         )

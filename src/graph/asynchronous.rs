@@ -6,10 +6,9 @@
 use crate::{
     client::asynchronous::FalkorAsyncClientInner,
     graph::utils::{construct_query, generate_procedure_call},
-    parser::utils::{parse_header, parse_result_set_async},
+    parser::utils::{parse_header, parse_result_set},
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorDBError, FalkorIndex,
-    FalkorParsableAsync, FalkorResponse, FalkorValue, GraphSchema, IndexType, ResultSet,
-    SlowlogEntry,
+    FalkorParsable, FalkorResponse, FalkorValue, GraphSchema, IndexType, ResultSet, SlowlogEntry,
 };
 use anyhow::Result;
 use std::{collections::HashMap, fmt::Display, sync::Arc};
@@ -188,7 +187,7 @@ impl AsyncGraph {
         let header_keys = parse_header(header)?;
         let conn = Arc::new(Mutex::new(conn));
         FalkorResponse::from_response_with_headers(
-            parse_result_set_async(data, &mut self.graph_schema, conn, &header_keys).await?,
+            parse_result_set(data, &mut self.graph_schema, conn)?,
             header_keys,
             stats,
         )
@@ -238,8 +237,7 @@ impl AsyncGraph {
                 let header_keys = parse_header(header)?;
                 let conn = Arc::new(Mutex::new(conn));
                 FalkorResponse::from_response_with_headers(
-                    parse_result_set_async(data, &mut self.graph_schema, conn, &header_keys)
-                        .await?,
+                    parse_result_set(data, &mut self.graph_schema, conn, &header_keys)?,
                     header_keys,
                     stats,
                 )
@@ -412,7 +410,7 @@ impl AsyncGraph {
     ///
     /// # Returns
     /// A caller-provided type which implements [`FalkorParsableAsync`]
-    pub async fn call_procedure<C: ToString, P: FalkorParsableAsync>(
+    pub async fn call_procedure<C: ToString, P: FalkorParsable>(
         &mut self,
         procedure: C,
         args: Option<&[&str]>,
@@ -437,7 +435,7 @@ impl AsyncGraph {
             .await?;
 
         let conn = Arc::new(Mutex::new(conn));
-        P::from_falkor_value_async(res, &mut self.graph_schema, conn).await
+        P::from_falkor_value(res, &mut self.graph_schema, conn)
     }
 
     /// Run a query which calls a procedure on the graph, read-only, or otherwise.
@@ -454,7 +452,7 @@ impl AsyncGraph {
     ///
     /// # Returns
     /// A caller-provided type which implements [`FalkorParsableAsync`]
-    pub async fn call_procedure_with_timeout<C: ToString, P: FalkorParsableAsync>(
+    pub async fn call_procedure_with_timeout<C: ToString, P: FalkorParsable>(
         &mut self,
         procedure: C,
         args: Option<&[&str]>,
@@ -484,7 +482,7 @@ impl AsyncGraph {
             .await?;
 
         let conn = Arc::new(Mutex::new(conn));
-        P::from_falkor_value_async(res, &mut self.graph_schema, conn).await
+        P::from_falkor_value(res, &mut self.graph_schema, conn)
     }
 
     /// Calls the DB.INDICES procedure on the graph, returning all the indexing methods currently used
@@ -507,7 +505,7 @@ impl AsyncGraph {
                 .into_iter()
                 .flat_map(|index| {
                     let conn = Arc::clone(&conn);
-                    FalkorIndex::from_falkor_value_async(index, &mut self.graph_schema, conn).await
+                    FalkorIndex::from_falkor_value(index, &mut self.graph_schema, conn)
                 })
                 .collect(),
             stats,
@@ -615,9 +613,7 @@ impl AsyncGraph {
             query_res
                 .into_vec()?
                 .into_iter()
-                .flat_map(|item| {
-                    Constraint::from_falkor_value_async(item, &mut self.graph_schema, conn).await
-                })
+                .flat_map(|item| Constraint::from_falkor_value(item, &mut self.graph_schema, conn))
                 .collect(),
             stats,
         )

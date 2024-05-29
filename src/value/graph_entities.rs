@@ -4,9 +4,8 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection,
-    value::{map::parse_map_with_schema, utils::parse_labels},
-    FalkorDBError, FalkorParsable, FalkorValue, GraphSchema, SchemaType,
+    connection::blocking::BorrowedSyncConnection, value::map::parse_map_with_schema, FalkorDBError,
+    FalkorParsable, FalkorResult, FalkorValue, GraphSchema, SchemaType,
 };
 use anyhow::Result;
 use std::{
@@ -14,20 +13,12 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-#[cfg(feature = "tokio")]
-use {
-    crate::{
-        connection::asynchronous::BorrowedAsyncConnection,
-        value::{map::parse_map_with_schema_async, utils::parse_labels_async},
-        FalkorParsableAsync,
-    },
-    std::sync::Arc,
-    tokio::sync::Mutex,
-};
-
+/// Whether this element is a node or edge in the graph
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum EntityType {
+    /// A node in the graph
     Node,
+    /// An edge in the graph, meaning a relationship between two nodes
     Edge,
 }
 
@@ -88,7 +79,7 @@ impl FalkorParsable for Node {
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
         conn: &mut BorrowedSyncConnection,
-    ) -> Result<Self> {
+    ) -> FalkorResult<Self> {
         let [entity_id, labels, properties]: [FalkorValue; 3] = value
             .into_vec()?
             .try_into()
@@ -118,44 +109,6 @@ impl FalkorParsable for Node {
     }
 }
 
-#[cfg(feature = "tokio")]
-impl FalkorParsableAsync for Node {
-    async fn from_falkor_value_async(
-        value: FalkorValue,
-        graph_schema: &mut GraphSchema,
-        conn: Arc<Mutex<BorrowedAsyncConnection>>,
-    ) -> Result<Self> {
-        let [entity_id, labels, properties]: [FalkorValue; 3] = value
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
-        let labels = labels.into_vec()?;
-
-        let mut ids_hashset = HashSet::with_capacity(labels.len());
-        for label in labels.iter() {
-            ids_hashset.insert(
-                label
-                    .to_i64()
-                    .ok_or(FalkorDBError::ParsingCompactIdUnknown)?,
-            );
-        }
-
-        let parsed_labels =
-            parse_labels_async(labels, graph_schema, Arc::clone(&conn), SchemaType::Labels).await?;
-        Ok(Node {
-            entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-            labels: parsed_labels,
-            properties: parse_map_with_schema_async(
-                properties,
-                graph_schema,
-                conn,
-                SchemaType::Properties,
-            )
-            .await?,
-        })
-    }
-}
-
 /// An edge in the graph, representing a relationship between two [`Node`]s.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Edge {
@@ -176,107 +129,52 @@ impl FalkorParsable for Edge {
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
         conn: &mut BorrowedSyncConnection,
-    ) -> Result<Self> {
+    ) -> FalkorResult<Self> {
         let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] = value
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         let relation = relations.to_i64().ok_or(FalkorDBError::ParsingI64)?;
-        if let Some(relationship) = graph_schema.relationships().get(&relation) {
-            return Ok(Edge {
-                entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                relationship_type: relationship.to_string(),
-                src_node_id: src_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                dst_node_id: dst_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                properties: parse_map_with_schema(
-                    properties,
-                    graph_schema,
-                    conn,
-                    SchemaType::Properties,
-                )?,
-            });
-        }
+        let relationship = graph_schema
+            .relationships()
+            .get(&relation)
+            .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Relationships))?;
 
-        match graph_schema.refresh(
-            conn,
-            SchemaType::Relationships,
-            Some(&HashSet::from([relation])),
-        )? {
-            None => Err(FalkorDBError::ParsingCompactIdUnknown)?,
-            Some(id) => Ok(Edge {
-                entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                relationship_type: id
-                    .get(&relation)
-                    .cloned()
-                    .ok_or(FalkorDBError::ParsingCompactIdUnknown)?,
-                src_node_id: src_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                dst_node_id: dst_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                properties: parse_map_with_schema(
-                    properties,
-                    graph_schema,
-                    conn,
-                    SchemaType::Properties,
-                )?,
-            }),
-        }
+        Ok(Edge {
+            entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
+            relationship_type: relationship.to_string(),
+            src_node_id: src_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
+            dst_node_id: dst_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
+            properties: parse_map_with_schema(
+                properties,
+                graph_schema,
+                conn,
+                SchemaType::Properties,
+            )?,
+        })
     }
 }
 
-#[cfg(feature = "tokio")]
-impl FalkorParsableAsync for Edge {
-    async fn from_falkor_value_async(
-        value: FalkorValue,
-        graph_schema: &mut GraphSchema,
-        conn: Arc<Mutex<BorrowedAsyncConnection>>,
-    ) -> Result<Self> {
-        let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] = value
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+pub(crate) fn parse_labels(
+    raw_ids: Vec<FalkorValue>,
+    graph_schema: &mut GraphSchema,
+    conn: &mut BorrowedSyncConnection,
+    schema_type: SchemaType,
+) -> FalkorResult<Vec<String>> {
+    let ids_hashset = raw_ids
+        .iter()
+        .filter_map(|label_id| label_id.to_i64())
+        .collect::<HashSet<i64>>();
 
-        let relation = relations.to_i64().ok_or(FalkorDBError::ParsingI64)?;
-        if let Some(relationship) = graph_schema.relationships().get(&relation) {
-            return Ok(Edge {
-                entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                relationship_type: relationship.to_string(),
-                src_node_id: src_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                dst_node_id: dst_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                properties: parse_map_with_schema_async(
-                    properties,
-                    graph_schema,
-                    conn,
-                    SchemaType::Properties,
-                )
-                .await?,
-            });
-        }
-
-        match graph_schema
-            .refresh_async(
-                &conn,
-                SchemaType::Relationships,
-                Some(&HashSet::from([relation])),
-            )
-            .await?
-        {
-            None => Err(FalkorDBError::ParsingCompactIdUnknown)?,
-            Some(id) => Ok(Edge {
-                entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                relationship_type: id
-                    .get(&relation)
-                    .cloned()
-                    .ok_or(FalkorDBError::ParsingCompactIdUnknown)?,
-                src_node_id: src_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                dst_node_id: dst_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-                properties: parse_map_with_schema_async(
-                    properties,
-                    graph_schema,
-                    conn,
-                    SchemaType::Properties,
-                )
-                .await?,
-            }),
-        }
+    let relevant_ids = match graph_schema.verify_id_set(&ids_hashset, schema_type) {
+        None => graph_schema.refresh(conn, schema_type, Some(&ids_hashset))?,
+        relevant_ids => relevant_ids,
     }
+    .ok_or(FalkorDBError::ParsingError)?;
+
+    Ok(raw_ids
+        .into_iter()
+        .filter_map(|id| id.to_i64().and_then(|id| relevant_ids.get(&id).cloned()))
+        .collect())
 }

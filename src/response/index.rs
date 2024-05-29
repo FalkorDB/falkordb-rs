@@ -3,23 +3,13 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::connection::blocking::BorrowedSyncConnection;
 use crate::{
-    connection::blocking::BorrowedSyncConnection,
     value::utils::{parse_type, parse_vec, type_val_from_value},
     EntityType, FalkorDBError, FalkorParsable, FalkorValue, GraphSchema,
 };
 use anyhow::Result;
 use std::collections::HashMap;
-
-#[cfg(feature = "tokio")]
-use {
-    crate::{
-        connection::asynchronous::BorrowedAsyncConnection, value::utils::parse_type_async,
-        FalkorParsableAsync,
-    },
-    std::sync::Arc,
-    tokio::sync::Mutex,
-};
 
 /// The status of this index
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -118,18 +108,26 @@ fn parse_types_map(value: FalkorValue) -> Result<HashMap<String, Vec<IndexType>>
 /// Contains all the info regarding an index on the database
 #[derive(Clone, Debug, PartialEq)]
 pub struct FalkorIndex {
+    /// Whether this index is for a Node or on an Edge
     pub entity_type: EntityType,
+    /// Whether this index is active or still under construction
     pub status: IndexStatus,
+    /// What is this index's label
     pub index_label: String,
+    /// What fields to index by
     pub fields: Vec<String>,
+    /// Whether each field is a text field, range, etc.
     pub field_types: HashMap<String, Vec<IndexType>>,
+    /// Which language is the text used to index in
     pub language: String,
+    /// Words to avoid indexing as they are very common and will just be a waste of resources
     pub stopwords: Vec<String>,
+    /// Various other information for querying by the user
     pub info: HashMap<String, FalkorValue>,
 }
 
 impl FalkorIndex {
-    fn from_raw_values(items: Vec<FalkorValue>) -> Result<Self> {
+    fn from_raw_values(items: Vec<FalkorValue>) -> Result<Self, FalkorDBError> {
         let [label, fields, field_types, language, stopwords, entity_type, status, info]: [FalkorValue; 8] = items.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         Ok(Self {
@@ -150,33 +148,13 @@ impl FalkorParsable for FalkorIndex {
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
         conn: &mut BorrowedSyncConnection,
-    ) -> Result<Self> {
+    ) -> Result<Self, FalkorDBError> {
         let semi_parsed_items = value
             .into_vec()?
             .into_iter()
             .flat_map(|item| {
                 let (type_marker, val) = type_val_from_value(item)?;
                 parse_type(type_marker, val, graph_schema, conn)
-            })
-            .collect::<Vec<_>>();
-
-        Self::from_raw_values(semi_parsed_items)
-    }
-}
-
-#[cfg(feature = "tokio")]
-impl FalkorParsableAsync for FalkorIndex {
-    async fn from_falkor_value_async(
-        value: FalkorValue,
-        graph_schema: &mut GraphSchema,
-        conn: Arc<Mutex<BorrowedAsyncConnection>>,
-    ) -> Result<Self> {
-        let semi_parsed_items = value
-            .into_vec()?
-            .into_iter()
-            .flat_map(|item| {
-                let (type_marker, val) = type_val_from_value(item)?;
-                parse_type_async(type_marker, val, graph_schema, conn).await
             })
             .collect::<Vec<_>>();
 

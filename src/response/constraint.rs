@@ -5,20 +5,9 @@
 
 use crate::{
     connection::blocking::BorrowedSyncConnection, value::utils::parse_type, EntityType,
-    FalkorDBError, FalkorParsable, FalkorValue, GraphSchema,
+    FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
 };
-use anyhow::Result;
 use std::fmt::{Display, Formatter};
-
-#[cfg(feature = "tokio")]
-use {
-    crate::{
-        connection::asynchronous::BorrowedAsyncConnection, value::utils::parse_type_async,
-        FalkorParsableAsync,
-    },
-    std::sync::Arc,
-    tokio::sync::Mutex,
-};
 
 /// The type of restriction to apply for the property
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -46,7 +35,7 @@ impl Display for ConstraintType {
 impl TryFrom<&str> for ConstraintType {
     type Error = FalkorDBError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: &str) -> FalkorResult<Self> {
         Ok(match value.to_uppercase().as_str() {
             "MANDATORY" => Self::Mandatory,
             "UNIQUE" => Self::Unique,
@@ -58,7 +47,7 @@ impl TryFrom<&str> for ConstraintType {
 impl TryFrom<String> for ConstraintType {
     type Error = FalkorDBError;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
+    fn try_from(value: String) -> FalkorResult<Self> {
         value.as_str().try_into()
     }
 }
@@ -66,7 +55,7 @@ impl TryFrom<String> for ConstraintType {
 impl TryFrom<&String> for ConstraintType {
     type Error = FalkorDBError;
 
-    fn try_from(value: &String) -> Result<Self, Self::Error> {
+    fn try_from(value: &String) -> FalkorResult<Self> {
         value.as_str().try_into()
     }
 }
@@ -85,7 +74,7 @@ pub enum ConstraintStatus {
 impl TryFrom<&str> for ConstraintStatus {
     type Error = FalkorDBError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: &str) -> FalkorResult<Self> {
         Ok(match value.to_uppercase().as_str() {
             "OPERATIONAL" => Self::Active,
             "UNDER CONSTRUCTION" => Self::Pending,
@@ -98,7 +87,7 @@ impl TryFrom<&str> for ConstraintStatus {
 impl TryFrom<String> for ConstraintStatus {
     type Error = FalkorDBError;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
+    fn try_from(value: String) -> FalkorResult<Self> {
         value.as_str().try_into()
     }
 }
@@ -106,7 +95,7 @@ impl TryFrom<String> for ConstraintStatus {
 impl TryFrom<&String> for ConstraintStatus {
     type Error = FalkorDBError;
 
-    fn try_from(value: &String) -> Result<Self, Self::Error> {
+    fn try_from(value: &String) -> FalkorResult<Self> {
         value.as_str().try_into()
     }
 }
@@ -127,7 +116,7 @@ pub struct Constraint {
 }
 
 impl Constraint {
-    fn from_value_vec(vlaue_vec: Vec<FalkorValue>) -> Result<Self> {
+    fn from_value_vec(vlaue_vec: Vec<FalkorValue>) -> FalkorResult<Self> {
         let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = vlaue_vec.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         Ok(Constraint {
@@ -149,30 +138,8 @@ impl FalkorParsable for Constraint {
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
         conn: &mut BorrowedSyncConnection,
-    ) -> Result<Self> {
-        parse_type(6, value, graph_schema, conn).and_then(|parsed| {
-            parsed
-                .into_vec()
-                .map_err(Into::into)
-                .and_then(Constraint::from_value_vec)
-        })
-    }
-}
-
-#[cfg(feature = "tokio")]
-impl FalkorParsableAsync for Constraint {
-    async fn from_falkor_value_async(
-        value: FalkorValue,
-        graph_schema: &mut GraphSchema,
-        conn: Arc<Mutex<BorrowedAsyncConnection>>,
-    ) -> Result<Self> {
-        parse_type_async(6, value, graph_schema, conn)
-            .await
-            .and_then(|parsed| {
-                parsed
-                    .into_vec()
-                    .map_err(Into::into)
-                    .and_then(Constraint::from_value_vec)
-            })
+    ) -> FalkorResult<Self> {
+        parse_type(6, value, graph_schema, conn)
+            .and_then(|parsed| parsed.into_vec().and_then(Constraint::from_value_vec))
     }
 }

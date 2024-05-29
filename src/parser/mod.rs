@@ -5,28 +5,15 @@
 
 pub mod utils;
 
-use crate::{connection::blocking::BorrowedSyncConnection, FalkorValue, GraphSchema};
-use anyhow::Result;
-
-#[cfg(feature = "tokio")]
-use {
-    crate::connection::asynchronous::BorrowedAsyncConnection, std::sync::Arc, tokio::sync::Mutex,
-};
+use crate::connection::blocking::BorrowedSyncConnection;
+use crate::{FalkorResult, FalkorValue, GraphSchema};
 
 /// This trait allows implementing a parser from the table-style result sent by the database, to any other struct
 pub trait FalkorParsable: Sized {
+    /// Parse the following value, using the graph schem owned by the graph object, and the connection used to make the request
     fn from_falkor_value(
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
         conn: &mut BorrowedSyncConnection,
-    ) -> Result<Self>;
-}
-
-#[cfg(feature = "tokio")]
-pub trait FalkorParsableAsync: Sized {
-    async fn from_falkor_value_async(
-        value: FalkorValue,
-        graph_schema: &mut GraphSchema,
-        conn: Arc<Mutex<BorrowedAsyncConnection>>,
-    ) -> Result<Self>;
+    ) -> FalkorResult<Self>;
 }

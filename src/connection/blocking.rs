@@ -42,8 +42,8 @@ impl BorrowedSyncConnection {
         command: &str,
         subcommand: Option<&str>,
         params: Option<&[P]>,
-    ) -> Result<FalkorValue> {
-        Ok(match self.as_inner()? {
+    ) -> Result<FalkorValue, FalkorDBError> {
+        match self.as_inner()? {
             #[cfg(feature = "redis")]
             FalkorSyncConnection::Redis(redis_conn) => {
                 use redis::ConnectionLike as _;
@@ -55,9 +55,14 @@ impl BorrowedSyncConnection {
                         cmd.arg(param.to_string());
                     }
                 }
-                redis::FromRedisValue::from_owned_redis_value(redis_conn.req_command(&cmd)?)?
+                redis::FromRedisValue::from_owned_redis_value(
+                    redis_conn
+                        .req_command(&cmd)
+                        .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?,
+                )
+                .map_err(|err| FalkorDBError::RedisParsingError(err.to_string()))
             }
-        })
+        }
     }
 }
 

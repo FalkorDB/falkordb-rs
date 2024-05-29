@@ -3,8 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{client::FalkorClientProvider, FalkorConnectionInfo, FalkorDBError, FalkorSyncClient};
-use anyhow::Result;
+use crate::{
+    client::FalkorClientProvider, FalkorConnectionInfo, FalkorDBError, FalkorResult,
+    FalkorSyncClient,
+};
 use std::time::Duration;
 
 #[cfg(feature = "tokio")]
@@ -72,16 +74,16 @@ impl<const R: char> FalkorClientBuilder<R> {
 
     fn get_client<T: TryInto<FalkorConnectionInfo>>(
         connection_info: T
-    ) -> Result<FalkorClientProvider>
-    where
-        anyhow::Error: From<T::Error>,
-    {
-        let connection_info = connection_info.try_into()?;
+    ) -> FalkorResult<FalkorClientProvider> {
+        let connection_info = connection_info
+            .try_into()
+            .map_err(|_| FalkorDBError::InvalidConnectionInfo)?;
         Ok(match connection_info {
             #[cfg(feature = "redis")]
-            FalkorConnectionInfo::Redis(connection_info) => {
-                FalkorClientProvider::Redis(redis::Client::open(connection_info.clone())?)
-            }
+            FalkorConnectionInfo::Redis(connection_info) => FalkorClientProvider::Redis(
+                redis::Client::open(connection_info.clone())
+                    .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?,
+            ),
         })
     }
 }
@@ -104,9 +106,9 @@ impl FalkorClientBuilder<'S'> {
     ///
     /// # Returns
     /// a new [`FalkorSyncClient`]
-    pub fn build(self) -> Result<FalkorSyncClient> {
+    pub fn build(self) -> FalkorResult<FalkorSyncClient> {
         if self.num_connections < 1 || self.num_connections > 32 {
-            return Err(FalkorDBError::InvalidConnectionPoolSize.into());
+            return Err(FalkorDBError::InvalidConnectionPoolSize);
         }
 
         let connection_info = self
@@ -132,7 +134,7 @@ impl FalkorClientBuilder<'A'> {
         }
     }
 
-    pub async fn build(self) -> Result<FalkorAsyncClient> {
+    pub async fn build(self) -> FalkorResult<FalkorAsyncClient> {
         let connection_info = self
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);

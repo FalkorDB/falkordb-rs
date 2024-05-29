@@ -3,15 +3,12 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorValue};
-use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use utils::{get_refresh_command, get_relevant_hashmap, update_map};
-
-#[cfg(feature = "tokio")]
-use {
-    crate::connection::asynchronous::BorrowedAsyncConnection, std::sync::Arc, tokio::sync::Mutex,
+use crate::{
+    connection::blocking::BorrowedSyncConnection, graph_schema::utils::get_refresh_command,
+    FalkorDBError, FalkorResult, FalkorValue,
 };
+use std::collections::{HashMap, HashSet};
+use utils::{get_relevant_hashmap, update_map};
 
 mod utils;
 
@@ -20,68 +17,12 @@ mod utils;
 /// Using this enum we know which of the schema maps to access in order to convert these ids to strings
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SchemaType {
+    /// The schema for [`Node`](crate::Node) labels
     Labels,
+    /// The schema for [`Node`](crate::Node) or [`Edge`](crate::Edge) properties (attribute keys)
     Properties,
+    /// The schema for [`Edge`](crate::Edge) labels
     Relationships,
-}
-
-pub trait RefreshSchemaKeys {
-    fn refresh_schema_keys(
-        &mut self,
-        schema_type: SchemaType,
-        graph_name: &str,
-    ) -> Result<FalkorValue>;
-}
-
-impl RefreshSchemaKeys for BorrowedSyncConnection {
-    fn refresh_schema_keys(
-        &mut self,
-        schema_type: SchemaType,
-        graph_name: &str,
-    ) -> Result<FalkorValue> {
-        self.send_command(
-            Some(graph_name),
-            "GRAPH.QUERY",
-            None,
-            Some(&[format!("CALL {}()", get_refresh_command(schema_type))]),
-        )
-    }
-}
-#[cfg(feature = "tokio")]
-impl RefreshSchemaKeys for BorrowedAsyncConnection {
-    fn refresh_schema_keys(
-        &mut self,
-        schema_type: SchemaType,
-        graph_name: &str,
-    ) -> Result<FalkorValue> {
-        let (oneshot_tx, oneshot_rx) = std::sync::mpsc::sync_channel(1);
-
-        tokio::task::spawn_blocking({
-            let self_ptr = self as *mut BorrowedAsyncConnection as usize;
-            let graph_name = graph_name.to_string();
-            move || unsafe {
-                let self_ref = &mut *(self_ptr as *mut BorrowedAsyncConnection);
-                let params = vec![format!("CALL {}()", get_refresh_command(schema_type))];
-
-                oneshot_tx
-                    .send(
-                        tokio::runtime::Handle::current().block_on(self_ref.send_command(
-                            Some(graph_name.as_str()),
-                            "GRAPH.QUERY",
-                            None,
-                            Some(params.as_slice()),
-                        )),
-                    )
-                    .ok();
-            }
-        });
-
-        // Receive the result from the channel
-        oneshot_rx
-            .recv()
-            .map_err(Into::into)
-            .and_then(|res| res.map_err(Into::into))
-    }
 }
 
 pub(crate) type IdMap = HashMap<i64, String>;
@@ -97,9 +38,9 @@ pub struct GraphSchema {
 }
 
 impl GraphSchema {
-    pub(crate) fn new(graph_name: String) -> Self {
+    pub(crate) fn new<T: ToString>(graph_name: T) -> Self {
         Self {
-            graph_name,
+            graph_name: graph_name.to_string(),
             ..Default::default()
         }
     }
@@ -149,7 +90,7 @@ impl GraphSchema {
         conn: &mut BorrowedSyncConnection,
         schema_type: SchemaType,
         id_hashset: Option<&HashSet<i64>>,
-    ) -> Result<Option<HashMap<i64, String>>> {
+    ) -> FalkorResult<Option<HashMap<i64, String>>> {
         let id_map = match schema_type {
             SchemaType::Labels => &mut self.labels,
             SchemaType::Properties => &mut self.properties,
@@ -158,37 +99,17 @@ impl GraphSchema {
 
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
         let [_, keys, _]: [FalkorValue; 3] = conn
-            .refresh_schema_keys(schema_type, self.graph_name.as_str())?
+            .send_command(
+                Some(self.graph_name.as_str()),
+                "GRAPH.QUERY",
+                None,
+                Some(&[format!("CALL {}()", get_refresh_command(schema_type))]),
+            )?
             .into_vec()?
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-        Ok(update_map(id_map, keys, id_hashset)?)
-    }
-
-    #[cfg(feature = "tokio")]
-    pub(crate) async fn refresh_async(
-        &mut self,
-        conn: &Arc<Mutex<BorrowedAsyncConnection>>,
-        schema_type: SchemaType,
-        id_hashset: Option<&HashSet<i64>>,
-    ) -> Result<Option<HashMap<i64, String>>> {
-        let id_map = match schema_type {
-            SchemaType::Labels => &mut self.labels,
-            SchemaType::Properties => &mut self.properties,
-            SchemaType::Relationships => &mut self.relationships,
-        };
-
-        // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
-        let [_, keys, _]: [FalkorValue; 3] = conn
-            .lock()
-            .await
-            .refresh_schema_keys(schema_type, self.graph_name.as_str())?
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
-
-        Ok(update_map(id_map, keys, id_hashset)?)
+        update_map(id_map, keys, id_hashset)
     }
 }
 

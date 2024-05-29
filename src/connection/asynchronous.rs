@@ -3,8 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{FalkorDBError, FalkorValue};
-use anyhow::Result;
+use crate::{FalkorDBError, FalkorResult, FalkorValue};
 use std::{collections::VecDeque, fmt::Display, sync::Arc};
 use tokio::sync::Mutex;
 
@@ -34,7 +33,7 @@ impl BorrowedAsyncConnection {
         command: &str,
         subcommand: Option<&str>,
         params: Option<&[P]>,
-    ) -> Result<FalkorValue> {
+    ) -> FalkorResult<FalkorValue> {
         Ok(match self.as_inner()? {
             #[cfg(feature = "redis")]
             FalkorAsyncConnection::Redis(redis_conn) => {
@@ -47,8 +46,12 @@ impl BorrowedAsyncConnection {
                     }
                 }
                 redis::FromRedisValue::from_owned_redis_value(
-                    redis_conn.send_packed_command(&cmd).await?,
-                )?
+                    redis_conn
+                        .send_packed_command(&cmd)
+                        .await
+                        .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?,
+                )
+                .map_err(|err| FalkorDBError::RedisParsingError(err.to_string()))?
             }
         })
     }

@@ -9,10 +9,7 @@ use crate::{
 };
 use std::time::Duration;
 
-#[cfg(feature = "tokio")]
-use crate::FalkorAsyncClient;
-
-/// A Builder-pattern implementation struct for creating a new Falkor client, sync or async.
+/// A Builder-pattern implementation struct for creating a new Falkor client.
 pub struct FalkorClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
     timeout: Option<Duration>,
@@ -124,30 +121,6 @@ impl FalkorClientBuilder<'S'> {
     }
 }
 
-#[cfg(feature = "tokio")]
-impl FalkorClientBuilder<'A'> {
-    pub fn new_async() -> Self {
-        FalkorClientBuilder {
-            connection_info: None,
-            num_connections: 4,
-            timeout: None,
-        }
-    }
-
-    pub async fn build(self) -> FalkorResult<FalkorAsyncClient> {
-        let connection_info = self
-            .connection_info
-            .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
-
-        FalkorAsyncClient::create(
-            Self::get_client(connection_info.clone())?,
-            self.num_connections,
-            self.timeout,
-        )
-        .await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,39 +178,6 @@ mod tests {
         let impossible_client = FalkorClientBuilder::new()
             .with_timeout(Duration::from_nanos(10))
             .build();
-        assert!(impossible_client.is_err());
-    }
-
-    #[cfg(all(feature = "tokio", feature = "redis"))]
-    #[tokio::test]
-    async fn test_async_builder() {
-        let conneciton_info = "falkor://127.0.0.1:6379".try_into();
-        assert!(conneciton_info.is_ok());
-
-        assert!(FalkorClientBuilder::new_async()
-            .with_num_connections(4)
-            .with_connection_info(conneciton_info.unwrap())
-            .build()
-            .await
-            .is_ok());
-    }
-
-    #[cfg(feature = "tokio")]
-    #[tokio::test]
-    #[ignore]
-    async fn test_async_timeout() {
-        {
-            let client = FalkorClientBuilder::new_async()
-                .with_timeout(Duration::from_millis(100))
-                .build()
-                .await;
-            assert!(client.is_ok());
-        }
-
-        let impossible_client = FalkorClientBuilder::new_async()
-            .with_timeout(Duration::from_nanos(10))
-            .build()
-            .await;
         assert!(impossible_client.is_err());
     }
 }

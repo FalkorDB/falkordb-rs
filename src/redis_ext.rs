@@ -16,13 +16,6 @@ impl From<redis::Connection> for FalkorSyncConnection {
     }
 }
 
-#[cfg(feature = "tokio")]
-impl From<redis::aio::MultiplexedConnection> for crate::FalkorAsyncConnection {
-    fn from(value: redis::aio::MultiplexedConnection) -> Self {
-        Self::Redis(value)
-    }
-}
-
 impl From<redis::ConnectionInfo> for FalkorConnectionInfo {
     fn from(value: redis::ConnectionInfo) -> Self {
         Self::Redis(value)

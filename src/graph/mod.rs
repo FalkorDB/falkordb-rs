@@ -4,8 +4,4 @@
  */
 
 pub(crate) mod blocking;
-
-#[cfg(feature = "tokio")]
-pub(crate) mod asynchronous;
-
 pub(crate) mod query_builder;

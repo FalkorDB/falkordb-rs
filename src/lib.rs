@@ -49,12 +49,6 @@ pub use value::{
     FalkorValue,
 };
 
-#[cfg(feature = "tokio")]
-pub use {
-    client::asynchronous::FalkorAsyncClient, connection::asynchronous::FalkorAsyncConnection,
-    graph::asynchronous::AsyncGraph,
-};
-
 #[cfg(test)]
 pub(crate) mod test_utils {
     use super::*;

@@ -99,11 +99,11 @@ impl GraphSchema {
 
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
         let [_, keys, _]: [FalkorValue; 3] = conn
-            .send_command(
+            .execute_command(
                 Some(self.graph_name.as_str()),
                 "GRAPH.QUERY",
                 None,
-                Some(&[format!("CALL {}()", get_refresh_command(schema_type))]),
+                Some(&[format!("CALL {}()", get_refresh_command(schema_type)).as_str()]),
             )?
             .into_vec()?
             .try_into()

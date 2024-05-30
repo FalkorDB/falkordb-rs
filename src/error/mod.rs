@@ -12,11 +12,19 @@ pub enum FalkorDBError {
     /// A required Id for parsing was not found in the schema
     #[error("A required Id for parsing was not found in the schema")]
     MissingSchemaId(SchemaType),
+    /// Could not connect to Redis Sentinel, or a critical Sentinel operation has failed
+    #[error(
+        "Could not connect to Redis Sentinel, or a critical Sentinel operation has failed: {0}"
+    )]
+    SentinelConnection(String),
+    /// Received unsupported number of sentinel masters in list, there can be only one
+    #[error("Received unsupported number of sentinel masters in list, there can be only one")]
+    SentinelMastersCount,
     /// An error occurred while sending the request to Redis
-    #[error("An error occurred while sending the request to Redis")]
+    #[error("An error occurred while sending the request to Redis: {0}")]
     RedisConnectionError(String),
     /// An error occurred while parsing the Redis response"
-    #[error("An error occurred while parsing the Redis response")]
+    #[error("An error occurred while parsing the Redis response: {0}")]
     RedisParsingError(String),
     /// The provided connection info is invalid
     #[error("The provided connection info is invalid")]

@@ -42,20 +42,20 @@ impl SyncGraph {
         self.graph_name.as_str()
     }
 
-    fn send_command(
+    fn execute_command(
         &self,
         command: &str,
         subcommand: Option<&str>,
         params: Option<&[&str]>,
     ) -> FalkorResult<FalkorValue> {
         let mut conn = self.client.borrow_connection()?;
-        conn.send_command(Some(self.graph_name.as_str()), command, subcommand, params)
+        conn.execute_command(Some(self.graph_name.as_str()), command, subcommand, params)
     }
 
     /// Deletes the graph stored in the database, and drop all the schema caches.
     /// NOTE: This still maintains the graph API, operations are still viable.
     pub fn delete(&mut self) -> FalkorResult<()> {
-        self.send_command("GRAPH.DELETE", None, None)?;
+        self.execute_command("GRAPH.DELETE", None, None)?;
         self.graph_schema.clear();
         Ok(())
     }
@@ -65,14 +65,16 @@ impl SyncGraph {
     /// # Returns
     /// A [`Vec`] of [`SlowlogEntry`], providing information about each query.
     pub fn slowlog(&self) -> FalkorResult<Vec<SlowlogEntry>> {
-        let res = self.send_command("GRAPH.SLOWLOG", None, None)?.into_vec()?;
+        let res = self
+            .execute_command("GRAPH.SLOWLOG", None, None)?
+            .into_vec()?;
 
         Ok(res.into_iter().flat_map(SlowlogEntry::try_from).collect())
     }
 
     /// Resets the slowlog, all query time data will be cleared.
     pub fn slowlog_reset(&self) -> FalkorResult<FalkorValue> {
-        self.send_command("GRAPH.SLOWLOG", None, Some(&["RESET"]))
+        self.execute_command("GRAPH.SLOWLOG", None, Some(&["RESET"]))
     }
 
     /// Creates a [`QueryBuilder`] for this graph, in an attempt to profile a specific query
@@ -306,7 +308,7 @@ impl SyncGraph {
         ]);
         params.extend(properties);
 
-        self.send_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))
+        self.execute_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))
     }
 
     /// Creates a new constraint for this graph, making the provided properties unique
@@ -342,7 +344,7 @@ impl SyncGraph {
         params.extend(properties);
 
         // create constraint using index
-        self.send_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))
+        self.execute_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))
     }
 
     /// Drop an existing constraint from the graph
@@ -373,7 +375,7 @@ impl SyncGraph {
         ]);
         params.extend(properties);
 
-        self.send_command("GRAPH.CONSTRAINT", Some("DROP"), Some(params.as_slice()))
+        self.execute_command("GRAPH.CONSTRAINT", Some("DROP"), Some(params.as_slice()))
     }
 }
 

@@ -77,10 +77,11 @@ impl<const R: char> FalkorClientBuilder<R> {
             .map_err(|_| FalkorDBError::InvalidConnectionInfo)?;
         Ok(match connection_info {
             #[cfg(feature = "redis")]
-            FalkorConnectionInfo::Redis(connection_info) => FalkorClientProvider::Redis(
-                redis::Client::open(connection_info.clone())
+            FalkorConnectionInfo::Redis(connection_info) => FalkorClientProvider::Redis {
+                client: redis::Client::open(connection_info.clone())
                     .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?,
-            ),
+                sentinel: None,
+            },
         })
     }
 }

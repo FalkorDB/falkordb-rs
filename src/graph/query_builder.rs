@@ -92,7 +92,7 @@ impl<'a, Output> QueryBuilder<'a, Output> {
         let mut params = vec![query.as_str(), "--compact"];
         params.extend(timeout.as_deref());
 
-        conn.send_command(
+        conn.execute_command(
             Some(self.graph.graph_name()),
             self.command,
             None,
@@ -269,7 +269,7 @@ impl<'a, Output> ProcedureBuilder<'a, Output> {
             generate_procedure_call(self.procedure_name, self.args, self.yields);
         let query = construct_query(query_string, params.as_ref());
 
-        conn.send_command(
+        conn.execute_command(
             Some(self.graph.graph_name()),
             command,
             None,

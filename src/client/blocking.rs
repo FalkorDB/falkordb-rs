@@ -12,7 +12,6 @@ use crate::{
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
-    fmt::Display,
     sync::{mpsc, Arc},
     time::Duration,
 };
@@ -36,6 +35,87 @@ impl FalkorSyncClientInner {
     }
 }
 
+#[cfg(feature = "redis")]
+fn get_redis_info(
+    conn: &mut FalkorSyncConnection,
+    section: Option<&str>,
+) -> FalkorResult<HashMap<String, String>> {
+    Ok(conn
+        .execute_command(None, "INFO", section, None)?
+        .into_string()?
+        .split("\r\n")
+        .map(|info_item| info_item.split(':').collect::<Vec<_>>())
+        .flat_map(TryInto::<[&str; 2]>::try_into)
+        .map(|[key, val]| (key.to_string(), val.to_string()))
+        .collect())
+}
+
+#[cfg(feature = "redis")]
+fn is_sentinel(conn: &mut FalkorSyncConnection) -> FalkorResult<bool> {
+    let info_map = get_redis_info(conn, Some("server"))?;
+    Ok(info_map
+        .get("redis_mode")
+        .map(|redis_mode| redis_mode == "sentinel")
+        .unwrap_or_default())
+}
+
+fn get_sentinel_client(
+    client: &mut FalkorClientProvider,
+    connection_info: &redis::ConnectionInfo,
+) -> FalkorResult<Option<redis::Client>> {
+    let mut conn = client.get_connection(None)?;
+    if !is_sentinel(&mut conn)? {
+        return Ok(None);
+    }
+
+    // This could have been so simple using the Sentinel API, but it requires a service name
+    // Perhaps in the future we can use it if we only support the master instance to be called 'master'?
+    let sentinel_masters = conn
+        .execute_command(None, "SENTINEL", Some("MASTERS"), None)?
+        .into_vec()?;
+
+    if sentinel_masters.len() != 1 {
+        return Err(FalkorDBError::SentinelMastersCount);
+    }
+
+    let sentinel_master: HashMap<_, _> = sentinel_masters
+        .into_iter()
+        .next()
+        .ok_or(FalkorDBError::SentinelMastersCount)?
+        .into_vec()?
+        .chunks_exact(2)
+        .flat_map(|chunk| TryInto::<[FalkorValue; 2]>::try_into(chunk.to_vec()))
+        .flat_map(|[key, val]| {
+            Result::<_, FalkorDBError>::Ok((key.into_string()?, val.into_string()?))
+        })
+        .collect();
+
+    let (_name, host, port) = match (
+        sentinel_master.get("name"),
+        sentinel_master.get("host"),
+        sentinel_master.get("ip"),
+        sentinel_master.get("port"),
+    ) {
+        (Some(name), Some(host), _, Some(port)) => (name, host, port),
+        (Some(name), _, Some(ip), Some(port)) => (name, ip, port),
+        _ => return Err(FalkorDBError::SentinelMastersCount),
+    };
+
+    let user_pass_string = match (
+        connection_info.redis.username.as_ref(),
+        connection_info.redis.password.as_ref(),
+    ) {
+        (None, Some(pass)) => format!("{}@", pass), // Password-only authentication is allowed in legacy auth
+        (Some(user), Some(pass)) => format!("{user}:{pass}@"),
+        _ => "".to_string(),
+    };
+    let url = format!("{}://{}{host}:{port}", "redis", user_pass_string);
+
+    Ok(Some(redis::Client::open(url).map_err(|err| {
+        FalkorDBError::SentinelConnection(err.to_string())
+    })?))
+}
+
 /// This is the publicly exposed API of the sync Falkor Client
 /// It makes no assumptions in regard to which database the Falkor module is running on,
 /// and will select it based on enabled features and url connection
@@ -51,19 +131,28 @@ pub struct FalkorSyncClient {
 
 impl FalkorSyncClient {
     pub(crate) fn create(
-        client: FalkorClientProvider,
+        mut client: FalkorClientProvider,
         connection_info: FalkorConnectionInfo,
         num_connections: u8,
         timeout: Option<Duration>,
     ) -> FalkorResult<Self> {
         let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(num_connections as usize);
+
+        #[cfg(feature = "redis")]
+        if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
+            if let Some(sentinel) = get_sentinel_client(&mut client, redis_conn_info)? {
+                client.set_sentinel(sentinel);
+            }
+        }
+
+        // One already exists
         for _ in 0..num_connections {
+            let new_conn = client
+                .get_connection(timeout)
+                .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?;
+
             connection_pool_tx
-                .send(
-                    client
-                        .get_connection(timeout)
-                        .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?,
-                )
+                .send(new_conn)
                 .map_err(|_| FalkorDBError::EmptyConnection)?;
         }
 
@@ -93,7 +182,7 @@ impl FalkorSyncClient {
     /// A [`Vec`] of [`String`]s, containing the names of available graphs
     pub fn list_graphs(&self) -> FalkorResult<Vec<String>> {
         let mut conn = self.borrow_connection()?;
-        conn.send_command::<&str>(None, "GRAPH.LIST", None, None)
+        conn.execute_command(None, "GRAPH.LIST", None, None)
             .and_then(string_vec_from_val)
     }
 
@@ -105,13 +194,13 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
-    pub fn config_get<T: Display>(
+    pub fn config_get(
         &self,
-        config_key: T,
+        config_key: &str,
     ) -> FalkorResult<HashMap<String, ConfigValue>> {
         let mut conn = self.borrow_connection()?;
         let config = conn
-            .send_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))?
+            .execute_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))?
             .into_vec()?;
 
         if config.len() == 2 {
@@ -144,16 +233,16 @@ impl FalkorSyncClient {
     /// * `config_Key`: A [`String`] representation of a configuration's key.
     /// The config key can also be "*", which will return ALL the configuration options.
     /// * `value`: The new value to set, which is anything that can be converted into a [`ConfigValue`], namely string types and i64.
-    pub fn config_set<T: Into<ConfigValue>, C: Into<ConfigValue>>(
+    pub fn config_set<C: Into<ConfigValue>>(
         &self,
-        config_key: T,
+        config_key: &str,
         value: C,
     ) -> FalkorResult<FalkorValue> {
-        self.borrow_connection()?.send_command(
+        self.borrow_connection()?.execute_command(
             None,
             "GRAPH.CONFIG",
             Some("SET"),
-            Some(&[config_key.into(), value.into()]),
+            Some(&[config_key, value.into().to_string().as_str()]),
         )
     }
 
@@ -184,13 +273,23 @@ impl FalkorSyncClient {
         graph_to_clone: &str,
         new_graph_name: &str,
     ) -> FalkorResult<SyncGraph> {
-        self.borrow_connection()?.send_command(
+        self.borrow_connection()?.execute_command(
             Some(graph_to_clone),
             "GRAPH.COPY",
             None,
             Some(&[new_graph_name]),
         )?;
         Ok(self.select_graph(new_graph_name))
+    }
+
+    #[cfg(feature = "redis")]
+    /// Retrieves redis information
+    pub fn redis_info(
+        &self,
+        section: Option<&str>,
+    ) -> FalkorResult<HashMap<String, String>> {
+        let mut conn = self.borrow_connection()?;
+        get_redis_info(conn.as_inner()?, section)
     }
 }
 
@@ -346,5 +445,13 @@ mod tests {
         client
             .config_set("DELTA_MAX_PENDING_CHANGES", current_val)
             .ok();
+    }
+
+    #[cfg(feature = "redis")]
+    #[test]
+    fn test_redis_sentinel_build() {
+        FalkorClientBuilder::new().with_connection_info("falkor://falkordb:123456@singlezonesentinellblb.instance-e0srmv0mc.hc-jx5tis6bc.us-central1.gcp.f2e0a955bb84.cloud:26379".try_into().expect("Could not construct connectioninfo"))
+            .build()
+            .expect("Could not create sentinel client");
     }
 }

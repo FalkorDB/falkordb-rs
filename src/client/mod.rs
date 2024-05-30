@@ -11,21 +11,41 @@ pub(crate) mod builder;
 
 pub(crate) enum FalkorClientProvider {
     #[cfg(feature = "redis")]
-    Redis(redis::Client),
+    Redis {
+        client: redis::Client,
+        sentinel: Option<redis::Client>,
+    },
 }
 
 impl FalkorClientProvider {
     pub(crate) fn get_connection(
-        &self,
+        &mut self,
         connection_timeout: Option<Duration>,
     ) -> FalkorResult<FalkorSyncConnection> {
         Ok(match self {
             #[cfg(feature = "redis")]
-            FalkorClientProvider::Redis(redis_client) => connection_timeout
-                .map(|timeout| redis_client.get_connection_with_timeout(timeout))
-                .unwrap_or_else(|| redis_client.get_connection())
-                .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?
-                .into(),
+            FalkorClientProvider::Redis {
+                client: redis_client,
+                sentinel,
+            } => match (
+                connection_timeout,
+                sentinel.as_ref().unwrap_or(redis_client),
+            ) {
+                (None, redis_client) => redis_client.get_connection(),
+                (Some(timeout), redis_client) => redis_client.get_connection_with_timeout(timeout),
+            }
+            .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?
+            .into(),
         })
+    }
+
+    #[cfg(feature = "redis")]
+    pub(crate) fn set_sentinel(
+        &mut self,
+        sentinel_client: redis::Client,
+    ) {
+        match self {
+            FalkorClientProvider::Redis { sentinel, .. } => *sentinel = Some(sentinel_client),
+        }
     }
 }

@@ -9,18 +9,23 @@ use crate::{FalkorDBError, FalkorResult};
 /// The different enum variants are enabled based on compilation features
 #[derive(Clone, Debug)]
 pub enum FalkorConnectionInfo {
-    /// A Redis database connection
     #[cfg(feature = "redis")]
+    /// A Redis database connection
     Redis(redis::ConnectionInfo),
 }
 
 impl FalkorConnectionInfo {
-    fn fallback_provider(full_url: String) -> FalkorResult<FalkorConnectionInfo> {
+    fn fallback_provider(mut full_url: String) -> FalkorResult<FalkorConnectionInfo> {
         #[cfg(feature = "redis")]
-        Ok(FalkorConnectionInfo::Redis(
-            redis::IntoConnectionInfo::into_connection_info(format!("redis://{full_url}"))
-                .map_err(|_| FalkorDBError::InvalidConnectionInfo)?,
-        ))
+        Ok(FalkorConnectionInfo::Redis({
+            if full_url.starts_with("falkor://") {
+                full_url = full_url.replace("falkor://", "redis://");
+            } else if full_url.starts_with("falkors://") {
+                full_url = full_url.replace("falkors://", "rediss://");
+            }
+            redis::IntoConnectionInfo::into_connection_info(full_url)
+                .map_err(|_| FalkorDBError::InvalidConnectionInfo)?
+        }))
     }
 
     /// Retrieves the internally stored address for this connection info
@@ -43,33 +48,40 @@ impl TryFrom<&str> for FalkorConnectionInfo {
             .parse(value)
             .map_err(|_| FalkorDBError::InvalidConnectionInfo)?;
 
+        // The url_parse serializer seems ***ed up for some reason
         let scheme = url.scheme.unwrap_or("falkor".to_string());
-        let addr = url.domain.unwrap_or("127.0.0.1".to_string());
-        let port = url.port.unwrap_or(6379); // Might need to change in accordance with the default fallback
-
         let user_pass_string = match url.user_pass {
             (Some(pass), None) => format!("{}@", pass), // Password-only authentication is allowed in legacy auth
             (Some(user), Some(pass)) => format!("{user}:{pass}@"),
             _ => "".to_string(),
         };
+        let subdomain = url
+            .subdomain
+            .map(|subdomain| format!("{subdomain}."))
+            .unwrap_or_default();
+
+        let domain = url.domain.unwrap_or("127.0.0.1".to_string());
+        let top_level_domain = url
+            .top_level_domain
+            .map(|top_level_domain| format!(".{top_level_domain}"))
+            .unwrap_or_default();
+        let port = url.port.unwrap_or(6379); // Might need to change in accordance with the default fallback
+        let serialized = format!(
+            "{}://{}{}{}{}:{}",
+            scheme, user_pass_string, subdomain, domain, top_level_domain, port
+        );
 
         match scheme.as_str() {
             "redis" | "rediss" => {
                 #[cfg(feature = "redis")]
                 return Ok(FalkorConnectionInfo::Redis(
-                    redis::IntoConnectionInfo::into_connection_info(format!(
-                        "{}://{}{}:{}",
-                        scheme, user_pass_string, addr, port
-                    ))
-                    .map_err(|_| FalkorDBError::InvalidConnectionInfo)?,
+                    redis::IntoConnectionInfo::into_connection_info(serialized)
+                        .map_err(|_| FalkorDBError::InvalidConnectionInfo)?,
                 ));
                 #[cfg(not(feature = "redis"))]
                 return Err(FalkorDBError::UnavailableProvider);
             }
-            _ => FalkorConnectionInfo::fallback_provider(format!(
-                "{}{}:{}",
-                user_pass_string, addr, port
-            )),
+            _ => FalkorConnectionInfo::fallback_provider(serialized),
         }
     }
 }
@@ -101,7 +113,7 @@ mod tests {
     #[cfg(feature = "redis")]
     fn test_redis_fallback_provider() {
         let FalkorConnectionInfo::Redis(redis) =
-            FalkorConnectionInfo::fallback_provider("127.0.0.1:6379".to_string()).unwrap();
+            FalkorConnectionInfo::fallback_provider("redis://127.0.0.1:6379".to_string()).unwrap();
 
         assert_eq!(redis.addr.to_string(), "127.0.0.1:6379".to_string());
     }

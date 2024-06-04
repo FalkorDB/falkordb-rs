@@ -4,7 +4,6 @@
  */
 
 use crate::{FalkorDBError, FalkorParsable, FalkorValue, GraphSchema, Point};
-use anyhow::Result;
 
 pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValue), FalkorDBError> {
     let [type_marker, val]: [FalkorValue; 2] = value

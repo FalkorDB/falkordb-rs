@@ -4,7 +4,6 @@
  */
 
 use crate::{FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema, SchemaType};
-use anyhow::Result;
 use std::{
     collections::{HashMap, HashSet},
     fmt::{Display, Formatter},

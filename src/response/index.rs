@@ -7,7 +7,6 @@ use crate::{
     value::utils::{parse_type, parse_vec, type_val_from_value},
     EntityType, FalkorDBError, FalkorParsable, FalkorValue, GraphSchema,
 };
-use anyhow::Result;
 use std::collections::HashMap;
 
 /// The status of this index

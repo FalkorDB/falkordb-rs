@@ -6,7 +6,7 @@
 use crate::SchemaType;
 
 /// A verbose error enum used throughout the client, messages are static string slices.
-/// this allows easy [`anyhow`] integration using [`thiserror`]
+/// this allows easy error integration using [`thiserror`]
 #[derive(thiserror::Error, Debug)]
 pub enum FalkorDBError {
     /// A required Id for parsing was not found in the schema

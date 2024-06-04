@@ -7,7 +7,6 @@ use crate::{
     client::FalkorClientProvider, connection::blocking::FalkorSyncConnection, ConfigValue,
     FalkorConnectionInfo, FalkorDBError, FalkorValue,
 };
-use anyhow::Result;
 use redis::{FromRedisValue, RedisResult, RedisWrite, ToRedisArgs};
 
 impl From<redis::Connection> for FalkorSyncConnection {

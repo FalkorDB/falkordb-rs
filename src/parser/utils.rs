@@ -4,7 +4,6 @@
  */
 
 use crate::{value::utils::parse_type, FalkorDBError, FalkorValue, GraphSchema, ResultSet};
-use anyhow::Result;
 
 pub(crate) fn string_vec_from_val(value: FalkorValue) -> Result<Vec<String>, FalkorDBError> {
     value.into_vec().map(|value_as_vec| {

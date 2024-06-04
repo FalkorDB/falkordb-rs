@@ -130,7 +130,7 @@ impl GraphSchema {
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
         let [_, keys, _]: [FalkorValue; 3] = self
             .client
-            .borrow_connection()?
+            .borrow_connection(self.client.clone())?
             .execute_command(
                 Some(self.graph_name.as_str()),
                 "GRAPH.QUERY",

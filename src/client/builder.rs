@@ -7,12 +7,10 @@ use crate::{
     client::FalkorClientProvider, FalkorConnectionInfo, FalkorDBError, FalkorResult,
     FalkorSyncClient,
 };
-use std::time::Duration;
 
 /// A Builder-pattern implementation struct for creating a new Falkor client.
 pub struct FalkorClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
-    timeout: Option<Duration>,
     num_connections: u8,
 }
 
@@ -52,23 +50,6 @@ impl<const R: char> FalkorClientBuilder<R> {
         }
     }
 
-    /// Specify a timeout duration for requests and connections.
-    ///
-    /// # Arguments
-    /// * `timeout`: a [`Duration`], after which a timeout error will be returned from the connection.
-    ///
-    /// # Returns
-    /// The consumed and modified self.
-    pub fn with_timeout(
-        self,
-        timeout: Duration,
-    ) -> Self {
-        Self {
-            timeout: Some(timeout),
-            ..self
-        }
-    }
-
     fn get_client<T: TryInto<FalkorConnectionInfo>>(
         connection_info: T
     ) -> FalkorResult<FalkorClientProvider> {
@@ -79,7 +60,7 @@ impl<const R: char> FalkorClientBuilder<R> {
             #[cfg(feature = "redis")]
             FalkorConnectionInfo::Redis(connection_info) => FalkorClientProvider::Redis {
                 client: redis::Client::open(connection_info.clone())
-                    .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?,
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
                 sentinel: None,
             },
         })
@@ -95,7 +76,6 @@ impl FalkorClientBuilder<'S'> {
     pub fn new() -> Self {
         FalkorClientBuilder {
             connection_info: None,
-            timeout: None,
             num_connections: 4,
         }
     }
@@ -113,12 +93,18 @@ impl FalkorClientBuilder<'S'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        FalkorSyncClient::create(
-            Self::get_client(connection_info.clone())?,
-            connection_info,
-            self.num_connections,
-            self.timeout,
-        )
+        let mut client = Self::get_client(connection_info.clone())?;
+
+        #[cfg(feature = "redis")]
+        #[allow(irrefutable_let_patterns)]
+        if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
+            if let Some(sentinel) =
+                super::blocking::get_sentinel_client(&mut client, redis_conn_info)?
+            {
+                client.set_sentinel(sentinel);
+            }
+        }
+        FalkorSyncClient::create(client, connection_info, self.num_connections)
     }
 }
 
@@ -165,20 +151,5 @@ mod tests {
 
         let too_many = FalkorClientBuilder::new().with_num_connections(36).build();
         assert!(too_many.is_err());
-    }
-
-    #[test]
-    fn test_timeout() {
-        {
-            let client = FalkorClientBuilder::new()
-                .with_timeout(Duration::from_millis(100))
-                .build();
-            assert!(client.is_ok());
-        }
-
-        let impossible_client = FalkorClientBuilder::new()
-            .with_timeout(Duration::from_nanos(10))
-            .build();
-        assert!(impossible_client.is_err());
     }
 }

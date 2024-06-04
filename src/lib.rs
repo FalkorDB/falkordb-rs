@@ -30,7 +30,7 @@ pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
 pub use graph::{
     blocking::SyncGraph,
-    query_builder::{ProcedureBuilder, QueryBuilder},
+    query_builder::{ProcedureQueryBuilder, QueryBuilder},
 };
 pub use graph_schema::{GraphSchema, SchemaType};
 pub use parser::FalkorParsable;

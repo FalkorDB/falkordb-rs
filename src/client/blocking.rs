@@ -13,57 +13,71 @@ use parking_lot::Mutex;
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc},
-    time::Duration,
 };
 
 pub(crate) struct FalkorSyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
     connection_pool_size: u8,
-    connection_pool_tx: mpsc::SyncSender<FalkorSyncConnection>,
+    connection_pool_tx: Mutex<mpsc::SyncSender<FalkorSyncConnection>>,
     connection_pool_rx: Mutex<mpsc::Receiver<FalkorSyncConnection>>,
 }
 
 impl FalkorSyncClientInner {
-    pub(crate) fn borrow_connection(&self) -> Result<BorrowedSyncConnection, FalkorDBError> {
+    pub(crate) fn borrow_connection(
+        &self,
+        pool_owner: Arc<Self>,
+    ) -> FalkorResult<BorrowedSyncConnection> {
         Ok(BorrowedSyncConnection::new(
             self.connection_pool_rx
                 .lock()
                 .recv()
                 .map_err(|_| FalkorDBError::EmptyConnection)?,
-            self.connection_pool_tx.clone(),
+            self.connection_pool_tx.lock().clone(),
+            pool_owner,
         ))
+    }
+
+    pub(crate) fn get_connection(&self) -> FalkorResult<FalkorSyncConnection> {
+        self._inner.lock().get_connection()
+    }
+
+    pub(crate) fn refresh_connection_pool(&self) -> FalkorResult<()> {
+        let conn_pool_size = self.connection_pool_size as usize;
+        let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(conn_pool_size);
+
+        // One already exists
+        for _ in 0..conn_pool_size {
+            let new_conn = self
+                .get_connection()
+                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+
+            connection_pool_tx
+                .send(new_conn)
+                .map_err(|_| FalkorDBError::EmptyConnection)?;
+        }
+
+        *(self.connection_pool_tx.lock()) = connection_pool_tx;
+        *(self.connection_pool_rx.lock()) = connection_pool_rx;
+
+        Ok(())
     }
 }
 
 #[cfg(feature = "redis")]
-fn get_redis_info(
-    conn: &mut FalkorSyncConnection,
-    section: Option<&str>,
-) -> FalkorResult<HashMap<String, String>> {
-    Ok(conn
-        .execute_command(None, "INFO", section, None)?
-        .into_string()?
-        .split("\r\n")
-        .map(|info_item| info_item.split(':').collect::<Vec<_>>())
-        .flat_map(TryInto::<[&str; 2]>::try_into)
-        .map(|[key, val]| (key.to_string(), val.to_string()))
-        .collect())
-}
-
-#[cfg(feature = "redis")]
 fn is_sentinel(conn: &mut FalkorSyncConnection) -> FalkorResult<bool> {
-    let info_map = get_redis_info(conn, Some("server"))?;
+    let info_map = conn.get_redis_info(Some("server"))?;
     Ok(info_map
         .get("redis_mode")
         .map(|redis_mode| redis_mode == "sentinel")
         .unwrap_or_default())
 }
 
-fn get_sentinel_client(
+#[cfg(feature = "redis")]
+pub(crate) fn get_sentinel_client(
     client: &mut FalkorClientProvider,
     connection_info: &redis::ConnectionInfo,
-) -> FalkorResult<Option<redis::Client>> {
-    let mut conn = client.get_connection(None)?;
+) -> FalkorResult<Option<redis::sentinel::SentinelClient>> {
+    let mut conn = client.get_connection()?;
     if !is_sentinel(&mut conn)? {
         return Ok(None);
     }
@@ -90,30 +104,22 @@ fn get_sentinel_client(
         })
         .collect();
 
-    let (_name, host, port) = match (
-        sentinel_master.get("name"),
-        sentinel_master.get("host"),
-        sentinel_master.get("ip"),
-        sentinel_master.get("port"),
-    ) {
-        (Some(name), Some(host), _, Some(port)) => (name, host, port),
-        (Some(name), _, Some(ip), Some(port)) => (name, ip, port),
-        _ => return Err(FalkorDBError::SentinelMastersCount),
-    };
+    let name = sentinel_master
+        .get("name")
+        .ok_or(FalkorDBError::SentinelMastersCount)?;
 
-    let user_pass_string = match (
-        connection_info.redis.username.as_ref(),
-        connection_info.redis.password.as_ref(),
-    ) {
-        (None, Some(pass)) => format!("{}@", pass), // Password-only authentication is allowed in legacy auth
-        (Some(user), Some(pass)) => format!("{user}:{pass}@"),
-        _ => "".to_string(),
-    };
-    let url = format!("{}://{}{host}:{port}", "redis", user_pass_string);
-
-    Ok(Some(redis::Client::open(url).map_err(|err| {
-        FalkorDBError::SentinelConnection(err.to_string())
-    })?))
+    Ok(Some(
+        redis::sentinel::SentinelClient::build(
+            vec![connection_info.to_owned()],
+            name.to_string(),
+            Some(redis::sentinel::SentinelNodeConnectionInfo {
+                tls_mode: None,
+                redis_connection_info: Some(connection_info.redis.clone()),
+            }),
+            redis::sentinel::SentinelServerType::Master,
+        )
+        .map_err(|err| FalkorDBError::SentinelConnection(err.to_string()))?,
+    ))
 }
 
 /// This is the publicly exposed API of the sync Falkor Client
@@ -134,23 +140,14 @@ impl FalkorSyncClient {
         mut client: FalkorClientProvider,
         connection_info: FalkorConnectionInfo,
         num_connections: u8,
-        timeout: Option<Duration>,
     ) -> FalkorResult<Self> {
         let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(num_connections as usize);
-
-        #[cfg(feature = "redis")]
-        #[allow(irrefutable_let_patterns)]
-        if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
-            if let Some(sentinel) = get_sentinel_client(&mut client, redis_conn_info)? {
-                client.set_sentinel(sentinel);
-            }
-        }
 
         // One already exists
         for _ in 0..num_connections {
             let new_conn = client
-                .get_connection(timeout)
-                .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?;
+                .get_connection()
+                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
 
             connection_pool_tx
                 .send(new_conn)
@@ -161,7 +158,7 @@ impl FalkorSyncClient {
             inner: Arc::new(FalkorSyncClientInner {
                 _inner: client.into(),
                 connection_pool_size: num_connections,
-                connection_pool_tx,
+                connection_pool_tx: Mutex::new(connection_pool_tx),
                 connection_pool_rx: Mutex::new(connection_pool_rx),
             }),
             _connection_info: connection_info,
@@ -174,7 +171,13 @@ impl FalkorSyncClient {
     }
 
     pub(crate) fn borrow_connection(&self) -> FalkorResult<BorrowedSyncConnection> {
-        self.inner.borrow_connection()
+        self.inner.borrow_connection(self.inner.clone())
+    }
+
+    /// Attempts to create a new connection pool, if successful, drops all connections in the pool and set the new ones.
+    /// Any borrowed connections may or may not be viable, as this does not assume the reason for the refresh, but they are considered stale, and will not be returned to the pool.
+    pub fn refresh_connection_pool(&self) -> FalkorResult<()> {
+        self.inner.refresh_connection_pool()
     }
 
     /// Return a list of graphs currently residing in the database
@@ -289,8 +292,9 @@ impl FalkorSyncClient {
         &self,
         section: Option<&str>,
     ) -> FalkorResult<HashMap<String, String>> {
-        let mut conn = self.borrow_connection()?;
-        get_redis_info(conn.as_inner()?, section)
+        self.borrow_connection()?
+            .as_inner()?
+            .get_redis_info(section)
     }
 }
 

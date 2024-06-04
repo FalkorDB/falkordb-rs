@@ -104,7 +104,10 @@ impl<'a, Output> QueryBuilder<'a, Output> {
 impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
     /// Perform the query, retuning a [`FalkorResponse`], with a [`ResultSet`] as its `data` member
     pub fn perform(mut self) -> FalkorResult<FalkorResponse<ResultSet>> {
-        let mut conn = self.graph.client.borrow_connection()?;
+        let mut conn = self
+            .graph
+            .client
+            .borrow_connection(self.graph.client.clone())?;
         let res = self.perform_common(&mut conn)?.into_vec()?;
 
         match res.len() {
@@ -142,7 +145,10 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
 impl<'a> QueryBuilder<'a, ExecutionPlan> {
     /// Perform the query, returning an [`ExecutionPlan`] from the data returned
     pub fn perform(mut self) -> FalkorResult<ExecutionPlan> {
-        let mut conn = self.graph.client.borrow_connection()?;
+        let mut conn = self
+            .graph
+            .client
+            .borrow_connection(self.graph.client.clone())?;
         let res = self.perform_common(&mut conn)?;
 
         ExecutionPlan::try_from(res)
@@ -190,7 +196,7 @@ pub(crate) fn generate_procedure_call<P: ToString, T: Display, Z: Display>(
 }
 
 /// A Builder-pattern struct that allows creating and performing procedure call on a graph
-pub struct ProcedureBuilder<'a, Output> {
+pub struct ProcedureQueryBuilder<'a, Output> {
     _unused: PhantomData<Output>,
     graph: &'a mut SyncGraph,
     readonly: bool,
@@ -199,7 +205,7 @@ pub struct ProcedureBuilder<'a, Output> {
     yields: Option<&'a [&'a str]>,
 }
 
-impl<'a, Output> ProcedureBuilder<'a, Output> {
+impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
     pub(crate) fn new(
         graph: &'a mut SyncGraph,
         procedure_name: &'a str,
@@ -278,11 +284,14 @@ impl<'a, Output> ProcedureBuilder<'a, Output> {
     }
 }
 
-impl<'a> ProcedureBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
+impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
     /// Performs the procedure call and return a [`FalkorResponse`] type containing a result set of [`FalkorIndex`]s
     /// This functions consumes self
     pub fn perform(mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
-        let mut conn = self.graph.client.borrow_connection()?;
+        let mut conn = self
+            .graph
+            .client
+            .borrow_connection(self.graph.client.clone())?;
 
         let [header, indices, stats]: [FalkorValue; 3] = self
             .perform_common(&mut conn)?
@@ -304,11 +313,14 @@ impl<'a> ProcedureBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
     }
 }
 
-impl<'a> ProcedureBuilder<'a, FalkorResponse<Vec<Constraint>>> {
+impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
     /// Performs the procedure call and return a [`FalkorResponse`] type containing a result set of [`Constraint`]s
     /// This functions consumes self
     pub fn perform(mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
-        let mut conn = self.graph.client.borrow_connection()?;
+        let mut conn = self
+            .graph
+            .client
+            .borrow_connection(self.graph.client.clone())?;
 
         let [header, query_res, stats]: [FalkorValue; 3] = self
             .perform_common(&mut conn)?

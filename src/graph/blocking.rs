@@ -6,10 +6,9 @@
 use crate::{
     client::blocking::FalkorSyncClientInner, Constraint, ConstraintType, EntityType, ExecutionPlan,
     FalkorIndex, FalkorResponse, FalkorResult, FalkorValue, GraphSchema, IndexType,
-    ProcedureBuilder, QueryBuilder, ResultSet, SlowlogEntry,
+    ProcedureQueryBuilder, QueryBuilder, ResultSet, SlowlogEntry,
 };
-use std::fmt::Display;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
 /// # Thread Safety
@@ -48,8 +47,9 @@ impl SyncGraph {
         subcommand: Option<&str>,
         params: Option<&[&str]>,
     ) -> FalkorResult<FalkorValue> {
-        let mut conn = self.client.borrow_connection()?;
-        conn.execute_command(Some(self.graph_name.as_str()), command, subcommand, params)
+        self.client
+            .borrow_connection(self.client.clone())?
+            .execute_command(Some(self.graph_name.as_str()), command, subcommand, params)
     }
 
     /// Deletes the graph stored in the database, and drop all the schema caches.
@@ -138,36 +138,36 @@ impl SyncGraph {
         QueryBuilder::new(self, "GRAPH.QUERY_RO", query_string)
     }
 
-    /// Creates a [`ProcedureBuilder`] for this graph
-    /// This [`ProcedureBuilder`] has to be dropped or ran using [`ProcedureBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// Creates a [`ProcedureQueryBuilder`] for this graph
+    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only queries are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
     /// * `procedure_name`: The name of the procedure to call
     ///
     /// # Returns
-    /// A [`ProcedureBuilder`] object
+    /// A [`ProcedureQueryBuilder`] object
     pub fn call_procedure<'a, P>(
         &'a mut self,
         procedure_name: &'a str,
-    ) -> ProcedureBuilder<P> {
-        ProcedureBuilder::new(self, procedure_name)
+    ) -> ProcedureQueryBuilder<P> {
+        ProcedureQueryBuilder::new(self, procedure_name)
     }
 
-    /// Creates a [`ProcedureBuilder`] for this graph, for a readonly procedure
-    /// This [`ProcedureBuilder`] has to be dropped or ran using [`ProcedureBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// Creates a [`ProcedureQueryBuilder`] for this graph, for a readonly procedure
+    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only procedures are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
     /// * `procedure_name`: The name of the procedure to call
     ///
     /// # Returns
-    /// A [`ProcedureBuilder`] object
+    /// A [`ProcedureQueryBuilder`] object
     pub fn call_proecdure_ro<'a, P>(
         &'a mut self,
         procedure_name: &'a str,
-    ) -> ProcedureBuilder<P> {
-        ProcedureBuilder::new_readonly(self, procedure_name)
+    ) -> ProcedureQueryBuilder<P> {
+        ProcedureQueryBuilder::new_readonly(self, procedure_name)
     }
 
     /// Calls the DB.INDICES procedure on the graph, returning all the indexing methods currently used
@@ -175,7 +175,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`Vec`] of [`FalkorIndex`]
     pub fn list_indices(&mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
-        ProcedureBuilder::<FalkorResponse<Vec<FalkorIndex>>>::new(self, "DB.INDEXES").perform()
+        ProcedureQueryBuilder::<FalkorResponse<Vec<FalkorIndex>>>::new(self, "DB.INDEXES").perform()
     }
 
     /// Creates a new index in the graph, for the selected entity type(Node/Edge), selected label, and properties
@@ -280,7 +280,8 @@ impl SyncGraph {
     /// # Returns
     /// A tuple where the first element is a [`Vec`] of [`Constraint`]s, and the second element is a [`Vec`] of stats as [`String`]s
     pub fn list_constraints(&mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
-        ProcedureBuilder::<FalkorResponse<Vec<Constraint>>>::new(self, "DB.CONSTRAINTS").perform()
+        ProcedureQueryBuilder::<FalkorResponse<Vec<Constraint>>>::new(self, "DB.CONSTRAINTS")
+            .perform()
     }
 
     /// Creates a new constraint for this graph, making the provided properties mandatory

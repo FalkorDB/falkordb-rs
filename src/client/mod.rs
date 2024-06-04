@@ -4,7 +4,6 @@
  */
 
 use crate::{connection::blocking::FalkorSyncConnection, FalkorDBError, FalkorResult};
-use std::time::Duration;
 
 pub(crate) mod blocking;
 pub(crate) mod builder;
@@ -13,31 +12,27 @@ pub(crate) enum FalkorClientProvider {
     #[cfg(feature = "redis")]
     Redis {
         client: redis::Client,
-        sentinel: Option<redis::Client>,
+        sentinel: Option<redis::sentinel::SentinelClient>,
     },
 }
 
 impl FalkorClientProvider {
-    pub(crate) fn get_connection(
-        &mut self,
-        connection_timeout: Option<Duration>,
-    ) -> FalkorResult<FalkorSyncConnection> {
+    pub(crate) fn get_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
         Ok(match self {
             #[cfg(feature = "redis")]
             FalkorClientProvider::Redis {
-                client: redis_client,
-                sentinel,
+                sentinel: Some(sentinel),
+                ..
             } => FalkorSyncConnection::Redis(
-                match (
-                    connection_timeout,
-                    sentinel.as_ref().unwrap_or(redis_client),
-                ) {
-                    (None, redis_client) => redis_client.get_connection(),
-                    (Some(timeout), redis_client) => {
-                        redis_client.get_connection_with_timeout(timeout)
-                    }
-                }
-                .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?,
+                sentinel
+                    .get_connection()
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
+            ),
+            #[cfg(feature = "redis")]
+            FalkorClientProvider::Redis { client, .. } => FalkorSyncConnection::Redis(
+                client
+                    .get_connection()
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
         })
     }
@@ -45,7 +40,7 @@ impl FalkorClientProvider {
     #[cfg(feature = "redis")]
     pub(crate) fn set_sentinel(
         &mut self,
-        sentinel_client: redis::Client,
+        sentinel_client: redis::sentinel::SentinelClient,
     ) {
         match self {
             FalkorClientProvider::Redis { sentinel, .. } => *sentinel = Some(sentinel_client),

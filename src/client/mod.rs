@@ -27,15 +27,18 @@ impl FalkorClientProvider {
             FalkorClientProvider::Redis {
                 client: redis_client,
                 sentinel,
-            } => match (
-                connection_timeout,
-                sentinel.as_ref().unwrap_or(redis_client),
-            ) {
-                (None, redis_client) => redis_client.get_connection(),
-                (Some(timeout), redis_client) => redis_client.get_connection_with_timeout(timeout),
-            }
-            .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?
-            .into(),
+            } => FalkorSyncConnection::Redis(
+                match (
+                    connection_timeout,
+                    sentinel.as_ref().unwrap_or(redis_client),
+                ) {
+                    (None, redis_client) => redis_client.get_connection(),
+                    (Some(timeout), redis_client) => {
+                        redis_client.get_connection_with_timeout(timeout)
+                    }
+                }
+                .map_err(|err| FalkorDBError::RedisConnectionError(err.to_string()))?,
+            ),
         })
     }
 

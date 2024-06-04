@@ -3,32 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    client::FalkorClientProvider, connection::blocking::FalkorSyncConnection, ConfigValue,
-    FalkorConnectionInfo, FalkorDBError, FalkorValue,
-};
+use crate::{ConfigValue, FalkorDBError, FalkorValue};
 use redis::{FromRedisValue, RedisResult, RedisWrite, ToRedisArgs};
-
-impl From<redis::Connection> for FalkorSyncConnection {
-    fn from(value: redis::Connection) -> Self {
-        Self::Redis(value)
-    }
-}
-
-impl From<redis::ConnectionInfo> for FalkorConnectionInfo {
-    fn from(value: redis::ConnectionInfo) -> Self {
-        Self::Redis(value)
-    }
-}
-
-impl From<redis::Client> for FalkorClientProvider {
-    fn from(value: redis::Client) -> Self {
-        Self::Redis {
-            client: value,
-            sentinel: None,
-        }
-    }
-}
 
 impl ToRedisArgs for ConfigValue {
     fn write_redis_args<W>(

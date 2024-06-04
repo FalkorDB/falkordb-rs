@@ -25,7 +25,7 @@ Or use our [sandbox](https://cloud.falkordb.com/sandbox)
 ### Example
 
 ```rust
-use falkordb_client_rs::FalkorClientBuilder;
+use falkordb::FalkorClientBuilder;
 
 // Connect to FalkorDB
 let client = FalkorClientBuilder::new().with_connection_info("falkor://127.0.0.1:6379".try_into().unwrap()).build().unwrap();

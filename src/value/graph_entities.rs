@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, value::map::parse_map_with_schema, FalkorDBError,
-    FalkorParsable, FalkorResult, FalkorValue, GraphSchema, SchemaType,
+    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, FalkorResult,
+    FalkorValue, GraphSchema, SchemaType,
 };
 use anyhow::Result;
 use std::{
@@ -94,17 +94,10 @@ impl FalkorParsable for Node {
                     .ok_or(FalkorDBError::ParsingCompactIdUnknown)?,
             );
         }
-
-        let parsed_labels = parse_labels(labels, graph_schema, conn, SchemaType::Labels)?;
         Ok(Node {
             entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-            labels: parsed_labels,
-            properties: parse_map_with_schema(
-                properties,
-                graph_schema,
-                conn,
-                SchemaType::Properties,
-            )?,
+            labels: graph_schema.parse_labels_relationships(labels, conn, SchemaType::Labels)?,
+            properties: graph_schema.parse_properties_map(properties, conn)?,
         })
     }
 }
@@ -146,35 +139,7 @@ impl FalkorParsable for Edge {
             relationship_type: relationship.to_string(),
             src_node_id: src_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
             dst_node_id: dst_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-            properties: parse_map_with_schema(
-                properties,
-                graph_schema,
-                conn,
-                SchemaType::Properties,
-            )?,
+            properties: graph_schema.parse_properties_map(properties, conn)?,
         })
     }
-}
-
-pub(crate) fn parse_labels(
-    raw_ids: Vec<FalkorValue>,
-    graph_schema: &mut GraphSchema,
-    conn: &mut BorrowedSyncConnection,
-    schema_type: SchemaType,
-) -> FalkorResult<Vec<String>> {
-    let ids_hashset = raw_ids
-        .iter()
-        .filter_map(|label_id| label_id.to_i64())
-        .collect::<HashSet<i64>>();
-
-    let relevant_ids = match graph_schema.verify_id_set(&ids_hashset, schema_type) {
-        None => graph_schema.refresh(conn, schema_type, Some(&ids_hashset))?,
-        relevant_ids => relevant_ids,
-    }
-    .ok_or(FalkorDBError::ParsingError)?;
-
-    Ok(raw_ids
-        .into_iter()
-        .filter_map(|id| id.to_i64().and_then(|id| relevant_ids.get(&id).cloned()))
-        .collect())
 }

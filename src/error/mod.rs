@@ -40,8 +40,8 @@ pub enum FalkorDBError {
         "An error occurred when dealing with reference counts or RefCells, perhaps mutual borrows?"
     )]
     RefCountBooBoo,
-    /// The execution plan did not adhere to usual strucutre, and could not be parsed
-    #[error("The execution plan did not adhere to usual strucutre, and could not be parsed")]
+    /// The execution plan did not adhere to usual structure, and could not be parsed
+    #[error("The execution plan did not adhere to usual structure, and could not be parsed")]
     CorruptExecutionPlan,
     /// The number of connections for the client has to be between 1 and 32
     #[error("The number of connections for the client has to be between 1 and 32")]
@@ -53,8 +53,8 @@ pub enum FalkorDBError {
     #[error("Attempting to use an empty connection object")]
     EmptyConnection,
     /// General parsing error
-    #[error("General parsing error")]
-    ParsingError,
+    #[error("General parsing error: {0}")]
+    ParsingError(String),
     /// Received malformed header
     #[error("Received malformed header")]
     ParsingHeader,

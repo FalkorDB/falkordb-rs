@@ -35,12 +35,16 @@ impl IntermediateOperation {
         let (records_produced, execution_time) = match args.pop_back() {
             Some(last_arg) if last_arg.contains("Records produced") => (
                 Regex::new(r"Records produced: (\d+)")
-                    .map_err(|_| FalkorDBError::ParsingError)?
+                    .map_err(|err| {
+                        FalkorDBError::ParsingError(format!("Error constructing regex: {err}"))
+                    })?
                     .captures(last_arg.trim())
                     .and_then(|cap| cap.get(1))
                     .and_then(|m| m.as_str().parse().ok()),
                 Regex::new(r"Execution time: (\d+\.\d+) ms")
-                    .map_err(|_| FalkorDBError::ParsingError)?
+                    .map_err(|err| {
+                        FalkorDBError::ParsingError(format!("Error constructing regex: {err}"))
+                    })?
                     .captures(last_arg.trim())
                     .and_then(|cap| cap.get(1))
                     .and_then(|m| m.as_str().parse().ok()),
@@ -91,7 +95,7 @@ pub struct ExecutionPlan {
     operation_tree: Rc<Operation>,
 }
 
-impl<'a> ExecutionPlan {
+impl ExecutionPlan {
     /// Returns the plan as a slice of human-readable strings
     pub fn plan(&self) -> &[String] {
         self.plan.as_slice()

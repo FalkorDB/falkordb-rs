@@ -30,8 +30,8 @@ impl Point {
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         Ok(Point {
-            latitude: lat.to_f64().ok_or(FalkorDBError::ParsingError)?,
-            longitude: long.to_f64().ok_or(FalkorDBError::ParsingError)?,
+            latitude: lat.to_f64().ok_or(FalkorDBError::ParsingF64)?,
+            longitude: long.to_f64().ok_or(FalkorDBError::ParsingF64)?,
         })
     }
 }

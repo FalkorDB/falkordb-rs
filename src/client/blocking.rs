@@ -451,7 +451,9 @@ mod tests {
     #[cfg(feature = "redis")]
     #[test]
     fn test_redis_sentinel_build() {
-        FalkorClientBuilder::new().with_connection_info("falkor://falkordb:123456@singlezonesentinellblb.instance-e0srmv0mc.hc-jx5tis6bc.us-central1.gcp.f2e0a955bb84.cloud:26379".try_into().expect("Could not construct connectioninfo"))
+        FalkorClientBuilder::new()
+            .with_connection_info("falkor://falkordb:123456@singlezonesentinellblb.instance-e0srmv0mc.hc-jx5tis6bc.us-central1.gcp.f2e0a955bb84.cloud:26379"
+                .try_into().expect("Could not construct connectioninfo"))
             .build()
             .expect("Could not create sentinel client");
     }

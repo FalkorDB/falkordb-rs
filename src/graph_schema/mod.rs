@@ -4,13 +4,50 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, graph_schema::utils::get_refresh_command,
-    FalkorDBError, FalkorResult, FalkorValue,
+    connection::blocking::BorrowedSyncConnection, value::utils::parse_type, FalkorDBError,
+    FalkorResult, FalkorValue,
 };
-use std::collections::{HashMap, HashSet};
-use utils::{get_relevant_hashmap, update_map};
+use std::collections::HashMap;
 
-mod utils;
+pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
+    match schema_type {
+        SchemaType::Labels => "DB.LABELS",
+        SchemaType::Properties => "DB.PROPERTYKEYS",
+        SchemaType::Relationships => "DB.RELATIONSHIPTYPES",
+    }
+}
+
+// Intermediate type for map parsing
+pub(crate) struct FKeyTypeVal {
+    pub(crate) key: i64,
+    pub(crate) type_marker: i64,
+    pub(crate) val: FalkorValue,
+}
+
+impl TryFrom<FalkorValue> for FKeyTypeVal {
+    type Error = FalkorDBError;
+
+    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
+        let [key_raw, type_raw, val]: [FalkorValue; 3] = value
+            .into_vec()?
+            .try_into()
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+
+        let key = key_raw.to_i64();
+        let type_marker = type_raw.to_i64();
+
+        match (key, type_marker) {
+            (Some(key), Some(type_marker)) => Ok(FKeyTypeVal {
+                key,
+                type_marker,
+                val,
+            }),
+            (Some(_), None) => Err(FalkorDBError::ParsingTypeMarkerTypeMismatch)?,
+            (None, Some(_)) => Err(FalkorDBError::ParsingKeyIdTypeMismatch)?,
+            _ => Err(FalkorDBError::ParsingKTVTypes)?,
+        }
+    }
+}
 
 /// An enum specifying which schema type we are addressing
 /// When querying using the compact parser, ids are returned for the various schema entities instead of strings
@@ -71,26 +108,11 @@ impl GraphSchema {
         &self.properties
     }
 
-    pub(crate) fn verify_id_set(
-        &self,
-        id_set: &HashSet<i64>,
-        schema_type: SchemaType,
-    ) -> Option<HashMap<i64, String>> {
-        let id_map = match schema_type {
-            SchemaType::Labels => &self.labels,
-            SchemaType::Properties => &self.properties,
-            SchemaType::Relationships => &self.relationships,
-        };
-
-        get_relevant_hashmap(id_set, id_map)
-    }
-
-    pub(crate) fn refresh(
+    fn refresh(
         &mut self,
         conn: &mut BorrowedSyncConnection,
         schema_type: SchemaType,
-        id_hashset: Option<&HashSet<i64>>,
-    ) -> FalkorResult<Option<HashMap<i64, String>>> {
+    ) -> FalkorResult<()> {
         let id_map = match schema_type {
             SchemaType::Labels => &mut self.labels,
             SchemaType::Properties => &mut self.properties,
@@ -109,7 +131,119 @@ impl GraphSchema {
             .try_into()
             .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
-        update_map(id_map, keys, id_hashset)
+        let new_keys = keys
+            .into_vec()?
+            .into_iter()
+            .enumerate()
+            .flat_map(|(idx, item)| {
+                FalkorResult::<(i64, String)>::Ok((
+                    idx as i64,
+                    item.into_vec()?
+                        .into_iter()
+                        .next()
+                        .ok_or(FalkorDBError::ParsingError(
+                            "Expected new label/property to be the first element in an array"
+                                .to_string(),
+                        ))
+                        .and_then(|item| item.into_string())?,
+                ))
+            })
+            .collect::<HashMap<i64, String>>();
+
+        *id_map = new_keys;
+        Ok(())
+    }
+
+    pub(crate) fn parse_labels_relationships(
+        &mut self,
+        raw_ids: Vec<FalkorValue>,
+        conn: &mut BorrowedSyncConnection,
+        schema_type: SchemaType,
+    ) -> FalkorResult<Vec<String>> {
+        let ids_count = raw_ids.len();
+
+        let mut refs_vec = Vec::with_capacity(ids_count);
+        let mut success = true;
+        for raw_id in &raw_ids {
+            let id = raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?;
+            match self.labels.get(&id) {
+                None => {
+                    success = false;
+                    break;
+                }
+                Some(label) => refs_vec.push(label),
+            }
+        }
+
+        if success {
+            // Clone the strings themselves and return the parsed labels
+            return Ok(refs_vec.into_iter().cloned().collect());
+        }
+
+        // Refresh and try again
+        self.refresh(conn, schema_type)?;
+
+        let mut out_vec = Vec::with_capacity(ids_count);
+        for raw_id in raw_ids {
+            out_vec.push(
+                self.labels
+                    .get(&raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?)
+                    .cloned()
+                    .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Labels))?,
+            );
+        }
+
+        Ok(out_vec)
+    }
+
+    pub(crate) fn parse_properties_map(
+        &mut self,
+        value: FalkorValue,
+        conn: &mut BorrowedSyncConnection,
+    ) -> FalkorResult<HashMap<String, FalkorValue>> {
+        let raw_properties: Vec<_> = value
+            .into_vec()?
+            .into_iter()
+            .flat_map(FKeyTypeVal::try_from)
+            .collect();
+        let properties_count = raw_properties.len();
+
+        let mut out_vec = Vec::with_capacity(properties_count);
+        let mut success = true;
+        for fktv in &raw_properties {
+            match self.properties().get(&fktv.key).cloned() {
+                None => {
+                    success = false;
+                    break;
+                }
+                Some(property) => out_vec.push(property),
+            }
+        }
+
+        if success {
+            let mut new_map = HashMap::with_capacity(properties_count);
+            for (property, ktv) in out_vec.into_iter().zip(raw_properties) {
+                new_map.insert(property, parse_type(ktv.type_marker, ktv.val, self, conn)?);
+            }
+
+            return Ok(new_map);
+        }
+
+        // Refresh and try again
+        self.refresh(conn, SchemaType::Properties)?;
+
+        let mut new_map = HashMap::with_capacity(properties_count);
+        for ktv in raw_properties {
+            new_map.insert(
+                self.properties
+                    .get(&ktv.key)
+                    .cloned()
+                    .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Properties))?,
+                parse_type(ktv.type_marker, ktv.val, self, conn)?,
+            );
+        }
+
+        Ok(new_map)
     }
 }
 

@@ -4,8 +4,8 @@
 multiple-versions = "deny"
 skip = ["windows_x86_64_msvc", "windows_x86_64_gnu", "windows_x86_64_gnullvm",
     "windows_i686_msvc", "windows_i686_gnu", "windows_i686_gnullvm",
-    "windows_aarch64_msvc", "windows_aarch64_gnu", "windows_aarch64_gnullvm",
-    "windows-targets", "windows-sys"] # Windows crates are all locked in `mio`, but they are very strictly BC so are ok
+    "windows_aarch64_msvc", "windows_aarch64_gnullvm",
+    "windows-targets"] # Windows crates are all locked in `mio`, but should be fine
 
 [sources]
 unknown-registry = "deny"
@@ -13,8 +13,7 @@ unknown-git = "deny"
 
 [licenses]
 exceptions = [
-    { name = "unicode-ident", allow = ["Unicode-DFS-2016"] }, # One of a kind license, no need to put it in the "allow" list
-    { name = "ring", allow = ["LicenseRef-ring"] } # ring uses a specific BoringSSL license that does not match the standard text so requires allowing the specific hash
+    { name = "unicode-ident", allow = ["Unicode-DFS-2016"] }, # unique license
 ]
 unused-allowed-license = "allow"
 confidence-threshold = 0.93

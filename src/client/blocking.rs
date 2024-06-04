@@ -139,6 +139,7 @@ impl FalkorSyncClient {
         let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(num_connections as usize);
 
         #[cfg(feature = "redis")]
+        #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
             if let Some(sentinel) = get_sentinel_client(&mut client, redis_conn_info)? {
                 client.set_sentinel(sentinel);

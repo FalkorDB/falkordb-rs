@@ -10,14 +10,10 @@ env:
 jobs:
   coverage:
     runs-on: linux-latest
-
-    services:
-      falkordb:
-        image: falkordb/falkordb:edge
-        ports:
-          - 6379:6379
     steps:
       - uses: actions/checkout@v4
+      - name: Populate test graph
+        run: pip install falkordb && ./resources/populate_graph.py
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
       - name: Generate Code Coverage
@@ -28,3 +24,8 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: codecov.json
           fail_ci_if_error: true
+    services:
+      falkordb:
+        image: falkordb/falkordb:edge
+        ports:
+          - 6379:6379

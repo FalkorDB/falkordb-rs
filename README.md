@@ -1,6 +1,7 @@
-[![license](https://img.shields.io/github/license/falkordb/falkordb-client-rs.svg)](https://github.com/falkordb/falkordb-client-rs)
-[![Release](https://img.shields.io/github/release/falkordb/falkordb-client-rs.svg)](https://github.com/falkordb/falkordb-client-rs/releases/latest)
-[![Codecov](https://codecov.io/gh/falkordb/falkordb-client-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/falkordb/falkordb-client-rs)
+[![license](https://img.shields.io/github/license/falkordb/falkordb-rs.svg)](https://github.com/falkordb/falkordb-rs)
+[![Release](https://img.shields.io/github/release/falkordb/falkordb-rs.svg)](https://github.com/falkordb/falkordb-rs/releases/latest)
+[![Codecov](https://codecov.io/gh/falkordb/falkordb-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/falkordb/falkordb-rs)
+[![Docs](https://img.shields.io/docsrs/:crate)](https://docs.rs/crate/falkordb/0.1.0)\
 [![Forum](https://img.shields.io/badge/Forum-falkordb-blue)](https://github.com/orgs/FalkorDB/discussions)
 [![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/ErBEqN9E)
 
@@ -12,6 +13,14 @@ FalkorDB Rust client
 
 ## Usage
 
+### Installation
+
+Just add it to your `Cargo.toml`, like so
+
+```toml
+falkordb = { version = "0.1.0" }
+```
+
 ### Run FalkorDB instance
 
 Docker:
@@ -22,7 +31,7 @@ docker run --rm -p 6379:6379 falkordb/falkordb
 
 Or use our [sandbox](https://cloud.falkordb.com/sandbox)
 
-### Example
+### Code Example
 
 ```rust
 use falkordb::FalkorClientBuilder;

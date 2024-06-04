@@ -15,5 +15,12 @@ jobs:
       - name: Build
         run: cargo build
       - uses: taiki-e/install-action@nextest
+      - name: Populate test graph
+        run: pip install falkordb && ./resources/populate_graph.py
       - name: Test
         run: cargo nextest run --all
+    services:
+      falkordb:
+        image: falkordb/falkordb:edge
+        ports:
+          - 6379:6379

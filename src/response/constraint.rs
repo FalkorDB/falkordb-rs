@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, value::utils::parse_type, EntityType,
-    FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
+    value::utils::parse_type, EntityType, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue,
+    GraphSchema,
 };
 use std::fmt::{Display, Formatter};
 
@@ -137,9 +137,8 @@ impl FalkorParsable for Constraint {
     fn from_falkor_value(
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
-        conn: &mut BorrowedSyncConnection,
     ) -> FalkorResult<Self> {
-        parse_type(6, value, graph_schema, conn)
+        parse_type(6, value, graph_schema)
             .and_then(|parsed| parsed.into_vec().and_then(Constraint::from_value_vec))
     }
 }

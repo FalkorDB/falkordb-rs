@@ -3,10 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, FalkorResult,
-    FalkorValue, GraphSchema, SchemaType,
-};
+use crate::{FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema, SchemaType};
 use anyhow::Result;
 use std::{
     collections::{HashMap, HashSet},
@@ -78,7 +75,6 @@ impl FalkorParsable for Node {
     fn from_falkor_value(
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
-        conn: &mut BorrowedSyncConnection,
     ) -> FalkorResult<Self> {
         let [entity_id, labels, properties]: [FalkorValue; 3] = value
             .into_vec()?
@@ -96,8 +92,8 @@ impl FalkorParsable for Node {
         }
         Ok(Node {
             entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-            labels: graph_schema.parse_labels_relationships(labels, conn, SchemaType::Labels)?,
-            properties: graph_schema.parse_properties_map(properties, conn)?,
+            labels: graph_schema.parse_labels_relationships(labels, SchemaType::Labels)?,
+            properties: graph_schema.parse_properties_map(properties)?,
         })
     }
 }
@@ -121,7 +117,6 @@ impl FalkorParsable for Edge {
     fn from_falkor_value(
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
-        conn: &mut BorrowedSyncConnection,
     ) -> FalkorResult<Self> {
         let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] = value
             .into_vec()?
@@ -139,7 +134,7 @@ impl FalkorParsable for Edge {
             relationship_type: relationship.to_string(),
             src_node_id: src_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
             dst_node_id: dst_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-            properties: graph_schema.parse_properties_map(properties, conn)?,
+            properties: graph_schema.parse_properties_map(properties)?,
         })
     }
 }

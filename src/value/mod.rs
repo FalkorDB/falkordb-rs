@@ -3,10 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, FalkorResult,
-    GraphSchema,
-};
+use crate::{FalkorDBError, FalkorParsable, FalkorResult, GraphSchema};
 use graph_entities::{Edge, Node};
 use path::Path;
 use point::Point;
@@ -315,7 +312,6 @@ impl FalkorParsable for FalkorValue {
     fn from_falkor_value(
         value: FalkorValue,
         _: &mut GraphSchema,
-        _: &mut BorrowedSyncConnection,
     ) -> FalkorResult<Self> {
         Ok(value)
     }

@@ -3,10 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    connection::blocking::BorrowedSyncConnection, FalkorDBError, FalkorParsable, FalkorValue,
-    GraphSchema, Point,
-};
+use crate::{FalkorDBError, FalkorParsable, FalkorValue, GraphSchema, Point};
 use anyhow::Result;
 
 pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValue), FalkorDBError> {
@@ -23,7 +20,6 @@ pub(crate) fn parse_type(
     type_marker: i64,
     val: FalkorValue,
     graph_schema: &mut GraphSchema,
-    conn: &mut BorrowedSyncConnection,
 ) -> Result<FalkorValue, FalkorDBError> {
     let res = match type_marker {
         1 => FalkorValue::None,
@@ -37,16 +33,16 @@ pub(crate) fn parse_type(
             let mut out_vec = Vec::with_capacity(val_vec.len());
             for item in val_vec {
                 let (type_marker, val) = type_val_from_value(item)?;
-                out_vec.push(parse_type(type_marker, val, graph_schema, conn)?)
+                out_vec.push(parse_type(type_marker, val, graph_schema)?)
             }
 
             out_vec
         }),
         // The following types are sent as an array and require specific parsing functions
-        7 => FalkorValue::Edge(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
-        8 => FalkorValue::Node(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
-        9 => FalkorValue::Path(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
-        10 => FalkorValue::Map(FalkorParsable::from_falkor_value(val, graph_schema, conn)?),
+        7 => FalkorValue::Edge(FalkorParsable::from_falkor_value(val, graph_schema)?),
+        8 => FalkorValue::Node(FalkorParsable::from_falkor_value(val, graph_schema)?),
+        9 => FalkorValue::Path(FalkorParsable::from_falkor_value(val, graph_schema)?),
+        10 => FalkorValue::Map(FalkorParsable::from_falkor_value(val, graph_schema)?),
         11 => FalkorValue::Point(Point::parse(val)?),
         _ => Err(FalkorDBError::ParsingUnknownType)?,
     };
@@ -71,7 +67,7 @@ mod tests {
 
     #[test]
     fn test_parse_edge() {
-        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
+        let mut graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             7,
@@ -94,7 +90,6 @@ mod tests {
                 ]),
             ]),
             &mut graph.graph_schema,
-            &mut conn,
         );
         assert!(res.is_ok());
 
@@ -118,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_parse_node() {
-        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
+        let mut graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             8,
@@ -144,7 +139,6 @@ mod tests {
                 ]),
             ]),
             &mut graph.graph_schema,
-            &mut conn,
         );
         assert!(res.is_ok());
 
@@ -169,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_parse_path() {
-        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
+        let mut graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             9,
@@ -209,7 +203,6 @@ mod tests {
                 ]),
             ]),
             &mut graph.graph_schema,
-            &mut conn,
         );
         assert!(res.is_ok());
 
@@ -236,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_parse_map() {
-        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
+        let mut graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             10,
@@ -252,7 +245,6 @@ mod tests {
                 FalkorValue::Array(vec![FalkorValue::I64(4), FalkorValue::Bool(true)]),
             ]),
             &mut graph.graph_schema,
-            &mut conn,
         );
         assert!(res.is_ok());
 
@@ -272,13 +264,12 @@ mod tests {
 
     #[test]
     fn test_parse_point() {
-        let (mut graph, mut conn) = open_readonly_graph_with_modified_schema();
+        let mut graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             11,
             FalkorValue::Array(vec![FalkorValue::F64(102.0), FalkorValue::F64(15.2)]),
             &mut graph.graph_schema,
-            &mut conn,
         );
         assert!(res.is_ok());
 

@@ -4,8 +4,7 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, value::utils::parse_type, FalkorDBError,
-    FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
+    value::utils::parse_type, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
 };
 use std::collections::HashMap;
 
@@ -13,7 +12,6 @@ impl FalkorParsable for HashMap<String, FalkorValue> {
     fn from_falkor_value(
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
-        conn: &mut BorrowedSyncConnection,
     ) -> FalkorResult<Self> {
         let val_vec = value.into_vec()?;
         if val_vec.len() % 2 != 0 {
@@ -39,7 +37,6 @@ impl FalkorParsable for HashMap<String, FalkorValue> {
                         type_marker.to_i64().ok_or(FalkorDBError::ParsingKTVTypes)?,
                         val,
                         graph_schema,
-                        conn,
                     )?,
                 ))
             })

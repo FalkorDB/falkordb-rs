@@ -3,8 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::blocking::BorrowedSyncConnection;
 use crate::{
+    connection::blocking::BorrowedSyncConnection,
     parser::utils::{parse_header, parse_result_set},
     Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParsable, FalkorResponse,
     FalkorResult, FalkorValue, ResultSet, SyncGraph,
@@ -129,7 +129,7 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
                     .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
                 FalkorResponse::from_response_with_headers(
-                    parse_result_set(data, &mut self.graph.graph_schema, &mut conn)?,
+                    parse_result_set(data, &mut self.graph.graph_schema)?,
                     parse_header(header)?,
                     stats,
                 )
@@ -296,7 +296,7 @@ impl<'a> ProcedureBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
                 .into_vec()?
                 .into_iter()
                 .flat_map(|index| {
-                    FalkorIndex::from_falkor_value(index, &mut self.graph.graph_schema, &mut conn)
+                    FalkorIndex::from_falkor_value(index, &mut self.graph.graph_schema)
                 })
                 .collect(),
             stats,
@@ -321,9 +321,7 @@ impl<'a> ProcedureBuilder<'a, FalkorResponse<Vec<Constraint>>> {
             query_res
                 .into_vec()?
                 .into_iter()
-                .flat_map(|item| {
-                    Constraint::from_falkor_value(item, &mut self.graph.graph_schema, &mut conn)
-                })
+                .flat_map(|item| Constraint::from_falkor_value(item, &mut self.graph.graph_schema))
                 .collect(),
             stats,
         )

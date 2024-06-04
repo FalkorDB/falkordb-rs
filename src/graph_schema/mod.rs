@@ -4,10 +4,11 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, value::utils::parse_type, FalkorDBError,
-    FalkorResult, FalkorValue,
+    client::blocking::FalkorSyncClientInner, value::utils::parse_type, FalkorDBError, FalkorResult,
+    FalkorValue,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
     match schema_type {
@@ -65,8 +66,9 @@ pub enum SchemaType {
 pub(crate) type IdMap = HashMap<i64, String>;
 
 /// A struct containing the various schema maps, allowing conversions between ids and their string representations.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone)]
 pub struct GraphSchema {
+    client: Arc<FalkorSyncClientInner>,
     graph_name: String,
     version: i64,
     labels: IdMap,
@@ -75,10 +77,17 @@ pub struct GraphSchema {
 }
 
 impl GraphSchema {
-    pub(crate) fn new<T: ToString>(graph_name: T) -> Self {
+    pub(crate) fn new<T: ToString>(
+        graph_name: T,
+        client: Arc<FalkorSyncClientInner>,
+    ) -> Self {
         Self {
+            client,
             graph_name: graph_name.to_string(),
-            ..Default::default()
+            version: 0,
+            labels: IdMap::new(),
+            properties: IdMap::new(),
+            relationships: IdMap::new(),
         }
     }
 
@@ -110,7 +119,6 @@ impl GraphSchema {
 
     fn refresh(
         &mut self,
-        conn: &mut BorrowedSyncConnection,
         schema_type: SchemaType,
     ) -> FalkorResult<()> {
         let id_map = match schema_type {
@@ -120,7 +128,9 @@ impl GraphSchema {
         };
 
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
-        let [_, keys, _]: [FalkorValue; 3] = conn
+        let [_, keys, _]: [FalkorValue; 3] = self
+            .client
+            .borrow_connection()?
             .execute_command(
                 Some(self.graph_name.as_str()),
                 "GRAPH.QUERY",
@@ -157,7 +167,6 @@ impl GraphSchema {
     pub(crate) fn parse_labels_relationships(
         &mut self,
         raw_ids: Vec<FalkorValue>,
-        conn: &mut BorrowedSyncConnection,
         schema_type: SchemaType,
     ) -> FalkorResult<Vec<String>> {
         let ids_count = raw_ids.len();
@@ -181,7 +190,7 @@ impl GraphSchema {
         }
 
         // Refresh and try again
-        self.refresh(conn, schema_type)?;
+        self.refresh(schema_type)?;
 
         let mut out_vec = Vec::with_capacity(ids_count);
         for raw_id in raw_ids {
@@ -199,7 +208,6 @@ impl GraphSchema {
     pub(crate) fn parse_properties_map(
         &mut self,
         value: FalkorValue,
-        conn: &mut BorrowedSyncConnection,
     ) -> FalkorResult<HashMap<String, FalkorValue>> {
         let raw_properties: Vec<_> = value
             .into_vec()?
@@ -223,14 +231,14 @@ impl GraphSchema {
         if success {
             let mut new_map = HashMap::with_capacity(properties_count);
             for (property, ktv) in out_vec.into_iter().zip(raw_properties) {
-                new_map.insert(property, parse_type(ktv.type_marker, ktv.val, self, conn)?);
+                new_map.insert(property, parse_type(ktv.type_marker, ktv.val, self)?);
             }
 
             return Ok(new_map);
         }
 
         // Refresh and try again
-        self.refresh(conn, SchemaType::Properties)?;
+        self.refresh(SchemaType::Properties)?;
 
         let mut new_map = HashMap::with_capacity(properties_count);
         for ktv in raw_properties {
@@ -239,7 +247,7 @@ impl GraphSchema {
                     .get(&ktv.key)
                     .cloned()
                     .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Properties))?,
-                parse_type(ktv.type_marker, ktv.val, self, conn)?,
+                parse_type(ktv.type_marker, ktv.val, self)?,
             );
         }
 
@@ -249,17 +257,12 @@ impl GraphSchema {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::*;
     use crate::{test_utils::create_test_client, SyncGraph};
     use std::collections::HashMap;
 
-    pub(crate) fn open_readonly_graph_with_modified_schema() -> (SyncGraph, BorrowedSyncConnection)
-    {
+    pub(crate) fn open_readonly_graph_with_modified_schema() -> SyncGraph {
         let client = create_test_client();
         let mut graph = client.select_graph("imdb");
-        let conn = client
-            .borrow_connection()
-            .expect("Could not borrow_connection");
 
         graph.graph_schema.properties = HashMap::from([
             (0, "age".to_string()),
@@ -274,6 +277,6 @@ pub(crate) mod tests {
         graph.graph_schema.relationships =
             HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
 
-        (graph, conn)
+        graph
     }
 }

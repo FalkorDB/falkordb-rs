@@ -3,7 +3,6 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::connection::blocking::BorrowedSyncConnection;
 use crate::{
     value::utils::{parse_type, parse_vec, type_val_from_value},
     EntityType, FalkorDBError, FalkorParsable, FalkorValue, GraphSchema,
@@ -147,14 +146,13 @@ impl FalkorParsable for FalkorIndex {
     fn from_falkor_value(
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
-        conn: &mut BorrowedSyncConnection,
     ) -> Result<Self, FalkorDBError> {
         let semi_parsed_items = value
             .into_vec()?
             .into_iter()
             .flat_map(|item| {
                 let (type_marker, val) = type_val_from_value(item)?;
-                parse_type(type_marker, val, graph_schema, conn)
+                parse_type(type_marker, val, graph_schema)
             })
             .collect::<Vec<_>>();
 

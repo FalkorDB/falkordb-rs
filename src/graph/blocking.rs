@@ -28,9 +28,9 @@ impl SyncGraph {
         graph_name: T,
     ) -> Self {
         Self {
-            client,
             graph_name: graph_name.to_string(),
-            graph_schema: GraphSchema::new(graph_name), // Required for requesting refreshes
+            graph_schema: GraphSchema::new(graph_name, client.clone()), // Required for requesting refreshes
+            client,
         }
     }
 

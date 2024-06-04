@@ -18,10 +18,8 @@ jobs:
   check-deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: EmbarkStudios/cargo-deny-action@v1
       - uses: actions/checkout@v4
-      - name: Check Deny
-        run: cargo deny --log-level info check
+      - uses: EmbarkStudios/cargo-deny-action@v1
 
   check-doc:
     runs-on: ubuntu-latest

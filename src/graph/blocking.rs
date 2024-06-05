@@ -163,7 +163,7 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`ProcedureQueryBuilder`] object
-    pub fn call_proecdure_ro<'a, P>(
+    pub fn call_procedure_ro<'a, P>(
         &'a mut self,
         procedure_name: &'a str,
     ) -> ProcedureQueryBuilder<P> {

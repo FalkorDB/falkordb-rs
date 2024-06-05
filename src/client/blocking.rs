@@ -114,7 +114,15 @@ pub(crate) fn get_sentinel_client(
             vec![connection_info.to_owned()],
             name.to_string(),
             Some(redis::sentinel::SentinelNodeConnectionInfo {
-                tls_mode: None,
+                tls_mode: match connection_info.addr {
+                    redis::ConnectionAddr::TcpTls { insecure: true, .. } => {
+                        Some(redis::TlsMode::Insecure)
+                    }
+                    redis::ConnectionAddr::TcpTls {
+                        insecure: false, ..
+                    } => Some(redis::TlsMode::Secure),
+                    _ => None,
+                },
                 redis_connection_info: Some(connection_info.redis.clone()),
             }),
             redis::sentinel::SentinelServerType::Master,

@@ -72,7 +72,7 @@ impl TryFrom<&str> for FalkorConnectionInfo {
         );
 
         match scheme.as_str() {
-            "redis" | "rediss" => {
+            "redis" | "rediss" | "redis+unix" => {
                 #[cfg(feature = "redis")]
                 return Ok(FalkorConnectionInfo::Redis(
                     redis::IntoConnectionInfo::into_connection_info(serialized)

@@ -22,10 +22,12 @@ impl TryFrom<FalkorValue> for SlowlogEntry {
     type Error = FalkorDBError;
 
     fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
-        let [timestamp, command, arguments, time_taken] = value
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+        let [timestamp, command, arguments, time_taken] =
+            value.into_vec()?.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 4 elements of slowlog entry".to_string(),
+                )
+            })?;
 
         Ok(Self {
             timestamp: timestamp

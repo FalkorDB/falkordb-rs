@@ -15,21 +15,25 @@ impl FalkorParsable for HashMap<String, FalkorValue> {
     ) -> FalkorResult<Self> {
         let val_vec = value.into_vec()?;
         if val_vec.len() % 2 != 0 {
-            Err(FalkorDBError::ParsingFMap)?;
+            Err(FalkorDBError::ParsingFMap(
+                "Map should have an even amount of elements".to_string(),
+            ))?;
         }
 
         Ok(val_vec
             .chunks_exact(2)
             .flat_map(|pair| {
-                let [key, val]: [FalkorValue; 2] = pair
-                    .to_vec()
-                    .try_into()
-                    .map_err(|_| FalkorDBError::ParsingFMap)?;
+                let [key, val]: [FalkorValue; 2] = pair.to_vec().try_into().map_err(|_| {
+                    FalkorDBError::ParsingFMap(
+                        "The vec returned from using chunks_exact(2) should be comprised of 2 elements"
+                            .to_string(),
+                    )
+                })?;
 
                 let [type_marker, val]: [FalkorValue; 2] = val
                     .into_vec()?
                     .try_into()
-                    .map_err(|_| FalkorDBError::ParsingFMap)?;
+                    .map_err(|_| FalkorDBError::ParsingFMap("The value in a map should be comprised of a type marker and value".to_string()))?;
 
                 FalkorResult::<_>::Ok((
                     key.into_string()?,

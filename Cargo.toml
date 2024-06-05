@@ -14,7 +14,6 @@ regex = { version = "1.10.4", default-features = false, features = ["std", "perf
 strum = { version = "0.26.2", default-features = false, features = ["std", "derive"] }
 thiserror = "1.0.61"
 tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"] }
-url-parse = "1.0.8"
 
 [features]
 default = ["redis"]

@@ -30,8 +30,8 @@ pub enum FalkorDBError {
     #[error("An error occurred while parsing the Redis response: {0}")]
     RedisParsingError(String),
     /// The provided connection info is invalid.
-    #[error("The provided connection info is invalid")]
-    InvalidConnectionInfo,
+    #[error("Could not parse the provided connection info: {0}")]
+    InvalidConnectionInfo(String),
     /// The connection returned invalid data for this command.
     #[error("The connection returned invalid data for this command")]
     InvalidDataReceived,
@@ -56,8 +56,8 @@ pub enum FalkorDBError {
     #[error("General parsing error: {0}")]
     ParsingError(String),
     /// Received malformed header.
-    #[error("Received malformed header")]
-    ParsingHeader,
+    #[error("Could not parse header: {0}")]
+    ParsingHeader(String),
     /// The id received for this label/property/relationship was unknown.
     #[error("The id received for this label/property/relationship was unknown")]
     ParsingCompactIdUnknown,
@@ -92,8 +92,8 @@ pub enum FalkorDBError {
     #[error("Element was not of type FPath")]
     ParsingFPath,
     /// Element was not of type FMap.
-    #[error("Element was not of type FMap")]
-    ParsingFMap,
+    #[error("Element was not of type FMap: {0}")]
+    ParsingFMap(String),
     /// Element was not of type FPoint.
     #[error("Element was not of type FPoint")]
     ParsingFPoint,
@@ -107,8 +107,8 @@ pub enum FalkorDBError {
     #[error("Both key id and type marker were not of type i64")]
     ParsingKTVTypes,
     /// Attempting to parse an FArray into a struct, but the array doesn't have the expected element count.
-    #[error("Attempting to parse an FArray into a struct, but the array doesn't have the expected element count")]
-    ParsingArrayToStructElementCount,
+    #[error("Attempting to parse an FArray into a struct, but the array doesn't have the expected element count: {0}")]
+    ParsingArrayToStructElementCount(String),
     /// Invalid enum string variant was encountered when parsing
     #[error("Invalid enum string variant was encountered when parsing: {0}")]
     InvalidEnumType(String),

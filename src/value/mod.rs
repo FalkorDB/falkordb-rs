@@ -159,7 +159,9 @@ impl TryFrom<FalkorValue> for HashMap<String, FalkorValue> {
     fn try_from(value: FalkorValue) -> FalkorResult<Self> {
         match value {
             FalkorValue::Map(map) => Ok(map),
-            _ => Err(FalkorDBError::ParsingFMap),
+            _ => Err(FalkorDBError::ParsingFMap(
+                "Attempting to get a non-map element as a map".to_string(),
+            )),
         }
     }
 }

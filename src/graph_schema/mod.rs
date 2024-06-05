@@ -29,10 +29,12 @@ impl TryFrom<FalkorValue> for FKeyTypeVal {
     type Error = FalkorDBError;
 
     fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        let [key_raw, type_raw, val]: [FalkorValue; 3] = value
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+        let [key_raw, type_raw, val]: [FalkorValue; 3] =
+            value.into_vec()?.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 3 elements for key-type-value property".to_string(),
+                )
+            })?;
 
         let key = key_raw.to_i64();
         let type_marker = type_raw.to_i64();
@@ -139,7 +141,12 @@ impl GraphSchema {
             )?
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+            .map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 3 types for header-resultset-stats response from refresh query"
+                        .to_string(),
+                )
+            })?;
 
         let new_keys = keys
             .into_vec()?
@@ -164,38 +171,52 @@ impl GraphSchema {
         Ok(())
     }
 
-    pub(crate) fn parse_labels_relationships(
+    pub(crate) fn parse_id_vec(
         &mut self,
         raw_ids: Vec<FalkorValue>,
         schema_type: SchemaType,
     ) -> FalkorResult<Vec<String>> {
         let ids_count = raw_ids.len();
 
-        let mut refs_vec = Vec::with_capacity(ids_count);
-        let mut success = true;
-        for raw_id in &raw_ids {
-            let id = raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?;
-            match self.labels.get(&id) {
-                None => {
-                    success = false;
-                    break;
-                }
-                Some(label) => refs_vec.push(label),
-            }
-        }
+        {
+            let ids_map = match schema_type {
+                SchemaType::Labels => &self.labels,
+                SchemaType::Properties => &self.properties,
+                SchemaType::Relationships => &self.relationships,
+            };
 
-        if success {
-            // Clone the strings themselves and return the parsed labels
-            return Ok(refs_vec.into_iter().cloned().collect());
+            let mut refs_vec = Vec::with_capacity(ids_count);
+            let mut success = true;
+            for raw_id in &raw_ids {
+                let id = raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?;
+                match ids_map.get(&id) {
+                    None => {
+                        success = false;
+                        break;
+                    }
+                    Some(label) => refs_vec.push(label),
+                }
+            }
+
+            if success {
+                // Clone the strings themselves and return the parsed labels
+                return Ok(refs_vec.into_iter().cloned().collect());
+            }
         }
 
         // Refresh and try again
         self.refresh(schema_type)?;
 
+        let ids_map = match schema_type {
+            SchemaType::Labels => &self.labels,
+            SchemaType::Properties => &self.properties,
+            SchemaType::Relationships => &self.relationships,
+        };
+
         let mut out_vec = Vec::with_capacity(ids_count);
         for raw_id in raw_ids {
             out_vec.push(
-                self.labels
+                ids_map
                     .get(&raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?)
                     .cloned()
                     .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Labels))?,
@@ -209,49 +230,28 @@ impl GraphSchema {
         &mut self,
         value: FalkorValue,
     ) -> FalkorResult<HashMap<String, FalkorValue>> {
-        let raw_properties: Vec<_> = value
-            .into_vec()?
-            .into_iter()
-            .flat_map(FKeyTypeVal::try_from)
-            .collect();
-        let properties_count = raw_properties.len();
+        let raw_properties_vec = value.into_vec()?;
+        let mut out_map = HashMap::with_capacity(raw_properties_vec.len());
 
-        let mut out_vec = Vec::with_capacity(properties_count);
-        let mut success = true;
-        for fktv in &raw_properties {
-            match self.properties().get(&fktv.key).cloned() {
+        for item in raw_properties_vec {
+            let ktv = FKeyTypeVal::try_from(item)?;
+
+            let key = match self.properties.get(&ktv.key).cloned() {
                 None => {
-                    success = false;
-                    break;
+                    // Refresh, but this time when we try again, throw an error on failure
+                    self.refresh(SchemaType::Properties)?;
+                    self.properties
+                        .get(&ktv.key)
+                        .cloned()
+                        .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Properties))?
                 }
-                Some(property) => out_vec.push(property),
-            }
+                Some(key) => key,
+            };
+
+            out_map.insert(key, parse_type(ktv.type_marker, ktv.val, self)?);
         }
 
-        if success {
-            let mut new_map = HashMap::with_capacity(properties_count);
-            for (property, ktv) in out_vec.into_iter().zip(raw_properties) {
-                new_map.insert(property, parse_type(ktv.type_marker, ktv.val, self)?);
-            }
-
-            return Ok(new_map);
-        }
-
-        // Refresh and try again
-        self.refresh(SchemaType::Properties)?;
-
-        let mut new_map = HashMap::with_capacity(properties_count);
-        for ktv in raw_properties {
-            new_map.insert(
-                self.properties
-                    .get(&ktv.key)
-                    .cloned()
-                    .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Properties))?,
-                parse_type(ktv.type_marker, ktv.val, self)?,
-            );
-        }
-
-        Ok(new_map)
+        Ok(out_map)
     }
 }
 

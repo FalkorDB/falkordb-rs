@@ -33,10 +33,12 @@ impl FalkorParsable for Node {
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [entity_id, labels, properties]: [FalkorValue; 3] = value
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+        let [entity_id, labels, properties]: [FalkorValue; 3] =
+            value.into_vec()?.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 3 elements in node object".to_string(),
+                )
+            })?;
         let labels = labels.into_vec()?;
 
         let mut ids_hashset = HashSet::with_capacity(labels.len());
@@ -49,7 +51,7 @@ impl FalkorParsable for Node {
         }
         Ok(Node {
             entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-            labels: graph_schema.parse_labels_relationships(labels, SchemaType::Labels)?,
+            labels: graph_schema.parse_id_vec(labels, SchemaType::Labels)?,
             properties: graph_schema.parse_properties_map(properties)?,
         })
     }
@@ -75,10 +77,12 @@ impl FalkorParsable for Edge {
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] = value
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+        let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] =
+            value.into_vec()?.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 5 elements in edge object".to_string(),
+                )
+            })?;
 
         let relation = relations.to_i64().ok_or(FalkorDBError::ParsingI64)?;
         let relationship = graph_schema

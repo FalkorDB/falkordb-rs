@@ -19,10 +19,12 @@ impl FalkorParsable for Path {
         value: FalkorValue,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [nodes, relationships]: [FalkorValue; 2] = value
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+        let [nodes, relationships]: [FalkorValue; 2] =
+            value.into_vec()?.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 2 elements for path".to_string(),
+                )
+            })?;
 
         Ok(Self {
             nodes: nodes

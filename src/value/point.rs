@@ -24,10 +24,11 @@ impl Point {
     /// # Returns
     /// Self, if successful
     pub fn parse(value: FalkorValue) -> FalkorResult<Point> {
-        let [lat, long]: [FalkorValue; 2] = value
-            .into_vec()?
-            .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+        let [lat, long]: [FalkorValue; 2] = value.into_vec()?.try_into().map_err(|_| {
+            FalkorDBError::ParsingArrayToStructElementCount(
+                "Expected exactly 2 element in point - latitude and longitude".to_string(),
+            )
+        })?;
 
         Ok(Point {
             latitude: lat.to_f64().ok_or(FalkorDBError::ParsingF64)?,

@@ -9,26 +9,25 @@ use crate::{
     Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParsable, FalkorResponse,
     FalkorResult, FalkorValue, ResultSet, SyncGraph,
 };
-use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
+use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
-pub(crate) fn construct_query<Q: ToString, T: ToString, Z: ToString>(
+pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
     query_str: Q,
     params: Option<&HashMap<T, Z>>,
 ) -> String {
-    format!(
-        "{}{}",
-        params
-            .and_then(|params| params.is_empty().not().then(|| params
-                .iter()
-                .fold("CYPHER ".to_string(), |acc, (key, val)| {
-                    format!("{}{}={} ", acc, key.to_string(), val.to_string())
-                })))
-            .unwrap_or_default(),
-        query_str.to_string()
-    )
+    let params_str = params
+        .map(|p| {
+            p.iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .map(|params_str| format!("CYPHER {params_str} "))
+        .unwrap_or_default();
+    format!("{params_str}{query_str}")
 }
 
-/// A Builder-pattern struct that allows creating and performing queries on a graph
+/// A Builder-pattern struct that allows creating and executing queries on a graph
 pub struct QueryBuilder<'a, Output> {
     _unused: PhantomData<Output>,
     graph: &'a mut SyncGraph,
@@ -82,7 +81,7 @@ impl<'a, Output> QueryBuilder<'a, Output> {
         }
     }
 
-    fn perform_common(
+    fn common_execute_steps(
         &mut self,
         conn: &mut BorrowedSyncConnection,
     ) -> FalkorResult<FalkorValue> {
@@ -102,34 +101,39 @@ impl<'a, Output> QueryBuilder<'a, Output> {
 }
 
 impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
-    /// Perform the query, retuning a [`FalkorResponse`], with a [`ResultSet`] as its `data` member
-    pub fn perform(mut self) -> FalkorResult<FalkorResponse<ResultSet>> {
+    /// Executes the query, retuning a [`FalkorResponse`], with a [`ResultSet`] as its `data` member
+    pub fn execute(mut self) -> FalkorResult<FalkorResponse<ResultSet>> {
         let mut conn = self
             .graph
             .client
             .borrow_connection(self.graph.client.clone())?;
-        let res = self.perform_common(&mut conn)?.into_vec()?;
+        let res = self.common_execute_steps(&mut conn)?.into_vec()?;
 
         match res.len() {
             1 => {
-                let stats = res
-                    .into_iter()
-                    .next()
-                    .ok_or(FalkorDBError::ParsingArrayToStructElementCount)?;
+                let stats = res.into_iter().next().ok_or(
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "One element exist but using next() failed".to_string(),
+                    ),
+                )?;
 
                 FalkorResponse::from_response(None, vec![], stats)
             }
             2 => {
-                let [header, stats]: [FalkorValue; 2] = res
-                    .try_into()
-                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+                let [header, stats]: [FalkorValue; 2] = res.try_into().map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "Two elements exist but couldn't be parsed to an array".to_string(),
+                    )
+                })?;
 
                 FalkorResponse::from_response(Some(header), vec![], stats)
             }
             3 => {
-                let [header, data, stats]: [FalkorValue; 3] = res
-                    .try_into()
-                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+                let [header, data, stats]: [FalkorValue; 3] = res.try_into().map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "3 elements exist but couldn't be parsed to an array".to_string(),
+                    )
+                })?;
 
                 FalkorResponse::from_response_with_headers(
                     parse_result_set(data, &mut self.graph.graph_schema)?,
@@ -137,29 +141,39 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
                     stats,
                 )
             }
-            _ => Err(FalkorDBError::ParsingArrayToStructElementCount)?,
+            _ => Err(FalkorDBError::ParsingArrayToStructElementCount(
+                "Invalid number of elements returned from query".to_string(),
+            ))?,
         }
     }
 }
 
 impl<'a> QueryBuilder<'a, ExecutionPlan> {
-    /// Perform the query, returning an [`ExecutionPlan`] from the data returned
-    pub fn perform(mut self) -> FalkorResult<ExecutionPlan> {
+    /// Executes the query, returning an [`ExecutionPlan`] from the data returned
+    pub fn execute(mut self) -> FalkorResult<ExecutionPlan> {
         let mut conn = self
             .graph
             .client
             .borrow_connection(self.graph.client.clone())?;
-        let res = self.perform_common(&mut conn)?;
+        let res = self.common_execute_steps(&mut conn)?;
 
         ExecutionPlan::try_from(res)
     }
 }
 
-pub(crate) fn generate_procedure_call<P: ToString, T: Display, Z: Display>(
+pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
     procedure: P,
     args: Option<&[T]>,
     yields: Option<&[Z]>,
 ) -> (String, Option<HashMap<String, String>>) {
+    let args_str = args
+        .unwrap_or_default()
+        .iter()
+        .map(|e| format!("${}", e))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut query_string = format!("CALL {}({})", procedure, args_str);
+
     let params = args.map(|args| {
         args.iter()
             .enumerate()
@@ -169,18 +183,7 @@ pub(crate) fn generate_procedure_call<P: ToString, T: Display, Z: Display>(
             })
     });
 
-    let mut query_string = format!(
-        "CALL {}({})",
-        procedure.to_string(),
-        args.unwrap_or_default()
-            .iter()
-            .map(|element| format!("${}", element))
-            .collect::<Vec<_>>()
-            .join(",")
-    );
-
-    let yields = yields.unwrap_or_default();
-    if !yields.is_empty() {
+    if let Some(yields) = yields {
         query_string += format!(
             " YIELD {}",
             yields
@@ -195,7 +198,7 @@ pub(crate) fn generate_procedure_call<P: ToString, T: Display, Z: Display>(
     (query_string, params)
 }
 
-/// A Builder-pattern struct that allows creating and performing procedure call on a graph
+/// A Builder-pattern struct that allows creating and executing procedure call on a graph
 pub struct ProcedureQueryBuilder<'a, Output> {
     _unused: PhantomData<Output>,
     graph: &'a mut SyncGraph,
@@ -262,7 +265,7 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
         }
     }
 
-    fn perform_common(
+    fn common_execute_steps(
         &mut self,
         conn: &mut BorrowedSyncConnection,
     ) -> FalkorResult<FalkorValue> {
@@ -285,19 +288,23 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
 }
 
 impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
-    /// Performs the procedure call and return a [`FalkorResponse`] type containing a result set of [`FalkorIndex`]s
+    /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`FalkorIndex`]s
     /// This functions consumes self
-    pub fn perform(mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
+    pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
         let mut conn = self
             .graph
             .client
             .borrow_connection(self.graph.client.clone())?;
 
         let [header, indices, stats]: [FalkorValue; 3] = self
-            .perform_common(&mut conn)?
+            .common_execute_steps(&mut conn)?
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+            .map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 3 elements in query response".to_string(),
+                )
+            })?;
 
         FalkorResponse::from_response(
             Some(header),
@@ -314,19 +321,23 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
 }
 
 impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
-    /// Performs the procedure call and return a [`FalkorResponse`] type containing a result set of [`Constraint`]s
+    /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`Constraint`]s
     /// This functions consumes self
-    pub fn perform(mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
+    pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
         let mut conn = self
             .graph
             .client
             .borrow_connection(self.graph.client.clone())?;
 
         let [header, query_res, stats]: [FalkorValue; 3] = self
-            .perform_common(&mut conn)?
+            .common_execute_steps(&mut conn)?
             .into_vec()?
             .try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+            .map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 3 elements in query response".to_string(),
+                )
+            })?;
 
         FalkorResponse::from_response(
             Some(header),

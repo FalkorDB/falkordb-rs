@@ -24,7 +24,7 @@ impl FalkorConnectionInfo {
                 full_url = full_url.replace("falkors://", "rediss://");
             }
             redis::IntoConnectionInfo::into_connection_info(full_url)
-                .map_err(|_| FalkorDBError::InvalidConnectionInfo)?
+                .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?
         }))
     }
 
@@ -44,44 +44,24 @@ impl TryFrom<&str> for FalkorConnectionInfo {
     type Error = FalkorDBError;
 
     fn try_from(value: &str) -> FalkorResult<Self> {
-        let url = url_parse::core::Parser::new(None)
-            .parse(value)
-            .map_err(|_| FalkorDBError::InvalidConnectionInfo)?;
+        let (url, url_schema) = regex::Regex::new(r"^(?P<schema>[a-zA-Z][a-zA-Z0-9+\-.]*):")
+            .map_err(|err| FalkorDBError::ParsingError(format!("Error constructing regex: {err}")))?
+            .captures(value)
+            .and_then(|cap| cap.get(1))
+            .map(|m| (value.to_string(), m.as_str()))
+            .unwrap_or((format!("falkor://{value}"), "falkor"));
 
-        // The url_parse serializer seems ***ed up for some reason
-        let scheme = url.scheme.unwrap_or("falkor".to_string());
-        let user_pass_string = match url.user_pass {
-            (Some(pass), None) => format!("{}@", pass), // Password-only authentication is allowed in legacy auth
-            (Some(user), Some(pass)) => format!("{user}:{pass}@"),
-            _ => "".to_string(),
-        };
-        let subdomain = url
-            .subdomain
-            .map(|subdomain| format!("{subdomain}."))
-            .unwrap_or_default();
-
-        let domain = url.domain.unwrap_or("127.0.0.1".to_string());
-        let top_level_domain = url
-            .top_level_domain
-            .map(|top_level_domain| format!(".{top_level_domain}"))
-            .unwrap_or_default();
-        let port = url.port.unwrap_or(6379); // Might need to change in accordance with the default fallback
-        let serialized = format!(
-            "{}://{}{}{}{}:{}",
-            scheme, user_pass_string, subdomain, domain, top_level_domain, port
-        );
-
-        match scheme.as_str() {
-            "redis" | "rediss" | "redis+unix" => {
+        match url_schema {
+            "redis" | "rediss" => {
                 #[cfg(feature = "redis")]
                 return Ok(FalkorConnectionInfo::Redis(
-                    redis::IntoConnectionInfo::into_connection_info(serialized)
-                        .map_err(|_| FalkorDBError::InvalidConnectionInfo)?,
+                    redis::IntoConnectionInfo::into_connection_info(value)
+                        .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?,
                 ));
                 #[cfg(not(feature = "redis"))]
                 return Err(FalkorDBError::UnavailableProvider);
             }
-            _ => FalkorConnectionInfo::fallback_provider(serialized),
+            _ => FalkorConnectionInfo::fallback_provider(url),
         }
     }
 }

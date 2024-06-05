@@ -41,27 +41,6 @@ impl FalkorSyncClientInner {
     pub(crate) fn get_connection(&self) -> FalkorResult<FalkorSyncConnection> {
         self._inner.lock().get_connection()
     }
-
-    pub(crate) fn refresh_connection_pool(&self) -> FalkorResult<()> {
-        let conn_pool_size = self.connection_pool_size as usize;
-        let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(conn_pool_size);
-
-        // One already exists
-        for _ in 0..conn_pool_size {
-            let new_conn = self
-                .get_connection()
-                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-
-            connection_pool_tx
-                .send(new_conn)
-                .map_err(|_| FalkorDBError::EmptyConnection)?;
-        }
-
-        *(self.connection_pool_tx.write()) = connection_pool_tx;
-        *(self.connection_pool_rx.lock()) = connection_pool_rx;
-
-        Ok(())
-    }
 }
 
 #[cfg(feature = "redis")]
@@ -183,12 +162,6 @@ impl FalkorSyncClient {
         self.inner.borrow_connection(self.inner.clone())
     }
 
-    /// Attempts to create a new connection pool, if successful, drops all connections in the pool and set the new ones.
-    /// Any borrowed connections may or may not be viable, as this does not assume the reason for the refresh, but they are considered stale, and will not be returned to the pool.
-    pub fn refresh_connection_pool(&self) -> FalkorResult<()> {
-        self.inner.refresh_connection_pool()
-    }
-
     /// Return a list of graphs currently residing in the database
     ///
     /// # Returns
@@ -217,9 +190,11 @@ impl FalkorSyncClient {
             .into_vec()?;
 
         if config.len() == 2 {
-            let [key, val]: [FalkorValue; 2] = config
-                .try_into()
-                .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+            let [key, val]: [FalkorValue; 2] = config.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 2 elements for configuration option".to_string(),
+                )
+            })?;
 
             return Ok(HashMap::from([(
                 key.into_string()?,
@@ -230,10 +205,11 @@ impl FalkorSyncClient {
         Ok(config
             .into_iter()
             .flat_map(|config| {
-                let [key, val]: [FalkorValue; 2] = config
-                    .into_vec()?
-                    .try_into()
-                    .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+                let [key, val]: [FalkorValue; 2] = config.into_vec()?.try_into().map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "Expected exactly 2 elements for configuration option".to_string(),
+                    )
+                })?;
 
                 Result::<_, FalkorDBError>::Ok((key.into_string()?, ConfigValue::try_from(val)?))
             })
@@ -359,7 +335,7 @@ mod tests {
 
         let res = graph
             .query("MATCH (a:actor) return a")
-            .perform()
+            .execute()
             .expect("Could not get actors from unmodified graph");
 
         assert_eq!(res.data.len(), 1317);
@@ -384,12 +360,12 @@ mod tests {
             graph
                 .inner
                 .query("MATCH (a:actor) RETURN a")
-                .perform()
+                .execute()
                 .expect("Could not get actors from unmodified graph")
                 .data,
             original_graph
                 .query("MATCH (a:actor) RETURN a")
-                .perform()
+                .execute()
                 .expect("Could not get actors from unmodified graph")
                 .data
         )

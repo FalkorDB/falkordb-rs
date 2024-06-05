@@ -9,7 +9,7 @@ env:
 
 jobs:
   # Ensure formatting
-  check-fmt:
+  fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v1
 
   # Make sure the release's build works
-  build-linux:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +42,7 @@ jobs:
           - 6379:6379
 
   # Ensure no clippy warnings
-  check-clippy:
+  clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,7 +60,10 @@ jobs:
   # Actually publish to crates.io
   crates-io:
     needs:
-      - build-linux
+      - fmt
+      - deny
+      - build
+      - clippy
       - doc
     runs-on: ubuntu-latest
     steps:

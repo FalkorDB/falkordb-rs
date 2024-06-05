@@ -6,10 +6,11 @@
 use crate::{FalkorDBError, FalkorParsable, FalkorValue, GraphSchema, Point};
 
 pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValue), FalkorDBError> {
-    let [type_marker, val]: [FalkorValue; 2] = value
-        .into_vec()?
-        .try_into()
-        .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+    let [type_marker, val]: [FalkorValue; 2] = value.into_vec()?.try_into().map_err(|_| {
+        FalkorDBError::ParsingArrayToStructElementCount(
+            "Expected exactly 2 elements: type marker, and value".to_string(),
+        )
+    })?;
     let type_marker = type_marker.to_i64().ok_or(FalkorDBError::ParsingI64)?;
 
     Ok((type_marker, val))

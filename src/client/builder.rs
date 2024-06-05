@@ -51,12 +51,12 @@ impl<const R: char> FalkorClientBuilder<R> {
         }
     }
 
-    fn get_client<T: TryInto<FalkorConnectionInfo>>(
+    fn get_client<E: ToString, T: TryInto<FalkorConnectionInfo, Error = E>>(
         connection_info: T
     ) -> FalkorResult<FalkorClientProvider> {
         let connection_info = connection_info
             .try_into()
-            .map_err(|_| FalkorDBError::InvalidConnectionInfo)?;
+            .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
         Ok(match connection_info {
             #[cfg(feature = "redis")]
             FalkorConnectionInfo::Redis(connection_info) => FalkorClientProvider::Redis {

@@ -175,7 +175,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`Vec`] of [`FalkorIndex`]
     pub fn list_indices(&mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
-        ProcedureQueryBuilder::<FalkorResponse<Vec<FalkorIndex>>>::new(self, "DB.INDEXES").perform()
+        ProcedureQueryBuilder::<FalkorResponse<Vec<FalkorIndex>>>::new(self, "DB.INDEXES").execute()
     }
 
     /// Creates a new index in the graph, for the selected entity type(Node/Edge), selected label, and properties
@@ -233,7 +233,7 @@ impl SyncGraph {
             )
             .as_str(),
         )
-        .perform()
+        .execute()
     }
 
     /// Drop an existing index, by specifying its type, entity, label and specific properties
@@ -272,7 +272,7 @@ impl SyncGraph {
             )
             .as_str(),
         )
-        .perform()
+        .execute()
     }
 
     /// Calls the DB.CONSTRAINTS procedure on the graph, returning an array of the graph's constraints
@@ -281,7 +281,7 @@ impl SyncGraph {
     /// A tuple where the first element is a [`Vec`] of [`Constraint`]s, and the second element is a [`Vec`] of stats as [`String`]s
     pub fn list_constraints(&mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
         ProcedureQueryBuilder::<FalkorResponse<Vec<Constraint>>>::new(self, "DB.CONSTRAINTS")
-            .perform()
+            .execute()
     }
 
     /// Creates a new constraint for this graph, making the provided properties mandatory
@@ -504,12 +504,12 @@ mod tests {
         graph
             .inner
             .query("UNWIND range(0, 500) AS x RETURN x")
-            .perform()
+            .execute()
             .expect("Could not generate the fast query");
         graph
             .inner
             .query("UNWIND range(0, 100000) AS x RETURN x")
-            .perform()
+            .execute()
             .expect("Could not generate the slow query");
 
         let slowlog = graph
@@ -542,7 +542,7 @@ mod tests {
     fn test_explain() {
         let mut graph = open_test_graph("test_explain");
 
-        let execution_plan = graph.inner.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").perform().expect("Could not create execution plan");
+        let execution_plan = graph.inner.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().expect("Could not create execution plan");
         assert_eq!(execution_plan.plan().len(), 7);
         assert!(execution_plan.operations().get("Aggregate").is_some());
         assert_eq!(execution_plan.operations()["Aggregate"].len(), 1);
@@ -560,7 +560,7 @@ mod tests {
         let execution_plan = graph
             .inner
             .profile("UNWIND range(0, 1000) AS x RETURN x")
-            .perform()
+            .execute()
             .expect("Could not generate the query");
 
         assert_eq!(execution_plan.plan().len(), 3);

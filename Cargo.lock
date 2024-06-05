@@ -130,7 +130,6 @@ dependencies = [
  "strum",
  "thiserror",
  "tracing",
- "url-parse",
 ]
 
 [[package]]
@@ -828,15 +827,6 @@ dependencies = [
  "form_urlencoded",
  "idna",
  "percent-encoding",
-]
-
-[[package]]
-name = "url-parse"
-version = "1.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "865ece61c15cae30f180636ae551daa25c318c181938da07f3ab3ed06750bdd2"
-dependencies = [
- "regex",
 ]
 
 [[package]]

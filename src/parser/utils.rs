@@ -21,15 +21,19 @@ pub(crate) fn parse_header(header: FalkorValue) -> Result<Vec<String>, FalkorDBE
             .flat_map(|item| {
                 let item_vec = item.into_vec()?;
                 if item_vec.len() == 2 {
-                    let [_, key]: [FalkorValue; 2] = item_vec
-                        .try_into()
-                        .map_err(|_| FalkorDBError::ParsingHeader)?;
+                    let [_, key]: [FalkorValue; 2] = item_vec.try_into().map_err(|_| {
+                        FalkorDBError::ParsingHeader(
+                            "Header was not in (type: header) form".to_string(),
+                        )
+                    })?;
                     key
                 } else {
                     item_vec
                         .into_iter()
                         .next()
-                        .ok_or(FalkorDBError::ParsingHeader)?
+                        .ok_or(FalkorDBError::ParsingHeader(
+                            "Expected at least one item in header vector".to_string(),
+                        ))?
                 }
                 .into_string()
             })

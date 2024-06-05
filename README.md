@@ -29,21 +29,19 @@ Docker:
 docker run --rm -p 6379:6379 falkordb/falkordb
 ```
 
-Or use our [sandbox](https://cloud.falkordb.com/sandbox)
-
 ### Code Example
 
 ```rust
 use falkordb::FalkorClientBuilder;
 
 // Connect to FalkorDB
-let client = FalkorClientBuilder::new().with_connection_info("falkor://127.0.0.1:6379".try_into().unwrap()).build().unwrap();
+let client = FalkorClientBuilder::new().with_connection_info("falkor://127.0.0.1:6379".try_into().expect("Failed constructing connection info")).build().expect("Failed to build client");
 
 // Select the social graph
 let mut graph = client.select_graph("social");
 
 // Create 100 nodes and return a handful
-let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10").with_timeout(5000).perform().unwrap().data;
+let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10").with_timeout(5000).execute().expect("Failed performing query").data;
 for n in nodes {
 println!("{:?}", n[0]);
 }

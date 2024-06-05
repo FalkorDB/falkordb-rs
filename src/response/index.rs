@@ -73,7 +73,7 @@ pub struct FalkorIndex {
 
 impl FalkorIndex {
     fn from_raw_values(items: Vec<FalkorValue>) -> Result<Self, FalkorDBError> {
-        let [label, fields, field_types, language, stopwords, entity_type, status, info]: [FalkorValue; 8] = items.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
+        let [label, fields, field_types, language, stopwords, entity_type, status, info]: [FalkorValue; 8] = items.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 8 elements in index object".to_string()))?;
 
         Ok(Self {
             entity_type: entity_type.into_string()?.as_str().try_into()?,

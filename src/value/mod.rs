@@ -318,3 +318,130 @@ impl FalkorParsable for FalkorValue {
         Ok(value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::f64::consts::PI;
+
+    #[test]
+    fn test_as_vec() {
+        let vec_val = FalkorValue::Array(vec![FalkorValue::I64(1), FalkorValue::I64(2)]);
+        assert_eq!(vec_val.as_vec().unwrap().len(), 2);
+
+        let non_vec_val = FalkorValue::I64(42);
+        assert!(non_vec_val.as_vec().is_none());
+    }
+
+    #[test]
+    fn test_as_string() {
+        let string_val = FalkorValue::String(String::from("hello"));
+        assert_eq!(string_val.as_string().unwrap(), "hello");
+
+        let non_string_val = FalkorValue::I64(42);
+        assert!(non_string_val.as_string().is_none());
+    }
+
+    #[test]
+    fn test_as_edge() {
+        let edge = Edge::default(); // Assuming Edge::new() is a valid constructor
+        let edge_val = FalkorValue::Edge(edge);
+        assert!(edge_val.as_edge().is_some());
+
+        let non_edge_val = FalkorValue::I64(42);
+        assert!(non_edge_val.as_edge().is_none());
+    }
+
+    #[test]
+    fn test_as_node() {
+        let node = Node::default(); // Assuming Node::new() is a valid constructor
+        let node_val = FalkorValue::Node(node);
+        assert!(node_val.as_node().is_some());
+
+        let non_node_val = FalkorValue::I64(42);
+        assert!(non_node_val.as_node().is_none());
+    }
+
+    #[test]
+    fn test_as_path() {
+        let path = Path::default(); // Assuming Path::new() is a valid constructor
+        let path_val = FalkorValue::Path(path);
+        assert!(path_val.as_path().is_some());
+
+        let non_path_val = FalkorValue::I64(42);
+        assert!(non_path_val.as_path().is_none());
+    }
+
+    #[test]
+    fn test_as_map() {
+        let mut map = HashMap::new();
+        map.insert(String::from("key"), FalkorValue::I64(42));
+        let map_val = FalkorValue::Map(map);
+        assert!(map_val.as_map().is_some());
+
+        let non_map_val = FalkorValue::I64(42);
+        assert!(non_map_val.as_map().is_none());
+    }
+
+    #[test]
+    fn test_as_point() {
+        let point = Point::default(); // Assuming Point::new() is a valid constructor
+        let point_val = FalkorValue::Point(point);
+        assert!(point_val.as_point().is_some());
+
+        let non_point_val = FalkorValue::I64(42);
+        assert!(non_point_val.as_point().is_none());
+    }
+
+    #[test]
+    fn test_to_i64() {
+        let int_val = FalkorValue::I64(42);
+        assert_eq!(int_val.to_i64().unwrap(), 42);
+
+        let non_int_val = FalkorValue::String(String::from("hello"));
+        assert!(non_int_val.to_i64().is_none());
+    }
+
+    #[test]
+    fn test_to_bool() {
+        let bool_val = FalkorValue::Bool(true);
+        assert!(bool_val.to_bool().unwrap());
+
+        let bool_str_val = FalkorValue::String(String::from("false"));
+        assert!(!bool_str_val.to_bool().unwrap());
+
+        let invalid_bool_str_val = FalkorValue::String(String::from("notabool"));
+        assert!(invalid_bool_str_val.to_bool().is_none());
+
+        let non_bool_val = FalkorValue::I64(42);
+        assert!(non_bool_val.to_bool().is_none());
+    }
+
+    #[test]
+    fn test_to_f64() {
+        let float_val = FalkorValue::F64(PI);
+        assert_eq!(float_val.to_f64().unwrap(), PI);
+
+        let non_float_val = FalkorValue::String(String::from("hello"));
+        assert!(non_float_val.to_f64().is_none());
+    }
+
+    #[test]
+    fn test_into_vec() {
+        let vec_val = FalkorValue::Array(vec![FalkorValue::I64(1), FalkorValue::I64(2)]);
+        assert_eq!(vec_val.into_vec().unwrap().len(), 2);
+
+        let non_vec_val = FalkorValue::I64(42);
+        assert!(non_vec_val.into_vec().is_err());
+    }
+
+    #[test]
+    fn test_into_string() {
+        let string_val = FalkorValue::String(String::from("hello"));
+        assert_eq!(string_val.into_string().unwrap(), "hello");
+
+        let non_string_val = FalkorValue::I64(42);
+        assert!(non_string_val.into_string().is_err());
+    }
+}

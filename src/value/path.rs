@@ -6,7 +6,7 @@
 use crate::{Edge, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema, Node};
 
 /// Represents a path between two nodes, contains all the nodes, and the relationships between them along the path
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Path {
     /// The nodes along the path, ordered
     pub nodes: Vec<Node>,

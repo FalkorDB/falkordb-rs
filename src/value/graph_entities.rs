@@ -18,7 +18,7 @@ pub enum EntityType {
 }
 
 /// A node in the graph, containing a unique id, various labels describing it, and its own property.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Node {
     /// The internal entity ID
     pub entity_id: i64,

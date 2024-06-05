@@ -6,7 +6,7 @@
 use crate::{FalkorDBError, FalkorResult, FalkorValue};
 
 /// A point in the world.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Point {
     /// The latitude coordinate
     pub latitude: f64,

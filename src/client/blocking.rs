@@ -284,8 +284,9 @@ impl FalkorSyncClient {
 }
 
 #[cfg(test)]
-pub(crate) fn create_empty_client() -> Arc<FalkorSyncClientInner> {
+pub(crate) fn create_empty_inner_client() -> Arc<FalkorSyncClientInner> {
     let (tx, rx) = mpsc::sync_channel(1);
+    tx.send(FalkorSyncConnection::None).ok();
     Arc::new(FalkorSyncClientInner {
         _inner: Mutex::new(FalkorClientProvider::None),
         connection_pool_size: 0,

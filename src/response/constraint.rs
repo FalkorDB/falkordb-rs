@@ -47,9 +47,15 @@ pub struct Constraint {
     pub status: ConstraintStatus,
 }
 
-impl Constraint {
-    fn from_value_vec(value_vec: Vec<FalkorValue>) -> FalkorResult<Self> {
-        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = value_vec.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object".to_string()))?;
+impl FalkorParsable for Constraint {
+    fn from_falkor_value(
+        value: FalkorValue,
+        graph_schema: &mut GraphSchema,
+    ) -> FalkorResult<Self> {
+        let value_vec = parse_type(6, value, graph_schema)?.into_vec()?;
+
+        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = value_vec.try_into()
+            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object".to_string()))?;
 
         Ok(Constraint {
             constraint_type: constraint_type_raw.into_string()?.as_str().try_into()?,
@@ -62,15 +68,5 @@ impl Constraint {
             entity_type: entity_type_raw.into_string()?.as_str().try_into()?,
             status: status_raw.into_string()?.as_str().try_into()?,
         })
-    }
-}
-
-impl FalkorParsable for Constraint {
-    fn from_falkor_value(
-        value: FalkorValue,
-        graph_schema: &mut GraphSchema,
-    ) -> FalkorResult<Self> {
-        parse_type(6, value, graph_schema)
-            .and_then(|parsed| parsed.into_vec().and_then(Constraint::from_value_vec))
     }
 }

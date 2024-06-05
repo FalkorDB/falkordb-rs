@@ -19,6 +19,7 @@ pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
 }
 
 // Intermediate type for map parsing
+#[derive(Debug)]
 pub(crate) struct FKeyTypeVal {
     pub(crate) key: i64,
     pub(crate) type_marker: i64,
@@ -119,6 +120,18 @@ impl GraphSchema {
         &self.properties
     }
 
+    #[inline]
+    fn get_id_map_by_schema_type(
+        &self,
+        schema_type: SchemaType,
+    ) -> &IdMap {
+        match schema_type {
+            SchemaType::Labels => &self.labels,
+            SchemaType::Properties => &self.properties,
+            SchemaType::Relationships => &self.relationships,
+        }
+    }
+
     fn refresh(
         &mut self,
         schema_type: SchemaType,
@@ -176,50 +189,24 @@ impl GraphSchema {
         raw_ids: Vec<FalkorValue>,
         schema_type: SchemaType,
     ) -> FalkorResult<Vec<String>> {
-        let ids_count = raw_ids.len();
-
-        {
-            let ids_map = match schema_type {
-                SchemaType::Labels => &self.labels,
-                SchemaType::Properties => &self.properties,
-                SchemaType::Relationships => &self.relationships,
-            };
-
-            let mut refs_vec = Vec::with_capacity(ids_count);
-            let mut success = true;
-            for raw_id in &raw_ids {
-                let id = raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?;
-                match ids_map.get(&id) {
-                    None => {
-                        success = false;
-                        break;
-                    }
-                    Some(label) => refs_vec.push(label),
-                }
-            }
-
-            if success {
-                // Clone the strings themselves and return the parsed labels
-                return Ok(refs_vec.into_iter().cloned().collect());
-            }
-        }
-
-        // Refresh and try again
-        self.refresh(schema_type)?;
-
-        let ids_map = match schema_type {
-            SchemaType::Labels => &self.labels,
-            SchemaType::Properties => &self.properties,
-            SchemaType::Relationships => &self.relationships,
-        };
-
-        let mut out_vec = Vec::with_capacity(ids_count);
+        let mut out_vec = Vec::with_capacity(raw_ids.len());
         for raw_id in raw_ids {
+            let id = raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?;
             out_vec.push(
-                ids_map
-                    .get(&raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?)
+                match self
+                    .get_id_map_by_schema_type(schema_type)
+                    .get(&id)
                     .cloned()
-                    .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Labels))?,
+                {
+                    None => {
+                        self.refresh(schema_type)?;
+                        self.get_id_map_by_schema_type(schema_type)
+                            .get(&id)
+                            .cloned()
+                            .ok_or(FalkorDBError::MissingSchemaId(schema_type))?
+                    }
+                    Some(exists) => exists,
+                },
             );
         }
 
@@ -235,7 +222,6 @@ impl GraphSchema {
 
         for item in raw_properties_vec {
             let ktv = FKeyTypeVal::try_from(item)?;
-
             let key = match self.properties.get(&ktv.key).cloned() {
                 None => {
                     // Refresh, but this time when we try again, throw an error on failure
@@ -257,6 +243,8 @@ impl GraphSchema {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::*;
+    use crate::client::blocking::create_empty_inner_client;
     use crate::{test_utils::create_test_client, SyncGraph};
     use std::collections::HashMap;
 
@@ -278,5 +266,62 @@ pub(crate) mod tests {
             HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
 
         graph
+    }
+
+    #[test]
+    fn test_label_not_exists() {
+        let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
+        let input_value = FalkorValue::Array(vec![FalkorValue::Array(vec![
+            FalkorValue::I64(1),
+            FalkorValue::I64(2),
+            FalkorValue::String("test".to_string()),
+        ])]);
+
+        let result = parser.parse_properties_map(input_value);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_properties_map() {
+        let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
+        parser.properties = HashMap::from([
+            (1, "property1".to_string()),
+            (2, "property2".to_string()),
+            (3, "property3".to_string()),
+        ]);
+
+        // Create a FalkorValue to test
+        let input_value = FalkorValue::Array(vec![
+            FalkorValue::Array(vec![
+                FalkorValue::I64(1),
+                FalkorValue::I64(2),
+                FalkorValue::String("test".to_string()),
+            ]),
+            FalkorValue::Array(vec![
+                FalkorValue::I64(2),
+                FalkorValue::I64(3),
+                FalkorValue::I64(42),
+            ]),
+            FalkorValue::Array(vec![
+                FalkorValue::I64(3),
+                FalkorValue::I64(4),
+                FalkorValue::Bool(true),
+            ]),
+        ]);
+
+        // Expected output
+        let mut expected_map = HashMap::new();
+        expected_map.insert(
+            "property1".to_string(),
+            FalkorValue::String("test".to_string()),
+        );
+        expected_map.insert("property2".to_string(), FalkorValue::I64(42));
+        expected_map.insert("property3".to_string(), FalkorValue::Bool(true));
+
+        // Parse the properties map
+        let result = parser.parse_properties_map(input_value);
+
+        // Check if the result matches the expected output
+        assert_eq!(result.unwrap(), expected_map);
     }
 }

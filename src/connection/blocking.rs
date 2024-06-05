@@ -10,6 +10,8 @@ use std::{
 };
 
 pub(crate) enum FalkorSyncConnection {
+    #[allow(unused)]
+    None,
     #[cfg(feature = "redis")]
     Redis(redis::Connection),
 }
@@ -47,6 +49,7 @@ impl FalkorSyncConnection {
                 )
                 .map_err(|err| FalkorDBError::RedisParsingError(err.to_string()))
             }
+            FalkorSyncConnection::None => Ok(FalkorValue::None),
         }
     }
 

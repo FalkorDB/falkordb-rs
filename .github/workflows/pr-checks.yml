@@ -1,0 +1,53 @@
+name: Mandatory Pull Request Checks
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Clippy
+        run: cargo clippy --all
+
+  check-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v1
+
+  check-doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Doc
+        run: cargo doc --all
+
+  check-fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Rustfmt
+        run: cargo fmt --all --check
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build
+      - uses: taiki-e/install-action@nextest
+      - name: Populate test graph
+        run: pip install falkordb && ./resources/populate_graph.py
+      - name: Test
+        run: cargo nextest run --all
+    services:
+      falkordb:
+        image: falkordb/falkordb:edge
+        ports:
+          - 6379:6379

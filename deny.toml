@@ -1,0 +1,40 @@
+[advisories]
+
+[bans]
+multiple-versions = "deny"
+skip = ["windows_x86_64_msvc", "windows_x86_64_gnu", "windows_x86_64_gnullvm",
+    "windows_i686_msvc", "windows_i686_gnu", "windows_i686_gnullvm",
+    "windows_aarch64_msvc", "windows_aarch64_gnullvm",
+    "windows-targets"] # Windows crates are all locked in `mio`, but should be fine
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[licenses]
+exceptions = [
+    { name = "unicode-ident", allow = ["Unicode-DFS-2016"] }, # unique license
+    { name = "ring", allow = ["LicenseRef-ring"] } # ring uses a specific BoringSSL license that does not match the standard text so requires allowing the specific hash
+]
+unused-allowed-license = "allow"
+confidence-threshold = 0.93
+allow = [
+    "SSPL-1.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "MIT",
+    "GPL-3.0",
+    "LGPL-3.0",
+    "AGPL-3.0",
+    "ISC"
+]
+
+
+[[licenses.clarify]]
+name = "ring"
+expression = "LicenseRef-ring"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 },
+]

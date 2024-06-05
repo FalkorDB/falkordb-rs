@@ -121,4 +121,34 @@ mod tests {
         assert!(res.is_ok());
         assert_eq!(res.unwrap().address(), "127.0.0.1:1234".to_string());
     }
+
+    #[test]
+    fn test_invalid_scheme() {
+        let result = FalkorConnectionInfo::try_from("http://127.0.0.1:6379");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_missing_host() {
+        let result = FalkorConnectionInfo::try_from("redis://:6379");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_port() {
+        let result = FalkorConnectionInfo::try_from("redis://127.0.0.1:abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unsupported_feature() {
+        let result = FalkorConnectionInfo::try_from("custom://127.0.0.1:6379");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_missing_scheme() {
+        let result = FalkorConnectionInfo::try_from("127.0.0.1:6379");
+        assert!(result.is_ok());
+    }
 }

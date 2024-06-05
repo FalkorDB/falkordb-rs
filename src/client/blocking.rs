@@ -284,6 +284,17 @@ impl FalkorSyncClient {
 }
 
 #[cfg(test)]
+pub(crate) fn create_empty_client() -> Arc<FalkorSyncClientInner> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    Arc::new(FalkorSyncClientInner {
+        _inner: Mutex::new(FalkorClientProvider::None),
+        connection_pool_size: 0,
+        connection_pool_tx: RwLock::new(tx),
+        connection_pool_rx: Mutex::new(rx),
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{

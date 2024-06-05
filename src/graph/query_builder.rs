@@ -9,6 +9,7 @@ use crate::{
     Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParsable, FalkorResponse,
     FalkorResult, FalkorValue, ResultSet, SyncGraph,
 };
+use std::ops::Not;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
 pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
@@ -22,7 +23,12 @@ pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
                 .collect::<Vec<_>>()
                 .join(" ")
         })
-        .map(|params_str| format!("CYPHER {params_str} "))
+        .and_then(|params_str| {
+            params_str
+                .is_empty()
+                .not()
+                .then_some(format!("CYPHER {params_str} "))
+        })
         .unwrap_or_default();
     format!("{params_str}{query_str}")
 }
@@ -356,30 +362,117 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_procedure_call() {
-        let (query, params) = generate_procedure_call(
-            "DB.CONSTRAINTS",
-            Some(&["Hello", "World"]),
-            Some(&["Foo", "Bar"]),
-        );
+    fn test_generate_procedure_call_no_args_no_yields() {
+        let procedure = "my_procedure";
+        let args: Option<&[String]> = None;
+        let yields: Option<&[String]> = None;
 
-        assert_eq!(query, "CALL DB.CONSTRAINTS($Hello,$World) YIELD Foo,Bar");
-        assert!(params.is_some());
+        let expected_query = "CALL my_procedure()".to_string();
+        let expected_params: Option<HashMap<String, String>> = None;
 
-        let params = params.unwrap();
-        assert_eq!(params["param0"], "Hello");
-        assert_eq!(params["param1"], "World");
+        let result = generate_procedure_call(procedure, args, yields);
+
+        assert_eq!(result, (expected_query, expected_params));
     }
 
     #[test]
-    fn test_construct_query() {
-        let query = construct_query("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100",
-                                    Some(&HashMap::from([("Foo", "Bar"), ("Bizz", "Bazz")])));
-        assert!(query.starts_with("CYPHER "));
-        assert!(query.ends_with(" MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100"));
+    fn test_generate_procedure_call_with_args_no_yields() {
+        let procedure = "my_procedure";
+        let args = &["arg1".to_string(), "arg2".to_string()];
+        let yields: Option<&[String]> = None;
 
-        // Order not guaranteed
-        assert!(query.contains(" Foo=Bar "));
-        assert!(query.contains(" Bizz=Bazz "));
+        let expected_query = "CALL my_procedure($arg1,$arg2)".to_string();
+        let mut expected_params = HashMap::new();
+        expected_params.insert("param0".to_string(), "arg1".to_string());
+        expected_params.insert("param1".to_string(), "arg2".to_string());
+
+        let result = generate_procedure_call(procedure, Some(args), yields);
+
+        assert_eq!(result, (expected_query, Some(expected_params)));
+    }
+
+    #[test]
+    fn test_generate_procedure_call_no_args_with_yields() {
+        let procedure = "my_procedure";
+        let args: Option<&[String]> = None;
+        let yields = &["yield1".to_string(), "yield2".to_string()];
+
+        let expected_query = "CALL my_procedure() YIELD yield1,yield2".to_string();
+        let expected_params: Option<HashMap<String, String>> = None;
+
+        let result = generate_procedure_call(procedure, args, Some(yields));
+
+        assert_eq!(result, (expected_query, expected_params));
+    }
+
+    #[test]
+    fn test_generate_procedure_call_with_args_and_yields() {
+        let procedure = "my_procedure";
+        let args = &["arg1".to_string(), "arg2".to_string()];
+        let yields = &["yield1".to_string(), "yield2".to_string()];
+
+        let expected_query = "CALL my_procedure($arg1,$arg2) YIELD yield1,yield2".to_string();
+        let mut expected_params = HashMap::new();
+        expected_params.insert("param0".to_string(), "arg1".to_string());
+        expected_params.insert("param1".to_string(), "arg2".to_string());
+
+        let result = generate_procedure_call(procedure, Some(args), Some(yields));
+
+        assert_eq!(result, (expected_query, Some(expected_params)));
+    }
+
+    #[test]
+    fn test_construct_query_with_params() {
+        let query_str = "MATCH (n) RETURN n";
+        let mut params = HashMap::new();
+        params.insert("name", "Alice");
+        params.insert("age", "30");
+
+        let result = construct_query(query_str, Some(&params));
+        assert!(result.starts_with("CYPHER "));
+        assert!(result.ends_with(" RETURN n"));
+        assert!(result.contains(" name=Alice "));
+        assert!(result.contains(" age=30 "));
+    }
+
+    #[test]
+    fn test_construct_query_without_params() {
+        let query_str = "MATCH (n) RETURN n";
+        let result = construct_query::<&str, &str, &str>(query_str, None);
+        assert_eq!(result, "MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn test_construct_query_empty_params() {
+        let query_str = "MATCH (n) RETURN n";
+        let params: HashMap<&str, &str> = HashMap::new();
+        let result = construct_query(query_str, Some(&params));
+        assert_eq!(result, "MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn test_construct_query_single_param() {
+        let query_str = "MATCH (n) RETURN n";
+        let mut params = HashMap::new();
+        params.insert("name", "Alice");
+
+        let result = construct_query(query_str, Some(&params));
+        assert_eq!(result, "CYPHER name=Alice MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn test_construct_query_multiple_params() {
+        let query_str = "MATCH (n) RETURN n";
+        let mut params = HashMap::new();
+        params.insert("name", "Alice");
+        params.insert("age", "30");
+        params.insert("city", "Wonderland");
+
+        let result = construct_query(query_str, Some(&params));
+        assert!(result.starts_with("CYPHER "));
+        assert!(result.contains(" name=Alice "));
+        assert!(result.contains(" age=30 "));
+        assert!(result.contains(" city=Wonderland "));
+        assert!(result.ends_with("MATCH (n) RETURN n"));
     }
 }

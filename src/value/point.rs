@@ -36,3 +36,76 @@ impl Point {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_valid_point() {
+        let value = FalkorValue::Array(vec![FalkorValue::F64(45.0), FalkorValue::F64(90.0)]);
+        let result = Point::parse(value);
+        assert!(result.is_ok());
+        let point = result.unwrap();
+        assert_eq!(point.latitude, 45.0);
+        assert_eq!(point.longitude, 90.0);
+    }
+
+    #[test]
+    fn test_parse_invalid_point_missing_elements() {
+        let value = FalkorValue::Array(vec![FalkorValue::F64(45.0)]);
+        let result = Point::parse(value);
+        assert!(result.is_err());
+        match result {
+            Err(FalkorDBError::ParsingArrayToStructElementCount(msg)) => {
+                assert_eq!(
+                    msg,
+                    "Expected exactly 2 element in point - latitude and longitude".to_string()
+                );
+            }
+            _ => panic!("Expected ParsingArrayToStructElementCount error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_point_extra_elements() {
+        let value = FalkorValue::Array(vec![
+            FalkorValue::F64(45.0),
+            FalkorValue::F64(90.0),
+            FalkorValue::F64(30.0),
+        ]);
+        let result = Point::parse(value);
+        assert!(result.is_err());
+        match result {
+            Err(FalkorDBError::ParsingArrayToStructElementCount(msg)) => {
+                assert_eq!(
+                    msg,
+                    "Expected exactly 2 element in point - latitude and longitude".to_string()
+                );
+            }
+            _ => panic!("Expected ParsingArrayToStructElementCount error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_point_non_f64_elements() {
+        let value = FalkorValue::Array(vec![
+            FalkorValue::String("45.0".to_string()),
+            FalkorValue::String("90.0".to_string()),
+        ]);
+        let result = Point::parse(value);
+        assert!(result.is_err());
+        match result {
+            Err(FalkorDBError::ParsingF64) => {}
+            _ => panic!("Expected ParsingF64 error"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_point_not_an_array() {
+        let value = FalkorValue::String("not an array".to_string());
+        let result = Point::parse(value);
+        assert!(result.is_err());
+        // Check for the specific error type if needed
+    }
+}

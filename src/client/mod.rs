@@ -9,6 +9,7 @@ pub(crate) mod blocking;
 pub(crate) mod builder;
 
 pub(crate) enum FalkorClientProvider {
+    None,
     #[cfg(feature = "redis")]
     Redis {
         client: redis::Client,
@@ -34,6 +35,7 @@ impl FalkorClientProvider {
                     .get_connection()
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
+            FalkorClientProvider::None => Err(FalkorDBError::UnavailableProvider)?,
         })
     }
 
@@ -44,6 +46,7 @@ impl FalkorClientProvider {
     ) {
         match self {
             FalkorClientProvider::Redis { sentinel, .. } => *sentinel = Some(sentinel_client),
+            FalkorClientProvider::None => {}
         }
     }
 }

@@ -156,7 +156,7 @@ mod tests {
             Some(&FalkorValue::String("the something".to_string()))
         );
         assert_eq!(
-            node.properties.get(&"secs_since_login".to_string()),
+            node.properties.get("secs_since_login"),
             Some(&FalkorValue::F64(105.5))
         );
     }

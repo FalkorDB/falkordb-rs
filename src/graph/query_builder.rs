@@ -53,7 +53,7 @@ impl<'a, Output> QueryBuilder<'a, Output> {
         }
     }
 
-    /// Pass the following params to the query (as "CYPHER {param_key}={param_val}"
+    /// Pass the following params to the query as "CYPHER {param_key}={param_val}"
     ///
     /// # Arguments
     /// * `params`: A [`HashMap`] of params in key-val format

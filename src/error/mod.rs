@@ -9,7 +9,7 @@ use crate::SchemaType;
 /// this allows easy error integration using [`thiserror`]
 #[derive(thiserror::Error, Debug)]
 pub enum FalkorDBError {
-    /// A required Id for parsing was not found in the schema.
+    /// A required ID for parsing was not found in the schema.
     #[error("A required Id for parsing was not found in the schema")]
     MissingSchemaId(SchemaType),
     /// Could not connect to Redis Sentinel, or a critical Sentinel operation has failed.

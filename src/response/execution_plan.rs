@@ -111,7 +111,7 @@ impl ExecutionPlan {
         &self.operation_tree
     }
 
-    /// Returns a string representation of the entire executino plan
+    /// Returns a string representation of the entire execution plan
     pub fn string_representation(&self) -> &str {
         self.string_representation.as_str()
     }

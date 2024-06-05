@@ -48,8 +48,8 @@ pub struct Constraint {
 }
 
 impl Constraint {
-    fn from_value_vec(vlaue_vec: Vec<FalkorValue>) -> FalkorResult<Self> {
-        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = vlaue_vec.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object".to_string()))?;
+    fn from_value_vec(value_vec: Vec<FalkorValue>) -> FalkorResult<Self> {
+        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = value_vec.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object".to_string()))?;
 
         Ok(Constraint {
             constraint_type: constraint_type_raw.into_string()?.as_str().try_into()?,

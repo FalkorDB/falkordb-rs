@@ -111,11 +111,11 @@ mod tests {
 
     #[test]
     fn test_sync_builder() {
-        let conneciton_info = "falkor://127.0.0.1:6379".try_into();
-        assert!(conneciton_info.is_ok());
+        let connection_info = "falkor://127.0.0.1:6379".try_into();
+        assert!(connection_info.is_ok());
 
         assert!(FalkorClientBuilder::new()
-            .with_connection_info(conneciton_info.unwrap())
+            .with_connection_info(connection_info.unwrap())
             .build()
             .is_ok());
     }

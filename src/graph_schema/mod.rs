@@ -244,8 +244,9 @@ impl GraphSchema {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::client::blocking::create_empty_inner_client;
-    use crate::{test_utils::create_test_client, SyncGraph};
+    use crate::{
+        client::blocking::create_empty_inner_client, test_utils::create_test_client, SyncGraph,
+    };
     use std::collections::HashMap;
 
     pub(crate) fn open_readonly_graph_with_modified_schema() -> SyncGraph {
@@ -309,19 +310,64 @@ pub(crate) mod tests {
             ]),
         ]);
 
-        // Expected output
-        let mut expected_map = HashMap::new();
-        expected_map.insert(
-            "property1".to_string(),
-            FalkorValue::String("test".to_string()),
-        );
-        expected_map.insert("property2".to_string(), FalkorValue::I64(42));
-        expected_map.insert("property3".to_string(), FalkorValue::Bool(true));
-
-        // Parse the properties map
         let result = parser.parse_properties_map(input_value);
 
-        // Check if the result matches the expected output
+        let expected_map = HashMap::from([
+            (
+                "property1".to_string(),
+                FalkorValue::String("test".to_string()),
+            ),
+            ("property2".to_string(), FalkorValue::I64(42)),
+            ("property3".to_string(), FalkorValue::Bool(true)),
+        ]);
         assert_eq!(result.unwrap(), expected_map);
+    }
+
+    #[test]
+    fn test_parse_id_vec() {
+        let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
+
+        parser.labels = HashMap::from([
+            (1, "property1".to_string()),
+            (2, "property2".to_string()),
+            (3, "property3".to_string()),
+        ]);
+
+        let labels_ok_res =
+            parser.parse_id_vec(vec![3.into(), 1.into(), 2.into()], SchemaType::Labels);
+        assert!(labels_ok_res.is_ok());
+        assert_eq!(
+            labels_ok_res.unwrap(),
+            vec!["property3", "property1", "property2"]
+        );
+
+        // Should fail, these are not relationships
+        let labels_not_ok_res = parser.parse_id_vec(
+            vec![3.into(), 1.into(), 2.into()],
+            SchemaType::Relationships,
+        );
+        assert!(labels_not_ok_res.is_err());
+
+        parser.clear();
+
+        parser.relationships = HashMap::from([
+            (1, "property4".to_string()),
+            (2, "property5".to_string()),
+            (3, "property6".to_string()),
+        ]);
+
+        let rels_ok_res = parser.parse_id_vec(
+            vec![3.into(), 1.into(), 2.into()],
+            SchemaType::Relationships,
+        );
+        assert!(rels_ok_res.is_ok());
+        assert_eq!(
+            rels_ok_res.unwrap(),
+            vec![
+                "property6".to_string(),
+                "property4".to_string(),
+                "property5".to_string()
+            ]
+        )
     }
 }

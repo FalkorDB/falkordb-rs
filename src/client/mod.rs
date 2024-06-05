@@ -8,7 +8,9 @@ use crate::{connection::blocking::FalkorSyncConnection, FalkorDBError, FalkorRes
 pub(crate) mod blocking;
 pub(crate) mod builder;
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum FalkorClientProvider {
+    #[allow(unused)]
     None,
     #[cfg(feature = "redis")]
     Redis {

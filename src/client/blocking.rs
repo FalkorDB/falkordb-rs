@@ -9,7 +9,7 @@ use crate::{
     parser::utils::string_vec_from_val,
     ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorValue, SyncGraph,
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc},
@@ -19,7 +19,7 @@ pub(crate) struct FalkorSyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
 
     connection_pool_size: u8,
-    connection_pool_tx: Mutex<mpsc::SyncSender<FalkorSyncConnection>>,
+    connection_pool_tx: RwLock<mpsc::SyncSender<FalkorSyncConnection>>,
     connection_pool_rx: Mutex<mpsc::Receiver<FalkorSyncConnection>>,
 }
 
@@ -33,7 +33,7 @@ impl FalkorSyncClientInner {
                 .lock()
                 .recv()
                 .map_err(|_| FalkorDBError::EmptyConnection)?,
-            self.connection_pool_tx.lock().clone(),
+            self.connection_pool_tx.read().clone(),
             pool_owner,
         ))
     }
@@ -57,7 +57,7 @@ impl FalkorSyncClientInner {
                 .map_err(|_| FalkorDBError::EmptyConnection)?;
         }
 
-        *(self.connection_pool_tx.lock()) = connection_pool_tx;
+        *(self.connection_pool_tx.write()) = connection_pool_tx;
         *(self.connection_pool_rx.lock()) = connection_pool_rx;
 
         Ok(())
@@ -167,7 +167,7 @@ impl FalkorSyncClient {
             inner: Arc::new(FalkorSyncClientInner {
                 _inner: client.into(),
                 connection_pool_size: num_connections,
-                connection_pool_tx: Mutex::new(connection_pool_tx),
+                connection_pool_tx: RwLock::new(connection_pool_tx),
                 connection_pool_rx: Mutex::new(connection_pool_rx),
             }),
             _connection_info: connection_info,

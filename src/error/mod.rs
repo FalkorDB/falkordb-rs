@@ -46,9 +46,6 @@ pub enum FalkorDBError {
     /// The execution plan did not adhere to usual structure, and could not be parsed.
     #[error("The execution plan did not adhere to usual structure, and could not be parsed")]
     CorruptExecutionPlan,
-    /// The number of connections for the client has to be between 1 and 32.
-    #[error("The number of connections for the client has to be between 1 and 32")]
-    InvalidConnectionPoolSize,
     /// Could not connect to the server with the provided address.
     #[error("Could not connect to the server with the provided address")]
     NoConnection,
@@ -109,22 +106,16 @@ pub enum FalkorDBError {
     /// Both key id and type marker were not of type i64.
     #[error("Both key id and type marker were not of type i64")]
     ParsingKTVTypes,
-    /// Field missing or mismatched while parsing index.
-    #[error("Field missing or mismatched while parsing index")]
-    ParsingIndex,
     /// Attempting to parse an FArray into a struct, but the array doesn't have the expected element count.
     #[error("Attempting to parse an FArray into a struct, but the array doesn't have the expected element count")]
     ParsingArrayToStructElementCount,
-    /// Invalid constraint type, expected 'UNIQUE' or 'MANDATORY'.
-    #[error("Invalid constraint type, expected 'UNIQUE' or 'MANDATORY'")]
-    ConstraintType,
-    /// Invalid constraint status, expected 'OPERATIONAL', 'UNDER CONSTRUCTION' or 'FAILED'.
-    #[error("Invalid constraint status, expected 'OPERATIONAL', 'UNDER CONSTRUCTION' or 'FAILED'")]
-    ConstraintStatus,
-    /// Invalid Index status, expected 'OPERATIONAL' or 'UNDER CONSTRUCTION'.
-    #[error("Invalid Index status, expected 'OPERATIONAL' or 'UNDER CONSTRUCTION'")]
-    IndexStatus,
-    /// Invalid Index field type, expected 'RANGE', 'VECTOR' or 'FULLTEXT'.
-    #[error("Invalid Index field type, expected 'RANGE', 'VECTOR' or 'FULLTEXT'")]
-    IndexType,
+    /// Invalid enum string variant was encountered when parsing
+    #[error("Invalid enum string variant was encountered when parsing: {0}")]
+    InvalidEnumType(String),
+}
+
+impl From<strum::ParseError> for FalkorDBError {
+    fn from(value: strum::ParseError) -> Self {
+        FalkorDBError::InvalidEnumType(value.to_string())
+    }
 }

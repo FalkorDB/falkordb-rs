@@ -2,4 +2,5 @@
 .idea/
 .vscode/
 .vs/
-codecov.json
+/codecov.json
+/dump.rdb

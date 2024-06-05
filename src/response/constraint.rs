@@ -7,10 +7,10 @@ use crate::{
     value::utils::parse_type, EntityType, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue,
     GraphSchema,
 };
-use std::fmt::{Display, Formatter};
 
 /// The type of restriction to apply for the property
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, strum::EnumString, strum::Display)]
+#[strum(serialize_all = "UPPERCASE")]
 pub enum ConstraintType {
     /// This property may only appear once on entities of this type and label.
     Unique,
@@ -19,85 +19,17 @@ pub enum ConstraintType {
     Mandatory,
 }
 
-impl Display for ConstraintType {
-    fn fmt(
-        &self,
-        f: &mut Formatter<'_>,
-    ) -> std::fmt::Result {
-        let str = match self {
-            ConstraintType::Unique => "UNIQUE",
-            ConstraintType::Mandatory => "MANDATORY",
-        };
-        f.write_str(str)
-    }
-}
-
-impl TryFrom<&str> for ConstraintType {
-    type Error = FalkorDBError;
-
-    fn try_from(value: &str) -> FalkorResult<Self> {
-        Ok(match value.to_uppercase().as_str() {
-            "MANDATORY" => Self::Mandatory,
-            "UNIQUE" => Self::Unique,
-            _ => Err(FalkorDBError::ConstraintType)?,
-        })
-    }
-}
-
-impl TryFrom<String> for ConstraintType {
-    type Error = FalkorDBError;
-
-    fn try_from(value: String) -> FalkorResult<Self> {
-        value.as_str().try_into()
-    }
-}
-
-impl TryFrom<&String> for ConstraintType {
-    type Error = FalkorDBError;
-
-    fn try_from(value: &String) -> FalkorResult<Self> {
-        value.as_str().try_into()
-    }
-}
-
 /// The status of this constraint
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, strum::EnumString, strum::Display)]
 pub enum ConstraintStatus {
     /// This constraint is active on all entities of this type and label.
+    #[strum(serialize = "OPERATIONAL")]
     Active,
     /// This constraint is still being applied and verified.
+    #[strum(serialize = "UNDER CONSTRUCTION")]
     Pending,
     /// This constraint could not be applied, not all entities of this type and label are compliant.
     Failed,
-}
-
-impl TryFrom<&str> for ConstraintStatus {
-    type Error = FalkorDBError;
-
-    fn try_from(value: &str) -> FalkorResult<Self> {
-        Ok(match value.to_uppercase().as_str() {
-            "OPERATIONAL" => Self::Active,
-            "UNDER CONSTRUCTION" => Self::Pending,
-            "FAILED" => Self::Failed,
-            _ => Err(FalkorDBError::ConstraintStatus)?,
-        })
-    }
-}
-
-impl TryFrom<String> for ConstraintStatus {
-    type Error = FalkorDBError;
-
-    fn try_from(value: String) -> FalkorResult<Self> {
-        value.as_str().try_into()
-    }
-}
-
-impl TryFrom<&String> for ConstraintStatus {
-    type Error = FalkorDBError;
-
-    fn try_from(value: &String) -> FalkorResult<Self> {
-        value.as_str().try_into()
-    }
 }
 
 /// A constraint applied on all 'properties' of the graph entity 'label' in this graph
@@ -120,15 +52,15 @@ impl Constraint {
         let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = vlaue_vec.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount)?;
 
         Ok(Constraint {
-            constraint_type: constraint_type_raw.into_string()?.try_into()?,
+            constraint_type: constraint_type_raw.into_string()?.as_str().try_into()?,
             label: label_raw.into_string()?,
             properties: properties_raw
                 .into_vec()?
                 .into_iter()
                 .flat_map(FalkorValue::into_string)
                 .collect(),
-            entity_type: entity_type_raw.into_string()?.try_into()?,
-            status: status_raw.into_string()?.try_into()?,
+            entity_type: entity_type_raw.into_string()?.as_str().try_into()?,
+            status: status_raw.into_string()?.as_str().try_into()?,
         })
     }
 }

@@ -7,11 +7,12 @@ use crate::{
     client::FalkorClientProvider, FalkorConnectionInfo, FalkorDBError, FalkorResult,
     FalkorSyncClient,
 };
+use std::num::NonZeroU8;
 
 /// A Builder-pattern implementation struct for creating a new Falkor client.
 pub struct FalkorClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
-    num_connections: u8,
+    num_connections: NonZeroU8,
 }
 
 impl<const R: char> FalkorClientBuilder<R> {
@@ -42,7 +43,7 @@ impl<const R: char> FalkorClientBuilder<R> {
     /// The consumed and modified self.
     pub fn with_num_connections(
         self,
-        num_connections: u8,
+        num_connections: NonZeroU8,
     ) -> Self {
         Self {
             num_connections,
@@ -76,7 +77,7 @@ impl FalkorClientBuilder<'S'> {
     pub fn new() -> Self {
         FalkorClientBuilder {
             connection_info: None,
-            num_connections: 4,
+            num_connections: NonZeroU8::new(8).expect("Error creating perfectly valid u8"),
         }
     }
 
@@ -85,10 +86,6 @@ impl FalkorClientBuilder<'S'> {
     /// # Returns
     /// a new [`FalkorSyncClient`]
     pub fn build(self) -> FalkorResult<FalkorSyncClient> {
-        if self.num_connections < 1 || self.num_connections > 32 {
-            return Err(FalkorDBError::InvalidConnectionPoolSize);
-        }
-
         let connection_info = self
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
@@ -104,7 +101,7 @@ impl FalkorClientBuilder<'S'> {
                 client.set_sentinel(sentinel);
             }
         }
-        FalkorSyncClient::create(client, connection_info, self.num_connections)
+        FalkorSyncClient::create(client, connection_info, self.num_connections.get())
     }
 }
 
@@ -118,7 +115,6 @@ mod tests {
         assert!(conneciton_info.is_ok());
 
         assert!(FalkorClientBuilder::new()
-            .with_num_connections(4)
             .with_connection_info(conneciton_info.unwrap())
             .build()
             .is_ok());
@@ -136,20 +132,11 @@ mod tests {
 
     #[test]
     fn test_connection_pool_size() {
-        let client = FalkorClientBuilder::new().with_num_connections(16).build();
+        let client = FalkorClientBuilder::new()
+            .with_num_connections(NonZeroU8::new(16).expect("Could not create a perfectly fine u8"))
+            .build();
         assert!(client.is_ok());
 
         assert_eq!(client.unwrap().connection_pool_size(), 16);
-    }
-
-    #[test]
-    fn test_invalid_connection_pool_size() {
-        // Connection pool size must be between 0 and 32
-
-        let zero = FalkorClientBuilder::new().with_num_connections(0).build();
-        assert!(zero.is_err());
-
-        let too_many = FalkorClientBuilder::new().with_num_connections(36).build();
-        assert!(too_many.is_err());
     }
 }

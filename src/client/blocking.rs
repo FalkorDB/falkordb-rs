@@ -17,6 +17,7 @@ use std::{
 
 pub(crate) struct FalkorSyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
+
     connection_pool_size: u8,
     connection_pool_tx: Mutex<mpsc::SyncSender<FalkorSyncConnection>>,
     connection_pool_rx: Mutex<mpsc::Receiver<FalkorSyncConnection>>,
@@ -305,12 +306,12 @@ mod tests {
         test_utils::{create_test_client, TestSyncGraphHandle},
         FalkorClientBuilder,
     };
-    use std::{mem, sync::mpsc::TryRecvError, thread};
+    use std::{mem, num::NonZeroU8, sync::mpsc::TryRecvError, thread};
 
     #[test]
     fn test_borrow_connection() {
         let client = FalkorClientBuilder::new()
-            .with_num_connections(6)
+            .with_num_connections(NonZeroU8::new(6).expect("Could not create a perfectly valid u8"))
             .build()
             .expect("Could not create client for this test");
 

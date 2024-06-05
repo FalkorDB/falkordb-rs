@@ -4,59 +4,17 @@
  */
 
 use crate::{FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema, SchemaType};
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::{Display, Formatter},
-};
+use std::collections::{HashMap, HashSet};
 
 /// Whether this element is a node or edge in the graph
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, strum::EnumString, strum::Display)]
+#[strum(serialize_all = "UPPERCASE")]
 pub enum EntityType {
     /// A node in the graph
     Node,
     /// An edge in the graph, meaning a relationship between two nodes
+    #[strum(serialize = "RELATIONSHIP")]
     Edge,
-}
-
-impl Display for EntityType {
-    fn fmt(
-        &self,
-        f: &mut Formatter<'_>,
-    ) -> std::fmt::Result {
-        let str = match self {
-            EntityType::Node => "NODE",
-            EntityType::Edge => "RELATIONSHIP",
-        };
-        f.write_str(str)
-    }
-}
-
-impl TryFrom<&str> for EntityType {
-    type Error = FalkorDBError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Ok(match value.to_uppercase().as_str() {
-            "NODE" => Self::Node,
-            "RELATIONSHIP" => Self::Edge,
-            _ => Err(FalkorDBError::ConstraintType)?,
-        })
-    }
-}
-
-impl TryFrom<String> for EntityType {
-    type Error = FalkorDBError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        value.as_str().try_into()
-    }
-}
-
-impl TryFrom<&String> for EntityType {
-    type Error = FalkorDBError;
-
-    fn try_from(value: &String) -> Result<Self, Self::Error> {
-        value.as_str().try_into()
-    }
 }
 
 /// A node in the graph, containing a unique id, various labels describing it, and its own property.

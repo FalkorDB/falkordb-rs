@@ -105,8 +105,11 @@ impl BorrowedSyncConnection {
             .execute_command(graph_name, command, subcommand, params)
         {
             Err(FalkorDBError::ConnectionDown) => {
-                self.client.refresh_connection_pool().ok();
-                Err(FalkorDBError::ConnectionDown)
+                if let Ok(new_conn) = self.client.get_connection() {
+                    self.conn = Some(new_conn);
+                    return Err(FalkorDBError::ConnectionDown);
+                }
+                Err(FalkorDBError::NoConnection)
             }
             res => res,
         }

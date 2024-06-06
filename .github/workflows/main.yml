@@ -1,4 +1,4 @@
-name: Publish on crates.io
+name: Release branch jobs
 
 permissions:
   pull-requests: write
@@ -7,7 +7,7 @@ permissions:
 on:
   push:
     branches:
-      - '*'
+      - main
 
 env:
   CARGO_TERM_COLOR: always
@@ -91,13 +91,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Release-plz needs all the history
-
-      - name: Verify main branch
-        if: github.ref != 'refs/heads/main'
-        run: |
-          echo "This workflow can only run on the main branch."
-          exit 1
-
       - name: Run release-plz
         uses: MarcoIeni/release-plz-action@v0.5
         with:

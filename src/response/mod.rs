@@ -45,27 +45,15 @@ impl LazyResultSet {
             ))),
         }
     }
-
-    /// Consumes the entire iterator and returns a specified collection of type T.
-    /// Requires that type T implements [`FromIterator<FalkorValue>`] and [`Default`] (which most containers do).
-    /// This has a performance boost, but requires parsing the entire iterator, so should be avoided unless that is the specific purpose.
-    pub fn collect<T: FromIterator<FalkorValue> + Default>(self) -> T {
-        if self.data.is_empty() {
-            return T::default();
-        }
-        let mut graph_schema = self.graph_schema.lock();
-        self.data
-            .into_iter()
-            .filter_map(|current_result| {
-                parse_type(6, current_result, graph_schema.deref_mut()).ok()
-            })
-            .collect::<T>()
-    }
 }
 
 impl Iterator for LazyResultSet {
     type Item = Vec<FalkorValue>;
 
+    // Initially I created a fast_collect() function which collected using only a single lock at the start of the function
+    // But it seems the compiler is smarter somehow, and optimizes this by a lot
+    // In small result sets the single lock won by ~50micros, but the more results there are the faster the regular collect worked
+    // Until it won in a landslide, so honestly I'm just letting the regular collect() function do its thing
     fn next(&mut self) -> Option<Self::Item> {
         self.data.pop_front().and_then(|current_result| {
             parse_type(6, current_result, self.graph_schema.lock().deref_mut())

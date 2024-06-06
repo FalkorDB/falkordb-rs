@@ -388,9 +388,13 @@ mod tests {
 
     #[test]
     fn test_query() {
-        let mut graph = open_test_graph("test_query_and_lazy_query");
+        let mut graph = open_test_graph("test_query");
         let res = graph.inner.query("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 10").execute().expect("Could not execute query");
         assert_eq!(res.data.collect::<Vec<_>>().len(), 10);
+
+        let mut res = graph.inner.query("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 10").execute().expect("Could not execute query");
+        assert!(res.data.next().is_some());
+        assert_eq!(res.data.collect::<Vec<_>>().len(), 9);
     }
 
     #[test]

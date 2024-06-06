@@ -32,7 +32,7 @@ docker run --rm -p 6379:6379 falkordb/falkordb
 ### Code Example
 
 ```rust
-use falkordb::FalkorClientBuilder;
+use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
 let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
@@ -47,7 +47,7 @@ let mut graph = client.select_graph("social");
 
 // Create 100 nodes and return a handful
 let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
-    .with_timeout(5000).execute().expect("Failed performing query");
+    .with_timeout(5000).execute().expect("Failed executing query");
 
 for n in nodes.data {
     println!("{:?}", n[0]);

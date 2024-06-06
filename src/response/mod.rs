@@ -5,7 +5,7 @@
 
 use crate::{
     parser::utils::{parse_header, string_vec_from_val},
-    FalkorResult, FalkorValue,
+    FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
 };
 
 pub(crate) mod constraint;
@@ -48,22 +48,28 @@ impl<T> FalkorResponse<T> {
             stats: string_vec_from_val(stats)?,
         })
     }
+}
 
-    /// Creates a [`FalkorResponse`] from the specified data, and raw stats, where parsed headers are given and parsing them is not needed
-    ///
-    /// # Arguments
-    /// * `data`: The actual data
-    /// * `headers`: The already parsed headers, this is usually used to pass an empty header vec, or if we already parsed the headers for use in some other context and don't want to repeat
-    /// * `stats`: a [`FalkorValue`] that is expected to be of variant [`FalkorValue::Array`], where each element is expected to be of variant [`FalkorValue::String`]
-    pub fn from_response_with_headers(
-        data: T,
-        header: Vec<String>,
-        stats: FalkorValue,
+impl<T: FalkorParsable> FalkorParsable for FalkorResponse<Vec<T>> {
+    fn from_falkor_value(
+        value: FalkorValue,
+        graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        Ok(Self {
-            header,
-            data,
-            stats: string_vec_from_val(stats)?,
-        })
+        let [header, indices, stats]: [FalkorValue; 3] =
+            value.into_vec()?.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 3 elements in query response".to_string(),
+                )
+            })?;
+
+        FalkorResponse::from_response(
+            Some(header),
+            indices
+                .into_vec()?
+                .into_iter()
+                .flat_map(|index| FalkorParsable::from_falkor_value(index, graph_schema))
+                .collect(),
+            stats,
+        )
     }
 }

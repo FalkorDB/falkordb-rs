@@ -4,13 +4,11 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection,
-    parser::utils::{parse_header, parse_result_set},
-    Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParsable, FalkorResponse,
-    FalkorResult, FalkorValue, ResultSet, SyncGraph,
+    connection::blocking::BorrowedSyncConnection, parser::utils::parse_result_set, Constraint,
+    ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParsable, FalkorResponse, FalkorResult,
+    FalkorValue, ResultSet, SyncGraph,
 };
-use std::ops::Not;
-use std::{collections::HashMap, fmt::Display, marker::PhantomData};
+use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 
 pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
     query_str: Q,
@@ -87,10 +85,11 @@ impl<'a, Output> QueryBuilder<'a, Output> {
         }
     }
 
-    fn common_execute_steps(
-        &mut self,
-        conn: &mut BorrowedSyncConnection,
-    ) -> FalkorResult<FalkorValue> {
+    fn common_execute_steps(&mut self) -> FalkorResult<FalkorValue> {
+        let mut conn = self
+            .graph
+            .client
+            .borrow_connection(self.graph.client.clone())?;
         let query = construct_query(self.query_string, self.params);
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
@@ -109,11 +108,7 @@ impl<'a, Output> QueryBuilder<'a, Output> {
 impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
     /// Executes the query, retuning a [`FalkorResponse`], with a [`ResultSet`] as its `data` member
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<ResultSet>> {
-        let mut conn = self
-            .graph
-            .client
-            .borrow_connection(self.graph.client.clone())?;
-        let res = self.common_execute_steps(&mut conn)?.into_vec()?;
+        let res = self.common_execute_steps()?.into_vec()?;
 
         match res.len() {
             1 => {
@@ -123,7 +118,7 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
                     ),
                 )?;
 
-                FalkorResponse::from_response(None, vec![], stats)
+                FalkorResponse::from_response(None, Vec::default(), stats)
             }
             2 => {
                 let [header, stats]: [FalkorValue; 2] = res.try_into().map_err(|_| {
@@ -132,7 +127,7 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
                     )
                 })?;
 
-                FalkorResponse::from_response(Some(header), vec![], stats)
+                FalkorResponse::from_response(Some(header), Vec::default(), stats)
             }
             3 => {
                 let [header, data, stats]: [FalkorValue; 3] = res.try_into().map_err(|_| {
@@ -141,9 +136,9 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
                     )
                 })?;
 
-                FalkorResponse::from_response_with_headers(
+                FalkorResponse::from_response(
+                    Some(header),
                     parse_result_set(data, &mut self.graph.graph_schema)?,
-                    parse_header(header)?,
                     stats,
                 )
             }
@@ -157,11 +152,7 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
 impl<'a> QueryBuilder<'a, ExecutionPlan> {
     /// Executes the query, returning an [`ExecutionPlan`] from the data returned
     pub fn execute(mut self) -> FalkorResult<ExecutionPlan> {
-        let mut conn = self
-            .graph
-            .client
-            .borrow_connection(self.graph.client.clone())?;
-        let res = self.common_execute_steps(&mut conn)?;
+        let res = self.common_execute_steps()?;
 
         ExecutionPlan::try_from(res)
     }
@@ -297,31 +288,14 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`FalkorIndex`]s
     /// This functions consumes self
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
-        let mut conn = self
-            .graph
-            .client
-            .borrow_connection(self.graph.client.clone())?;
-
-        let [header, indices, stats]: [FalkorValue; 3] = self
-            .common_execute_steps(&mut conn)?
-            .into_vec()?
-            .try_into()
-            .map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 elements in query response".to_string(),
-                )
-            })?;
-
-        FalkorResponse::from_response(
-            Some(header),
-            indices
-                .into_vec()?
-                .into_iter()
-                .flat_map(|index| {
-                    FalkorIndex::from_falkor_value(index, &mut self.graph.graph_schema)
-                })
-                .collect(),
-            stats,
+        FalkorParsable::from_falkor_value(
+            self.common_execute_steps(
+                &mut self
+                    .graph
+                    .client
+                    .borrow_connection(self.graph.client.clone())?,
+            )?,
+            &mut self.graph.graph_schema,
         )
     }
 }
@@ -330,29 +304,14 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`Constraint`]s
     /// This functions consumes self
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
-        let mut conn = self
-            .graph
-            .client
-            .borrow_connection(self.graph.client.clone())?;
-
-        let [header, query_res, stats]: [FalkorValue; 3] = self
-            .common_execute_steps(&mut conn)?
-            .into_vec()?
-            .try_into()
-            .map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 elements in query response".to_string(),
-                )
-            })?;
-
-        FalkorResponse::from_response(
-            Some(header),
-            query_res
-                .into_vec()?
-                .into_iter()
-                .flat_map(|item| Constraint::from_falkor_value(item, &mut self.graph.graph_schema))
-                .collect(),
-            stats,
+        FalkorParsable::from_falkor_value(
+            self.common_execute_steps(
+                &mut self
+                    .graph
+                    .client
+                    .borrow_connection(self.graph.client.clone())?,
+            )?,
+            &mut self.graph.graph_schema,
         )
     }
 }

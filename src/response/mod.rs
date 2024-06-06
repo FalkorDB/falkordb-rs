@@ -4,17 +4,76 @@
  */
 
 use crate::{
+    client::blocking::create_empty_inner_client,
     parser::utils::{parse_header, string_vec_from_val},
+    value::utils::parse_type,
     FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
 };
+use parking_lot::Mutex;
+use std::{collections::VecDeque, ops::DerefMut, sync::Arc};
 
 pub(crate) mod constraint;
 pub(crate) mod execution_plan;
 pub(crate) mod index;
 pub(crate) mod slowlog_entry;
 
-/// A [`Vec`], representing a table of other [`Vec`]s, representing columns, containing [`FalkorValue`]s
-pub type ResultSet = Vec<Vec<FalkorValue>>;
+/// A wrapper around the returned raw data, allowing parsing on demand of each result
+/// This implements Iterator, so can simply be collect()'ed into any desired container
+#[derive(Debug)]
+pub struct LazyResultSet {
+    data: VecDeque<FalkorValue>,
+    graph_schema: Arc<Mutex<GraphSchema>>,
+}
+
+impl LazyResultSet {
+    pub(crate) fn new(
+        data: Vec<FalkorValue>,
+        graph_schema: Arc<Mutex<GraphSchema>>,
+    ) -> Self {
+        Self {
+            data: data.into(),
+            graph_schema,
+        }
+    }
+
+    pub(crate) fn empty() -> Self {
+        Self {
+            data: Default::default(),
+            graph_schema: Arc::new(Mutex::new(GraphSchema::new(
+                "",
+                create_empty_inner_client(),
+            ))),
+        }
+    }
+
+    /// Consumes the entire iterator and returns a specified collection of type T.
+    /// Requires that type T implements [`FromIterator<FalkorValue>`] and [`Default`] (which most containers do).
+    /// This has a performance boost, but requires parsing the entire iterator, so should be avoided unless that is the specific purpose.
+    pub fn collect<T: FromIterator<FalkorValue> + Default>(self) -> T {
+        if self.data.is_empty() {
+            return T::default();
+        }
+        let mut graph_schema = self.graph_schema.lock();
+        self.data
+            .into_iter()
+            .filter_map(|current_result| {
+                parse_type(6, current_result, graph_schema.deref_mut()).ok()
+            })
+            .collect::<T>()
+    }
+}
+
+impl Iterator for LazyResultSet {
+    type Item = Vec<FalkorValue>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.data.pop_front().and_then(|current_result| {
+            parse_type(6, current_result, self.graph_schema.lock().deref_mut())
+                .and_then(|parsed_result| parsed_result.into_vec())
+                .ok()
+        })
+    }
+}
 
 /// A response struct which also contains the returned header and stats data
 #[derive(Clone, Debug, Default)]

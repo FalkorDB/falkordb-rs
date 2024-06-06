@@ -7,8 +7,11 @@ use crate::{
     client::blocking::FalkorSyncClientInner, value::utils::parse_type, FalkorDBError, FalkorResult,
     FalkorValue,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Formatter},
+    sync::Arc,
+};
 
 pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
     match schema_type {
@@ -77,6 +80,21 @@ pub struct GraphSchema {
     labels: IdMap,
     properties: IdMap,
     relationships: IdMap,
+}
+
+impl Debug for GraphSchema {
+    fn fmt(
+        &self,
+        f: &mut Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.debug_struct("GraphSchema")
+            .field("graph_name", &self.graph_name)
+            .field("version", &self.version)
+            .field("labels", &self.labels)
+            .field("properties", &self.properties)
+            .field("relationships", &self.relationships)
+            .finish()
+    }
 }
 
 impl GraphSchema {
@@ -251,20 +269,23 @@ pub(crate) mod tests {
 
     pub(crate) fn open_readonly_graph_with_modified_schema() -> SyncGraph {
         let client = create_test_client();
-        let mut graph = client.select_graph("imdb");
+        let graph = client.select_graph("imdb");
 
-        graph.graph_schema.properties = HashMap::from([
-            (0, "age".to_string()),
-            (1, "is_boring".to_string()),
-            (2, "something_else".to_string()),
-            (3, "secs_since_login".to_string()),
-        ]);
+        {
+            let mut graph_schema = graph.graph_schema.lock();
+            graph_schema.properties = HashMap::from([
+                (0, "age".to_string()),
+                (1, "is_boring".to_string()),
+                (2, "something_else".to_string()),
+                (3, "secs_since_login".to_string()),
+            ]);
 
-        graph.graph_schema.labels =
-            HashMap::from([(0, "much".to_string()), (1, "actor".to_string())]);
+            graph_schema.labels =
+                HashMap::from([(0, "much".to_string()), (1, "actor".to_string())]);
 
-        graph.graph_schema.relationships =
-            HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
+            graph_schema.relationships =
+                HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
+        }
 
         graph
     }

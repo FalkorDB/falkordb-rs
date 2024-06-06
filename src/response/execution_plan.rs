@@ -5,11 +5,13 @@
 
 use crate::{FalkorDBError, FalkorResult, FalkorValue};
 use regex::Regex;
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
-use std::ops::Not;
-use std::rc::Rc;
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    collections::{HashMap, VecDeque},
+    ops::Not,
+    rc::Rc,
+};
 
 #[derive(Debug)]
 struct IntermediateOperation {

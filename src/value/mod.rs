@@ -322,8 +322,7 @@ impl FalkorParsable for FalkorValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::f64::consts::PI;
+    use std::{collections::HashMap, f64::consts::PI};
 
     #[test]
     fn test_as_vec() {

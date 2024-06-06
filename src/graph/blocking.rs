@@ -5,20 +5,21 @@
 
 use crate::{
     client::blocking::FalkorSyncClientInner, Constraint, ConstraintType, EntityType, ExecutionPlan,
-    FalkorIndex, FalkorResponse, FalkorResult, FalkorValue, GraphSchema, IndexType,
-    ProcedureQueryBuilder, QueryBuilder, ResultSet, SlowlogEntry,
+    FalkorIndex, FalkorResponse, FalkorResult, FalkorValue, GraphSchema, IndexType, LazyResultSet,
+    ProcedureQueryBuilder, QueryBuilder, SlowlogEntry,
 };
+use parking_lot::Mutex;
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
 /// # Thread Safety
-/// This struct is NOT thread safe, and synchronization is up to the user.
-/// Also, graph schema is not shared between instances of SyncGraph, even with the same name
+/// This struct is fully thread safe, and can be cloned and used between threads
+/// However, as [`GraphSchema`]s are required to be mutable when parsing, parsing of a response cannot happen concurrently
 #[derive(Clone)]
 pub struct SyncGraph {
     pub(crate) client: Arc<FalkorSyncClientInner>,
     graph_name: String,
-    pub(crate) graph_schema: GraphSchema,
+    pub(crate) graph_schema: Arc<Mutex<GraphSchema>>,
 }
 
 impl SyncGraph {
@@ -28,7 +29,7 @@ impl SyncGraph {
     ) -> Self {
         Self {
             graph_name: graph_name.to_string(),
-            graph_schema: GraphSchema::new(graph_name, client.clone()), // Required for requesting refreshes
+            graph_schema: Arc::new(Mutex::new(GraphSchema::new(graph_name, client.clone()))), // Client here is required for requesting refreshes
             client,
         }
     }
@@ -56,7 +57,7 @@ impl SyncGraph {
     /// NOTE: This still maintains the graph API, operations are still viable.
     pub fn delete(&mut self) -> FalkorResult<()> {
         self.execute_command("GRAPH.DELETE", None, None)?;
-        self.graph_schema.clear();
+        self.graph_schema.lock().clear();
         Ok(())
     }
 
@@ -78,13 +79,13 @@ impl SyncGraph {
     }
 
     /// Creates a [`QueryBuilder`] for this graph, in an attempt to profile a specific query
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     ///
     /// # Arguments
     /// * `query_string`: The query to profile
     ///
     /// # Returns
-    /// A [`QueryBuilder`] object, which when performed will return an [`ExecutionPlan`]
+    /// A [`QueryBuilder`] object, which when executed will return an [`ExecutionPlan`]
     pub fn profile<'a>(
         &'a mut self,
         query_string: &'a str,
@@ -93,13 +94,13 @@ impl SyncGraph {
     }
 
     /// Creates a [`QueryBuilder`] for this graph, in an attempt to explain a specific query
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     ///
     /// # Arguments
     /// * `query_string`: The query to explain the process for
     ///
     /// # Returns
-    /// A [`QueryBuilder`] object, which when performed will return an [`ExecutionPlan`]
+    /// A [`QueryBuilder`] object, which when executed will return an [`ExecutionPlan`]
     pub fn explain<'a>(
         &'a mut self,
         query_string: &'a str,
@@ -108,22 +109,22 @@ impl SyncGraph {
     }
 
     /// Creates a [`QueryBuilder`] for this graph
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     ///
     /// # Arguments
     /// * `query_string`: The query to run
     ///
     /// # Returns
-    /// A [`QueryBuilder`] object, which when performed will return a [`FalkorResponse<FalkorResultSet>`]
+    /// A [`QueryBuilder`] object, which when executed will return a [`FalkorResponse<FalkorResultSet>`]
     pub fn query<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<FalkorResponse<ResultSet>> {
+    ) -> QueryBuilder<FalkorResponse<LazyResultSet>> {
         QueryBuilder::new(self, "GRAPH.QUERY", query_string)
     }
 
     /// Creates a [`QueryBuilder`] for this graph, for a readonly query
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only queries are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
@@ -134,12 +135,12 @@ impl SyncGraph {
     pub fn ro_query<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<FalkorResponse<ResultSet>> {
+    ) -> QueryBuilder<FalkorResponse<LazyResultSet>> {
         QueryBuilder::new(self, "GRAPH.QUERY_RO", query_string)
     }
 
     /// Creates a [`ProcedureQueryBuilder`] for this graph
-    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only queries are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
@@ -155,7 +156,7 @@ impl SyncGraph {
     }
 
     /// Creates a [`ProcedureQueryBuilder`] for this graph, for a readonly procedure
-    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only procedures are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
@@ -188,7 +189,7 @@ impl SyncGraph {
     /// * `options`:
     ///
     /// # Returns
-    /// A [`ResultSet`] containing information on the created index
+    /// A [`LazyResultSet`] containing information on the created index
     pub fn create_index<P: Display>(
         &mut self,
         index_field_type: IndexType,
@@ -196,7 +197,7 @@ impl SyncGraph {
         label: &str,
         properties: &[P],
         options: Option<&HashMap<String, String>>,
-    ) -> FalkorResult<FalkorResponse<ResultSet>> {
+    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
         // Create index from these properties
         let properties_string = properties
             .iter()
@@ -246,7 +247,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: L,
         properties: &[P],
-    ) -> FalkorResult<FalkorResponse<ResultSet>> {
+    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
         let properties_string = properties
             .iter()
             .map(|element| format!("e.{}", element.to_string()))
@@ -384,6 +385,13 @@ impl SyncGraph {
 mod tests {
     use super::*;
     use crate::{test_utils::open_test_graph, IndexType};
+
+    #[test]
+    fn test_query() {
+        let mut graph = open_test_graph("test_query_and_lazy_query");
+        let res = graph.inner.query("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 10").execute().expect("Could not execute query");
+        assert_eq!(res.data.collect::<Vec<_>>().len(), 10);
+    }
 
     #[test]
     fn test_create_drop_index() {

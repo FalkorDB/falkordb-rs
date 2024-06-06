@@ -64,10 +64,11 @@ pub(crate) fn parse_vec<T: TryFrom<FalkorValue, Error = FalkorDBError>>(
 mod tests {
     use super::*;
     use crate::graph_schema::tests::open_readonly_graph_with_modified_schema;
+    use std::ops::DerefMut;
 
     #[test]
     fn test_parse_edge() {
-        let mut graph = open_readonly_graph_with_modified_schema();
+        let graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             7,
@@ -89,7 +90,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.graph_schema.lock().deref_mut(),
         );
         assert!(res.is_ok());
 
@@ -113,7 +114,7 @@ mod tests {
 
     #[test]
     fn test_parse_node() {
-        let mut graph = open_readonly_graph_with_modified_schema();
+        let graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             8,
@@ -138,7 +139,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.graph_schema.lock().deref_mut(),
         );
         assert!(res.is_ok());
 
@@ -163,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_parse_path() {
-        let mut graph = open_readonly_graph_with_modified_schema();
+        let graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             9,
@@ -202,7 +203,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.graph_schema.lock().deref_mut(),
         );
         assert!(res.is_ok());
 
@@ -229,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_parse_map() {
-        let mut graph = open_readonly_graph_with_modified_schema();
+        let graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             10,
@@ -244,7 +245,7 @@ mod tests {
                 FalkorValue::String("key2".to_string()),
                 FalkorValue::Array(vec![FalkorValue::I64(4), FalkorValue::Bool(true)]),
             ]),
-            &mut graph.graph_schema,
+            graph.graph_schema.lock().deref_mut(),
         );
         assert!(res.is_ok());
 
@@ -264,12 +265,12 @@ mod tests {
 
     #[test]
     fn test_parse_point() {
-        let mut graph = open_readonly_graph_with_modified_schema();
+        let graph = open_readonly_graph_with_modified_schema();
 
         let res = parse_type(
             11,
             FalkorValue::Array(vec![FalkorValue::F64(102.0), FalkorValue::F64(15.2)]),
-            &mut graph.graph_schema,
+            graph.graph_schema.lock().deref_mut(),
         );
         assert!(res.is_ok());
 

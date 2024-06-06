@@ -17,6 +17,7 @@ tracing = { version = "0.1.40", default-features = false, features = ["std", "at
 
 [features]
 default = ["redis"]
+
 native-tls = ["redis/tls-native-tls"]
 rustls = ["redis/tls-rustls"]
 redis = ["dep:redis"]

@@ -4,11 +4,16 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, parser::utils::parse_result_set, Constraint,
-    ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParsable, FalkorResponse, FalkorResult,
-    FalkorValue, ResultSet, SyncGraph,
+    connection::blocking::BorrowedSyncConnection, Constraint, ExecutionPlan, FalkorDBError,
+    FalkorIndex, FalkorParsable, FalkorResponse, FalkorResult, FalkorValue, LazyResultSet,
+    SyncGraph,
 };
-use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    marker::PhantomData,
+    ops::{DerefMut, Not},
+};
 
 pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
     query_str: Q,
@@ -105,9 +110,9 @@ impl<'a, Output> QueryBuilder<'a, Output> {
     }
 }
 
-impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
-    /// Executes the query, retuning a [`FalkorResponse`], with a [`ResultSet`] as its `data` member
-    pub fn execute(mut self) -> FalkorResult<FalkorResponse<ResultSet>> {
+impl<'a> QueryBuilder<'a, FalkorResponse<LazyResultSet>> {
+    /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member, which can be iterated to parse and return results
+    pub fn execute(mut self) -> FalkorResult<FalkorResponse<LazyResultSet>> {
         let res = self.common_execute_steps()?.into_vec()?;
 
         match res.len() {
@@ -118,7 +123,7 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
                     ),
                 )?;
 
-                FalkorResponse::from_response(None, Vec::default(), stats)
+                FalkorResponse::from_response(None, LazyResultSet::empty(), stats)
             }
             2 => {
                 let [header, stats]: [FalkorValue; 2] = res.try_into().map_err(|_| {
@@ -127,7 +132,7 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
                     )
                 })?;
 
-                FalkorResponse::from_response(Some(header), Vec::default(), stats)
+                FalkorResponse::from_response(Some(header), LazyResultSet::empty(), stats)
             }
             3 => {
                 let [header, data, stats]: [FalkorValue; 3] = res.try_into().map_err(|_| {
@@ -138,7 +143,7 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
 
                 FalkorResponse::from_response(
                     Some(header),
-                    parse_result_set(data, &mut self.graph.graph_schema)?,
+                    LazyResultSet::new(data.into_vec()?, self.graph.graph_schema.clone()),
                     stats,
                 )
             }
@@ -295,7 +300,7 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
                     .client
                     .borrow_connection(self.graph.client.clone())?,
             )?,
-            &mut self.graph.graph_schema,
+            self.graph.graph_schema.lock().deref_mut(),
         )
     }
 }
@@ -311,7 +316,7 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
                     .client
                     .borrow_connection(self.graph.client.clone())?,
             )?,
-            &mut self.graph.graph_schema,
+            self.graph.graph_schema.lock().deref_mut(),
         )
     }
 }

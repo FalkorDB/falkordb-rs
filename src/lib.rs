@@ -39,7 +39,7 @@ pub use response::{
     execution_plan::ExecutionPlan,
     index::{FalkorIndex, IndexStatus, IndexType},
     slowlog_entry::SlowlogEntry,
-    FalkorResponse, ResultSet,
+    FalkorResponse, LazyResultSet,
 };
 pub use value::{
     config::ConfigValue,

@@ -1,0 +1,2 @@
+[workspace]
+semver_check = false # disable API breaking changes checks, I suggest this becomes 'true' after we release 1.0

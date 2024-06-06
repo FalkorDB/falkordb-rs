@@ -35,12 +35,19 @@ jobs:
       - name: Check Rustfmt
         run: cargo fmt --all --check
 
-  build-linux:
+  check-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build
         run: cargo build
+
+  check-tests:
+    needs:
+      - check-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: taiki-e/install-action@nextest
       - name: Populate test graph
         run: pip install falkordb && ./resources/populate_graph.py

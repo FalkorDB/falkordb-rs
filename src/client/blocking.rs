@@ -341,7 +341,7 @@ mod tests {
     fn test_select_graph_and_query() {
         let client = create_test_client();
 
-        let mut graph = client.select_graph("imdb");
+        let graph = client.select_graph("imdb");
         assert_eq!(graph.graph_name(), "imdb".to_string());
 
         let res = graph
@@ -361,11 +361,11 @@ mod tests {
         let graph = client.copy_graph("imdb", "imdb_ro_copy");
         assert!(graph.is_ok());
 
-        let mut graph = TestSyncGraphHandle {
+        let graph = TestSyncGraphHandle {
             inner: graph.unwrap(),
         };
 
-        let mut original_graph = client.select_graph("imdb");
+        let original_graph = client.select_graph("imdb");
 
         assert_eq!(
             graph

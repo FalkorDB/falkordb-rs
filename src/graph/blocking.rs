@@ -55,7 +55,7 @@ impl SyncGraph {
 
     /// Deletes the graph stored in the database, and drop all the schema caches.
     /// NOTE: This still maintains the graph API, operations are still viable.
-    pub fn delete(&mut self) -> FalkorResult<()> {
+    pub fn delete(&self) -> FalkorResult<()> {
         self.execute_command("GRAPH.DELETE", None, None)?;
         self.graph_schema.lock().clear();
         Ok(())
@@ -87,7 +87,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`QueryBuilder`] object, which when executed will return an [`ExecutionPlan`]
     pub fn profile<'a>(
-        &'a mut self,
+        &'a self,
         query_string: &'a str,
     ) -> QueryBuilder<ExecutionPlan> {
         QueryBuilder::<'a>::new(self, "GRAPH.PROFILE", query_string)
@@ -102,7 +102,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`QueryBuilder`] object, which when executed will return an [`ExecutionPlan`]
     pub fn explain<'a>(
-        &'a mut self,
+        &'a self,
         query_string: &'a str,
     ) -> QueryBuilder<ExecutionPlan> {
         QueryBuilder::new(self, "GRAPH.EXPLAIN", query_string)
@@ -117,7 +117,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`QueryBuilder`] object, which when executed will return a [`FalkorResponse<FalkorResultSet>`]
     pub fn query<'a>(
-        &'a mut self,
+        &'a self,
         query_string: &'a str,
     ) -> QueryBuilder<FalkorResponse<LazyResultSet>> {
         QueryBuilder::new(self, "GRAPH.QUERY", query_string)
@@ -133,7 +133,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`QueryBuilder`] object
     pub fn ro_query<'a>(
-        &'a mut self,
+        &'a self,
         query_string: &'a str,
     ) -> QueryBuilder<FalkorResponse<LazyResultSet>> {
         QueryBuilder::new(self, "GRAPH.QUERY_RO", query_string)
@@ -149,7 +149,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`ProcedureQueryBuilder`] object
     pub fn call_procedure<'a, P>(
-        &'a mut self,
+        &'a self,
         procedure_name: &'a str,
     ) -> ProcedureQueryBuilder<P> {
         ProcedureQueryBuilder::new(self, procedure_name)
@@ -165,7 +165,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`ProcedureQueryBuilder`] object
     pub fn call_procedure_ro<'a, P>(
-        &'a mut self,
+        &'a self,
         procedure_name: &'a str,
     ) -> ProcedureQueryBuilder<P> {
         ProcedureQueryBuilder::new_readonly(self, procedure_name)
@@ -175,7 +175,7 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`Vec`] of [`FalkorIndex`]
-    pub fn list_indices(&mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
+    pub fn list_indices(&self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
         ProcedureQueryBuilder::<FalkorResponse<Vec<FalkorIndex>>>::new(self, "DB.INDEXES").execute()
     }
 
@@ -191,7 +191,7 @@ impl SyncGraph {
     /// # Returns
     /// A [`LazyResultSet`] containing information on the created index
     pub fn create_index<P: Display>(
-        &mut self,
+        &self,
         index_field_type: IndexType,
         entity_type: EntityType,
         label: &str,
@@ -242,7 +242,7 @@ impl SyncGraph {
     /// # Arguments
     /// * `index_field_type`
     pub fn drop_index<L: ToString, P: ToString>(
-        &mut self,
+        &self,
         index_field_type: IndexType,
         entity_type: EntityType,
         label: L,
@@ -280,7 +280,7 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A tuple where the first element is a [`Vec`] of [`Constraint`]s, and the second element is a [`Vec`] of stats as [`String`]s
-    pub fn list_constraints(&mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
+    pub fn list_constraints(&self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
         ProcedureQueryBuilder::<FalkorResponse<Vec<Constraint>>>::new(self, "DB.CONSTRAINTS")
             .execute()
     }
@@ -320,7 +320,7 @@ impl SyncGraph {
     /// * `label`: Entities with this label will have this constraint applied to them.
     /// * `properties`: A slice of the names of properties this constraint will apply to.
     pub fn create_unique_constraint(
-        &mut self,
+        &self,
         entity_type: EntityType,
         label: String,
         properties: &[&str],
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_query() {
-        let mut graph = open_test_graph("test_query");
+        let graph = open_test_graph("test_query");
         let res = graph.inner.query("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 10").execute().expect("Could not execute query");
         assert_eq!(res.data.collect::<Vec<_>>().len(), 10);
 
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_create_drop_index() {
-        let mut graph = open_test_graph("test_create_drop_index");
+        let graph = open_test_graph("test_create_drop_index");
         graph
             .inner
             .create_index(
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_list_indices() {
-        let mut graph = open_test_graph("test_list_indices");
+        let graph = open_test_graph("test_list_indices");
         let indices = graph.inner.list_indices().expect("Could not list indices");
 
         assert_eq!(indices.data.len(), 1);
@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn test_create_drop_unique_constraint() {
-        let mut graph = open_test_graph("test_unique_constraint");
+        let graph = open_test_graph("test_unique_constraint");
 
         graph
             .inner
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_list_constraints() {
-        let mut graph = open_test_graph("test_list_constraint");
+        let graph = open_test_graph("test_list_constraint");
 
         graph
             .inner
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_slowlog() {
-        let mut graph = open_test_graph("test_slowlog");
+        let graph = open_test_graph("test_slowlog");
 
         graph
             .inner
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn test_explain() {
-        let mut graph = open_test_graph("test_explain");
+        let graph = open_test_graph("test_explain");
 
         let execution_plan = graph.inner.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().expect("Could not create execution plan");
         assert_eq!(execution_plan.plan().len(), 7);
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_profile() {
-        let mut graph = open_test_graph("test_profile");
+        let graph = open_test_graph("test_profile");
 
         let execution_plan = graph
             .inner

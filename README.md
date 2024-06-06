@@ -5,7 +5,7 @@
 [![Forum](https://img.shields.io/badge/Forum-falkordb-blue)](https://github.com/orgs/FalkorDB/discussions)
 [![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/ErBEqN9E)
 
-# falkordb-client-rs
+# falkordb-rs
 
 [![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 
@@ -35,14 +35,21 @@ docker run --rm -p 6379:6379 falkordb/falkordb
 use falkordb::FalkorClientBuilder;
 
 // Connect to FalkorDB
-let client = FalkorClientBuilder::new().with_connection_info("falkor://127.0.0.1:6379".try_into().expect("Failed constructing connection info")).build().expect("Failed to build client");
+let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
+    .expect("Invalid connection info");
+
+let client = FalkorClientBuilder::new()
+    .with_connection_info(connection_info)
+    .build().expect("Failed to build client");
 
 // Select the social graph
 let mut graph = client.select_graph("social");
 
 // Create 100 nodes and return a handful
-let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10").with_timeout(5000).execute().expect("Failed performing query").data;
-for n in nodes {
-println!("{:?}", n[0]);
+let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
+    .with_timeout(5000).execute().expect("Failed performing query");
+
+for n in nodes.data {
+    println!("{:?}", n[0]);
 }
 ```

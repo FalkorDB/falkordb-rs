@@ -4,6 +4,7 @@
  */
 
 use falkordb::{FalkorClientBuilder, FalkorResult};
+use std::time::Instant;
 
 fn main() -> FalkorResult<()> {
     let client = FalkorClientBuilder::new()
@@ -39,7 +40,9 @@ fn main() -> FalkorResult<()> {
     cloned_graph.delete()?;
 
     let res_again = graph.query("MATCH (a:actor) return a").execute()?;
+    let time = Instant::now();
     let as_vec = res_again.data.collect::<Vec<_>>();
+    println!("{}", time.elapsed().as_micros());
     assert_eq!(as_vec.len(), 1317);
 
     Ok(())

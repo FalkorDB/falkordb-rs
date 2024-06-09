@@ -16,32 +16,33 @@ pub(crate) fn string_vec_from_val(value: FalkorValue) -> FalkorResult<Vec<String
 
 pub(crate) fn parse_header(header: FalkorValue) -> FalkorResult<Vec<String>> {
     let in_vec = header.into_vec()?;
+    let in_vec_len = in_vec.len();
+    in_vec
+        .into_iter()
+        .try_fold(Vec::with_capacity(in_vec_len), |mut acc, item| {
+            let item_vec = item.into_vec()?;
 
-    let mut out_vec = Vec::with_capacity(in_vec.len());
-    for item in in_vec {
-        let item_vec = item.into_vec()?;
-
-        out_vec.push(
-            if item_vec.len() == 2 {
-                let [_, key]: [FalkorValue; 2] = item_vec.try_into().map_err(|_| {
-                    FalkorDBError::ParsingHeader(
-                        "Could not get 2-sized array despite there being 2 elements".to_string(),
-                    )
-                })?;
-                key
-            } else {
-                item_vec
-                    .into_iter()
-                    .next()
-                    .ok_or(FalkorDBError::ParsingHeader(
-                        "Expected at least one item in header vector".to_string(),
-                    ))?
-            }
-            .into_string()?,
-        )
-    }
-
-    Ok(out_vec)
+            acc.push(
+                if item_vec.len() == 2 {
+                    let [_, key]: [FalkorValue; 2] = item_vec.try_into().map_err(|_| {
+                        FalkorDBError::ParsingHeader(
+                            "Could not get 2-sized array despite there being 2 elements"
+                                .to_string(),
+                        )
+                    })?;
+                    key
+                } else {
+                    item_vec
+                        .into_iter()
+                        .next()
+                        .ok_or(FalkorDBError::ParsingHeader(
+                            "Expected at least one item in header vector".to_string(),
+                        ))?
+                }
+                .into_string()?,
+            );
+            Ok(acc)
+        })
 }
 
 #[cfg(test)]

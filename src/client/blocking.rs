@@ -350,7 +350,7 @@ mod tests {
             .execute()
             .expect("Could not get actors from unmodified graph");
 
-        assert_eq!(res.data.len(), 1317);
+        assert_eq!(res.data.collect::<Vec<_>>().len(), 1317);
     }
 
     #[test]
@@ -374,12 +374,14 @@ mod tests {
                 .query("MATCH (a:actor) RETURN a")
                 .execute()
                 .expect("Could not get actors from unmodified graph")
-                .data,
+                .data
+                .collect::<Vec<_>>(),
             original_graph
                 .query("MATCH (a:actor) RETURN a")
                 .execute()
                 .expect("Could not get actors from unmodified graph")
                 .data
+                .collect::<Vec<_>>()
         )
     }
 

@@ -4,9 +4,9 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, parser::utils::parse_result_set, Constraint,
-    ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParsable, FalkorResponse, FalkorResult,
-    FalkorValue, ResultSet, SyncGraph,
+    connection::blocking::BorrowedSyncConnection, Constraint, ExecutionPlan, FalkorDBError,
+    FalkorIndex, FalkorParsable, FalkorResponse, FalkorResult, FalkorValue, LazyResultSet,
+    SyncGraph,
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 
@@ -32,20 +32,20 @@ pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
 }
 
 /// A Builder-pattern struct that allows creating and executing queries on a graph
-pub struct QueryBuilder<'a, Output> {
+pub struct QueryBuilder<'a, Output, T: Display> {
     _unused: PhantomData<Output>,
     graph: &'a mut SyncGraph,
     command: &'a str,
-    query_string: &'a str,
+    query_string: T,
     params: Option<&'a HashMap<String, String>>,
     timeout: Option<i64>,
 }
 
-impl<'a, Output> QueryBuilder<'a, Output> {
+impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
     pub(crate) fn new(
         graph: &'a mut SyncGraph,
         command: &'a str,
-        query_string: &'a str,
+        query_string: T,
     ) -> Self {
         Self {
             _unused: PhantomData,
@@ -90,7 +90,7 @@ impl<'a, Output> QueryBuilder<'a, Output> {
             .graph
             .client
             .borrow_connection(self.graph.client.clone())?;
-        let query = construct_query(self.query_string, self.params);
+        let query = construct_query(&self.query_string, self.params);
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
         let mut params = vec![query.as_str(), "--compact"];
@@ -105,9 +105,9 @@ impl<'a, Output> QueryBuilder<'a, Output> {
     }
 }
 
-impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
-    /// Executes the query, retuning a [`FalkorResponse`], with a [`ResultSet`] as its `data` member
-    pub fn execute(mut self) -> FalkorResult<FalkorResponse<ResultSet>> {
+impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
+    /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member
+    pub fn execute(mut self) -> FalkorResult<FalkorResponse<LazyResultSet<'a>>> {
         let res = self.common_execute_steps()?.into_vec()?;
 
         match res.len() {
@@ -118,7 +118,11 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
                     ),
                 )?;
 
-                FalkorResponse::from_response(None, Vec::default(), stats)
+                FalkorResponse::from_response(
+                    None,
+                    LazyResultSet::new(Default::default(), self.graph),
+                    stats,
+                )
             }
             2 => {
                 let [header, stats]: [FalkorValue; 2] = res.try_into().map_err(|_| {
@@ -127,7 +131,11 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
                     )
                 })?;
 
-                FalkorResponse::from_response(Some(header), Vec::default(), stats)
+                FalkorResponse::from_response(
+                    Some(header),
+                    LazyResultSet::new(Default::default(), self.graph),
+                    stats,
+                )
             }
             3 => {
                 let [header, data, stats]: [FalkorValue; 3] = res.try_into().map_err(|_| {
@@ -138,7 +146,7 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
 
                 FalkorResponse::from_response(
                     Some(header),
-                    parse_result_set(data, &mut self.graph.graph_schema)?,
+                    LazyResultSet::new(data.into_vec()?, self.graph),
                     stats,
                 )
             }
@@ -149,7 +157,7 @@ impl<'a> QueryBuilder<'a, FalkorResponse<ResultSet>> {
     }
 }
 
-impl<'a> QueryBuilder<'a, ExecutionPlan> {
+impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T> {
     /// Executes the query, returning an [`ExecutionPlan`] from the data returned
     pub fn execute(mut self) -> FalkorResult<ExecutionPlan> {
         let res = self.common_execute_steps()?;
@@ -273,7 +281,7 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
 
         let (query_string, params) =
             generate_procedure_call(self.procedure_name, self.args, self.yields);
-        let query = construct_query(query_string, params.as_ref());
+        let query = construct_query(&query_string, params.as_ref());
 
         conn.execute_command(
             Some(self.graph.graph_name()),

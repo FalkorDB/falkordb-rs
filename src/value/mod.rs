@@ -41,6 +41,8 @@ pub enum FalkorValue {
     Path(Path),
     /// A NULL type
     None,
+    /// Failed parsing this value
+    Unparseable,
 }
 
 macro_rules! impl_to_falkordb_value {

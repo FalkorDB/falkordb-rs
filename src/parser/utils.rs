@@ -3,9 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    value::utils::parse_type, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, ResultSet,
-};
+use crate::{FalkorDBError, FalkorResult, FalkorValue};
 
 pub(crate) fn string_vec_from_val(value: FalkorValue) -> FalkorResult<Vec<String>> {
     value.into_vec().map(|value_as_vec| {
@@ -41,20 +39,6 @@ pub(crate) fn parse_header(header: FalkorValue) -> FalkorResult<Vec<String>> {
             }
             .into_string()?,
         )
-    }
-
-    Ok(out_vec)
-}
-
-pub(crate) fn parse_result_set(
-    data: FalkorValue,
-    graph_schema: &mut GraphSchema,
-) -> FalkorResult<ResultSet> {
-    let data_vec = data.into_vec()?;
-
-    let mut out_vec = Vec::with_capacity(data_vec.len());
-    for column in data_vec {
-        out_vec.push(parse_type(6, column, graph_schema)?.into_vec()?);
     }
 
     Ok(out_vec)

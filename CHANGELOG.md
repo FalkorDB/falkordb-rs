@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.0...v0.1.1) - 2024-06-09
+
+### Added
+- LazyResultSet implemenation, allowing one-by-one parsing ([#14](https://github.com/FalkorDB/falkordb-rs/pull/14))
+
+### Fixed
+- Update badges
+
 ## [0.1.0](https://github.com/FalkorDB/falkordb-rs/releases/tag/v0.1.0) - 2024-06-06
 
 ### Fixed

@@ -27,17 +27,15 @@ pub(crate) fn parse_type(
         3 => FalkorValue::I64(val.to_i64().ok_or(FalkorDBError::ParsingI64)?),
         4 => FalkorValue::Bool(val.to_bool().ok_or(FalkorDBError::ParsingBool)?),
         5 => FalkorValue::F64(val.try_into()?),
-        6 => FalkorValue::Array({
-            let val_vec = val.into_vec()?;
-
-            let mut out_vec = Vec::with_capacity(val_vec.len());
-            for item in val_vec {
-                let (type_marker, val) = type_val_from_value(item)?;
-                out_vec.push(parse_type(type_marker, val, graph_schema)?)
-            }
-
-            out_vec
-        }),
+        6 => FalkorValue::Array(
+            val.into_vec()?
+                .into_iter()
+                .flat_map(|item| {
+                    type_val_from_value(item)
+                        .and_then(|(type_marker, val)| parse_type(type_marker, val, graph_schema))
+                })
+                .collect(),
+        ),
         // The following types are sent as an array and require specific parsing functions
         7 => FalkorValue::Edge(FalkorParsable::from_falkor_value(val, graph_schema)?),
         8 => FalkorValue::Node(FalkorParsable::from_falkor_value(val, graph_schema)?),

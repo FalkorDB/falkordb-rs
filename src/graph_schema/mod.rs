@@ -189,11 +189,12 @@ impl GraphSchema {
         raw_ids: Vec<FalkorValue>,
         schema_type: SchemaType,
     ) -> FalkorResult<Vec<String>> {
-        let mut out_vec = Vec::with_capacity(raw_ids.len());
-        for raw_id in raw_ids {
-            let id = raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?;
-            out_vec.push(
-                match self
+        let raw_ids_len = raw_ids.len();
+        raw_ids
+            .into_iter()
+            .try_fold(Vec::with_capacity(raw_ids_len), |mut acc, raw_id| {
+                let id = raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?;
+                let value = match self
                     .get_id_map_by_schema_type(schema_type)
                     .get(&id)
                     .cloned()
@@ -206,11 +207,10 @@ impl GraphSchema {
                             .ok_or(FalkorDBError::MissingSchemaId(schema_type))?
                     }
                     Some(exists) => exists,
-                },
-            );
-        }
-
-        Ok(out_vec)
+                };
+                acc.push(value);
+                Ok(acc)
+            })
     }
 
     pub(crate) fn parse_properties_map(

@@ -137,18 +137,20 @@ impl ExecutionPlan {
             .map_err(|_| FalkorDBError::RefCountBooBoo)?
             .into_inner();
 
-        let mut out_vec = Vec::with_capacity(current_op.children.len());
-        for child in current_op.children.into_iter() {
-            out_vec.push(Self::finalize_operation(child)?);
-        }
-
+        let children_count = current_op.children.len();
         Ok(Rc::new(Operation {
             name: current_op.name,
             args: current_op.args,
             records_produced: current_op.records_produced,
             execution_time: current_op.execution_time,
             depth: current_op.depth,
-            children: out_vec,
+            children: current_op.children.into_iter().try_fold(
+                Vec::with_capacity(children_count),
+                |mut acc, child| {
+                    acc.push(Self::finalize_operation(child)?);
+                    Result::<_, FalkorDBError>::Ok(acc)
+                },
+            )?,
         }))
     }
 

@@ -5,8 +5,8 @@
 
 use crate::{
     client::blocking::FalkorSyncClientInner, Constraint, ConstraintType, EntityType, ExecutionPlan,
-    FalkorIndex, FalkorResponse, FalkorResult, FalkorValue, GraphSchema, IndexType,
-    ProcedureQueryBuilder, QueryBuilder, ResultSet, SlowlogEntry,
+    FalkorIndex, FalkorResponse, FalkorResult, FalkorValue, GraphSchema, IndexType, LazyResultSet,
+    ProcedureQueryBuilder, QueryBuilder, SlowlogEntry,
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
@@ -78,7 +78,7 @@ impl SyncGraph {
     }
 
     /// Creates a [`QueryBuilder`] for this graph, in an attempt to profile a specific query
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     ///
     /// # Arguments
     /// * `query_string`: The query to profile
@@ -88,12 +88,12 @@ impl SyncGraph {
     pub fn profile<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<ExecutionPlan> {
+    ) -> QueryBuilder<ExecutionPlan, &str> {
         QueryBuilder::<'a>::new(self, "GRAPH.PROFILE", query_string)
     }
 
     /// Creates a [`QueryBuilder`] for this graph, in an attempt to explain a specific query
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     ///
     /// # Arguments
     /// * `query_string`: The query to explain the process for
@@ -103,27 +103,27 @@ impl SyncGraph {
     pub fn explain<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<ExecutionPlan> {
+    ) -> QueryBuilder<ExecutionPlan, &str> {
         QueryBuilder::new(self, "GRAPH.EXPLAIN", query_string)
     }
 
     /// Creates a [`QueryBuilder`] for this graph
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     ///
     /// # Arguments
     /// * `query_string`: The query to run
     ///
     /// # Returns
     /// A [`QueryBuilder`] object, which when performed will return a [`FalkorResponse<FalkorResultSet>`]
-    pub fn query<'a>(
-        &'a mut self,
-        query_string: &'a str,
-    ) -> QueryBuilder<FalkorResponse<ResultSet>> {
+    pub fn query<T: Display>(
+        &mut self,
+        query_string: T,
+    ) -> QueryBuilder<FalkorResponse<LazyResultSet>, T> {
         QueryBuilder::new(self, "GRAPH.QUERY", query_string)
     }
 
     /// Creates a [`QueryBuilder`] for this graph, for a readonly query
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only queries are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
@@ -134,12 +134,12 @@ impl SyncGraph {
     pub fn ro_query<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<FalkorResponse<ResultSet>> {
+    ) -> QueryBuilder<FalkorResponse<LazyResultSet>, &str> {
         QueryBuilder::new(self, "GRAPH.QUERY_RO", query_string)
     }
 
     /// Creates a [`ProcedureQueryBuilder`] for this graph
-    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only queries are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
@@ -155,7 +155,7 @@ impl SyncGraph {
     }
 
     /// Creates a [`ProcedureQueryBuilder`] for this graph, for a readonly procedure
-    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only procedures are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
@@ -188,7 +188,7 @@ impl SyncGraph {
     /// * `options`:
     ///
     /// # Returns
-    /// A [`ResultSet`] containing information on the created index
+    /// A [`LazyResultSet`] containing information on the created index
     pub fn create_index<P: Display>(
         &mut self,
         index_field_type: IndexType,
@@ -196,7 +196,7 @@ impl SyncGraph {
         label: &str,
         properties: &[P],
         options: Option<&HashMap<String, String>>,
-    ) -> FalkorResult<FalkorResponse<ResultSet>> {
+    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
         // Create index from these properties
         let properties_string = properties
             .iter()
@@ -226,14 +226,12 @@ impl SyncGraph {
             .map(|options_string| format!(" OPTIONS {{ {} }}", options_string))
             .unwrap_or_default();
 
-        self.query(
-            format!(
-                "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
-                properties_string, options_string
-            )
-            .as_str(),
-        )
-        .execute()
+        let query_str = format!(
+            "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
+            properties_string, options_string
+        );
+        QueryBuilder::<FalkorResponse<LazyResultSet>, String>::new(self, "GRAPH.QUERY", query_str)
+            .execute()
     }
 
     /// Drop an existing index, by specifying its type, entity, label and specific properties
@@ -246,7 +244,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: L,
         properties: &[P],
-    ) -> FalkorResult<FalkorResponse<ResultSet>> {
+    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
         let properties_string = properties
             .iter()
             .map(|element| format!("e.{}", element.to_string()))
@@ -265,14 +263,11 @@ impl SyncGraph {
         }
         .to_string();
 
-        self.query(
-            format!(
-                "DROP {idx_type} INDEX for {pattern} ON ({})",
-                properties_string
-            )
-            .as_str(),
-        )
-        .execute()
+        let query_str = format!(
+            "DROP {idx_type} INDEX for {pattern} ON ({})",
+            properties_string
+        );
+        self.query(query_str).execute()
     }
 
     /// Calls the DB.CONSTRAINTS procedure on the graph, returning an array of the graph's constraints

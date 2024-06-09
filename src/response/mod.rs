@@ -11,10 +11,8 @@ use crate::{
 pub(crate) mod constraint;
 pub(crate) mod execution_plan;
 pub(crate) mod index;
+pub(crate) mod lazy_result_set;
 pub(crate) mod slowlog_entry;
-
-/// A [`Vec`], representing a table of other [`Vec`]s, representing columns, containing [`FalkorValue`]s
-pub type ResultSet = Vec<Vec<FalkorValue>>;
 
 /// A response struct which also contains the returned header and stats data
 #[derive(Clone, Debug, Default)]

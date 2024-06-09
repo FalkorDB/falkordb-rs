@@ -4,6 +4,7 @@
  */
 
 #![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!("../README.md")]
 
 #[cfg(not(feature = "redis"))]
@@ -38,8 +39,9 @@ pub use response::{
     constraint::{Constraint, ConstraintStatus, ConstraintType},
     execution_plan::ExecutionPlan,
     index::{FalkorIndex, IndexStatus, IndexType},
+    lazy_result_set::LazyResultSet,
     slowlog_entry::SlowlogEntry,
-    FalkorResponse, ResultSet,
+    FalkorResponse,
 };
 pub use value::{
     config::ConfigValue,

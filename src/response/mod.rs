@@ -3,10 +3,12 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::value::utils::parse_type;
 use crate::{
     parser::utils::{parse_header, string_vec_from_val},
     FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
 };
+use std::collections::VecDeque;
 
 pub(crate) mod constraint;
 pub(crate) mod execution_plan;
@@ -15,6 +17,37 @@ pub(crate) mod slowlog_entry;
 
 /// A [`Vec`], representing a table of other [`Vec`]s, representing columns, containing [`FalkorValue`]s
 pub type ResultSet = Vec<Vec<FalkorValue>>;
+
+/// A wrapper around the returned raw data, allowing parsing on demand of each result
+/// This implements Iterator, so can simply be collect()'ed into any desired container
+pub struct LazyResultSet<'a> {
+    data: VecDeque<FalkorValue>,
+    graph_schema: &'a mut GraphSchema,
+}
+
+impl<'a> LazyResultSet<'a> {
+    pub(crate) fn new(
+        data: Vec<FalkorValue>,
+        graph_schema: &'a mut GraphSchema,
+    ) -> Self {
+        Self {
+            data: data.into(),
+            graph_schema,
+        }
+    }
+}
+
+impl<'a> Iterator for LazyResultSet<'a> {
+    type Item = Vec<FalkorValue>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.data.pop_front().and_then(|current_result| {
+            parse_type(6, current_result, self.graph_schema)
+                .and_then(|parsed_result| parsed_result.into_vec())
+                .ok()
+        })
+    }
+}
 
 /// A response struct which also contains the returned header and stats data
 #[derive(Clone, Debug, Default)]

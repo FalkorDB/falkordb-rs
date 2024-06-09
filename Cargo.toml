@@ -1,6 +1,6 @@
 [package]
 name = "falkordb"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A FalkorDB Rust client"
 license = "SSPL-1.0"

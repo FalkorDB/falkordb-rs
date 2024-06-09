@@ -120,7 +120,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
 
                 FalkorResponse::from_response(
                     None,
-                    LazyResultSet::new(Default::default(), self.graph),
+                    LazyResultSet::new(Default::default(), &mut self.graph.graph_schema),
                     stats,
                 )
             }
@@ -133,7 +133,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
 
                 FalkorResponse::from_response(
                     Some(header),
-                    LazyResultSet::new(Default::default(), self.graph),
+                    LazyResultSet::new(Default::default(), &mut self.graph.graph_schema),
                     stats,
                 )
             }
@@ -146,7 +146,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
 
                 FalkorResponse::from_response(
                     Some(header),
-                    LazyResultSet::new(data.into_vec()?, self.graph),
+                    LazyResultSet::new(data.into_vec()?, &mut self.graph.graph_schema),
                     stats,
                 )
             }
@@ -281,7 +281,7 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
 
         let (query_string, params) =
             generate_procedure_call(self.procedure_name, self.args, self.yields);
-        let query = construct_query(&query_string, params.as_ref());
+        let query = construct_query(query_string, params.as_ref());
 
         conn.execute_command(
             Some(self.graph.graph_name()),

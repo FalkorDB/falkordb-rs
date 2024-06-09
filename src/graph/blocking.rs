@@ -78,7 +78,7 @@ impl SyncGraph {
     }
 
     /// Creates a [`QueryBuilder`] for this graph, in an attempt to profile a specific query
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     ///
     /// # Arguments
     /// * `query_string`: The query to profile
@@ -93,7 +93,7 @@ impl SyncGraph {
     }
 
     /// Creates a [`QueryBuilder`] for this graph, in an attempt to explain a specific query
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     ///
     /// # Arguments
     /// * `query_string`: The query to explain the process for
@@ -108,7 +108,7 @@ impl SyncGraph {
     }
 
     /// Creates a [`QueryBuilder`] for this graph
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     ///
     /// # Arguments
     /// * `query_string`: The query to run
@@ -123,7 +123,7 @@ impl SyncGraph {
     }
 
     /// Creates a [`QueryBuilder`] for this graph, for a readonly query
-    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`QueryBuilder`] has to be dropped or ran using [`QueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only queries are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
@@ -139,7 +139,7 @@ impl SyncGraph {
     }
 
     /// Creates a [`ProcedureQueryBuilder`] for this graph
-    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only queries are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments
@@ -155,7 +155,7 @@ impl SyncGraph {
     }
 
     /// Creates a [`ProcedureQueryBuilder`] for this graph, for a readonly procedure
-    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::perform`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
+    /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only procedures are more limited with the operations they are allowed to perform.
     ///
     /// # Arguments

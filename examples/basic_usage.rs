@@ -38,5 +38,9 @@ fn main() -> FalkorResult<()> {
 
     cloned_graph.delete()?;
 
+    let res_again = graph.query("MATCH (a:actor) return a").execute()?;
+    let as_vec = res_again.data.collect::<Vec<_>>();
+    assert_eq!(as_vec.len(), 1317);
+
     Ok(())
 }

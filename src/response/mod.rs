@@ -5,56 +5,14 @@
 
 use crate::{
     parser::utils::{parse_header, string_vec_from_val},
-    value::utils::parse_type,
-    FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema, SyncGraph,
+    FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
 };
-use std::collections::VecDeque;
 
 pub(crate) mod constraint;
 pub(crate) mod execution_plan;
 pub(crate) mod index;
+pub(crate) mod lazy_result_set;
 pub(crate) mod slowlog_entry;
-
-/// A wrapper around the returned raw data, allowing parsing on demand of each result
-/// This implements Iterator, so can simply be collect()'ed into any desired container
-pub struct LazyResultSet<'a> {
-    data: VecDeque<FalkorValue>,
-    graph: &'a mut SyncGraph,
-}
-
-impl<'a> LazyResultSet<'a> {
-    pub(crate) fn new(
-        data: Vec<FalkorValue>,
-        graph: &'a mut SyncGraph,
-    ) -> Self {
-        Self {
-            data: data.into(),
-            graph,
-        }
-    }
-
-    /// Returns the remaining rows in the result set.
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    /// Returns whether this result set is empty or depleted
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-}
-
-impl<'a> Iterator for LazyResultSet<'a> {
-    type Item = Vec<FalkorValue>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.data.pop_front().map(|current_result| {
-            parse_type(6, current_result, &mut self.graph.graph_schema)
-                .and_then(|parsed_result| parsed_result.into_vec())
-                .unwrap_or(vec![FalkorValue::Unparseable])
-        })
-    }
-}
 
 /// A response struct which also contains the returned header and stats data
 #[derive(Clone, Debug, Default)]

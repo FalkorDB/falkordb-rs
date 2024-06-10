@@ -5,7 +5,7 @@ multiple-versions = "deny"
 skip = ["windows_x86_64_msvc", "windows_x86_64_gnu", "windows_x86_64_gnullvm",
     "windows_i686_msvc", "windows_i686_gnu", "windows_i686_gnullvm",
     "windows_aarch64_msvc", "windows_aarch64_gnullvm",
-    "windows-targets"] # Windows crates are all locked in `mio`, but should be fine
+    "windows-targets", "windows-sys"] # Windows crates are all using various versions in `mio`, but should be fine
 
 [sources]
 unknown-registry = "deny"

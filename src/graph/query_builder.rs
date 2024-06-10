@@ -412,7 +412,7 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
 }
 
 impl<'a, Out: FalkorParsable> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Out>>, SyncGraph> {
-    /// Executes the procedure call and return a [`FalkorResponse`] type containing a vec of [`Out`]s
+    /// Executes the procedure call and return a [`FalkorResponse`] type containing a [`Vec`] of [`FalkorParsable`]s
     /// This functions consumes self
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Out>>> {
         self.common_execute_steps()
@@ -422,7 +422,7 @@ impl<'a, Out: FalkorParsable> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Out>>
 
 #[cfg(feature = "tokio")]
 impl<'a, Out: FalkorParsable> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Out>>, AsyncGraph> {
-    /// Executes the procedure call and return a [`FalkorResponse`] type containing a vec of [`Out`]s
+    /// Executes the procedure call and return a [`FalkorResponse`] type containing a [`Vec`] of [`FalkorParsable`]s
     /// This functions consumes self
     pub async fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Out>>> {
         self.common_execute_steps()

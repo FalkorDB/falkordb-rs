@@ -246,18 +246,6 @@ impl FalkorAsyncClient {
 }
 
 #[cfg(test)]
-pub(crate) async fn create_empty_inner_async_client() -> Arc<FalkorAsyncClientInner> {
-    let (tx, rx) = mpsc::channel(1);
-    tx.send(FalkorAsyncConnection::None).await.ok();
-    Arc::new(FalkorAsyncClientInner {
-        _inner: Mutex::new(FalkorClientProvider::None),
-        connection_pool_size: 0,
-        connection_pool_tx: RwLock::new(tx),
-        connection_pool_rx: Mutex::new(rx),
-    })
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
@@ -321,9 +309,13 @@ mod tests {
     async fn test_copy_graph() {
         let client = create_async_test_client().await;
 
-        client.select_graph("imdb_ro_copy").delete().await.ok();
+        client
+            .select_graph("imdb_ro_copy_async")
+            .delete()
+            .await
+            .ok();
 
-        let graph = client.copy_graph("imdb", "imdb_ro_copy").await;
+        let graph = client.copy_graph("imdb", "imdb_ro_copy_async").await;
         assert!(graph.is_ok());
 
         let mut graph = TestAsyncGraphHandle {
@@ -381,51 +373,51 @@ mod tests {
         );
     }
 
-    // #[tokio::test(flavor = "multi_thread")]
-    // async fn test_set_config() {
-    //     let client = create_async_test_client().await;
-    //
-    //     let config = client
-    //         .config_get("MAX_QUEUED_QUERIES")
-    //         .await
-    //         .expect("Could not get configuration");
-    //
-    //     let current_val = config
-    //         .get("MAX_QUEUED_QUERIES")
-    //         .cloned()
-    //         .unwrap()
-    //         .as_i64()
-    //         .unwrap();
-    //
-    //     let desired_val = if current_val == 4294967295 {
-    //         4294967295 / 2
-    //     } else {
-    //         4294967295
-    //     };
-    //
-    //     client
-    //         .config_set("MAX_QUEUED_QUERIES", desired_val)
-    //         .await
-    //         .expect("Could not set config value");
-    //
-    //     let new_config = client
-    //         .config_get("MAX_QUEUED_QUERIES")
-    //         .await
-    //         .expect("Could not get configuration");
-    //
-    //     assert_eq!(
-    //         new_config
-    //             .get("MAX_QUEUED_QUERIES")
-    //             .cloned()
-    //             .unwrap()
-    //             .as_i64()
-    //             .unwrap(),
-    //         desired_val
-    //     );
-    //
-    //     client
-    //         .config_set("MAX_QUEUED_QUERIES", current_val)
-    //         .await
-    //         .ok();
-    // }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_set_config() {
+        let client = create_async_test_client().await;
+
+        let config = client
+            .config_get("MAX_QUEUED_QUERIES")
+            .await
+            .expect("Could not get configuration");
+
+        let current_val = config
+            .get("MAX_QUEUED_QUERIES")
+            .cloned()
+            .unwrap()
+            .as_i64()
+            .unwrap();
+
+        let desired_val = if current_val == 4294967295 {
+            4294967295 / 2
+        } else {
+            4294967295
+        };
+
+        client
+            .config_set("MAX_QUEUED_QUERIES", desired_val)
+            .await
+            .expect("Could not set config value");
+
+        let new_config = client
+            .config_get("MAX_QUEUED_QUERIES")
+            .await
+            .expect("Could not get configuration");
+
+        assert_eq!(
+            new_config
+                .get("MAX_QUEUED_QUERIES")
+                .cloned()
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            desired_val
+        );
+
+        client
+            .config_set("MAX_QUEUED_QUERIES", current_val)
+            .await
+            .ok();
+    }
 }

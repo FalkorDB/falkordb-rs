@@ -141,12 +141,12 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, FalkorAsyncClientInner, Async
 }
 
 impl<'a, T: Display, C: ProvidesSyncConnections, G: HasGraphSchema<C>>
-    QueryBuilder<'a, FalkorResponse<LazyResultSet<'a, C>>, T, C, G>
+    QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T, C, G>
 {
     fn parse_result_set(
         self,
         res: Vec<FalkorValue>,
-    ) -> FalkorResult<FalkorResponse<LazyResultSet<'a, C>>> {
+    ) -> FalkorResult<FalkorResponse<LazyResultSet<'a>>> {
         match res.len() {
             1 => {
                 let stats = res.into_iter().next().ok_or(
@@ -195,18 +195,10 @@ impl<'a, T: Display, C: ProvidesSyncConnections, G: HasGraphSchema<C>>
 }
 
 impl<'a, T: Display>
-    QueryBuilder<
-        'a,
-        FalkorResponse<LazyResultSet<'a, FalkorSyncClientInner>>,
-        T,
-        FalkorSyncClientInner,
-        SyncGraph,
-    >
+    QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T, FalkorSyncClientInner, SyncGraph>
 {
     /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member
-    pub fn execute(
-        mut self
-    ) -> FalkorResult<FalkorResponse<LazyResultSet<'a, FalkorSyncClientInner>>> {
+    pub fn execute(mut self) -> FalkorResult<FalkorResponse<LazyResultSet<'a>>> {
         let res = self.common_execute_steps()?.into_vec()?;
         self.parse_result_set(res)
     }
@@ -214,18 +206,10 @@ impl<'a, T: Display>
 
 #[cfg(feature = "tokio")]
 impl<'a, T: Display>
-    QueryBuilder<
-        'a,
-        FalkorResponse<LazyResultSet<'a, FalkorAsyncClientInner>>,
-        T,
-        FalkorAsyncClientInner,
-        AsyncGraph,
-    >
+    QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T, FalkorAsyncClientInner, AsyncGraph>
 {
     /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member
-    pub async fn execute(
-        mut self
-    ) -> FalkorResult<FalkorResponse<LazyResultSet<'a, FalkorAsyncClientInner>>> {
+    pub async fn execute(mut self) -> FalkorResult<FalkorResponse<LazyResultSet<'a>>> {
         let res = self.common_execute_steps().await?.into_vec()?;
         self.parse_result_set(res)
     }

@@ -3,16 +3,15 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::client::ProvidesSyncConnections;
 use crate::{
     value::utils::parse_type, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
 };
 use std::collections::HashMap;
 
 impl FalkorParsable for HashMap<String, FalkorValue> {
-    fn from_falkor_value<C: ProvidesSyncConnections>(
+    fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &mut GraphSchema<C>,
+        graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
         let val_vec = value.into_vec()?;
         if val_vec.len() % 2 != 0 {

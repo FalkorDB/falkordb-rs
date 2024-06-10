@@ -3,7 +3,6 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::client::ProvidesSyncConnections;
 use crate::{FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema, SchemaType};
 use std::collections::{HashMap, HashSet};
 
@@ -30,9 +29,9 @@ pub struct Node {
 }
 
 impl FalkorParsable for Node {
-    fn from_falkor_value<C: ProvidesSyncConnections>(
+    fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &mut GraphSchema<C>,
+        graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
         let [entity_id, labels, properties]: [FalkorValue; 3] =
             value.into_vec()?.try_into().map_err(|_| {
@@ -74,9 +73,9 @@ pub struct Edge {
 }
 
 impl FalkorParsable for Edge {
-    fn from_falkor_value<C: ProvidesSyncConnections>(
+    fn from_falkor_value(
         value: FalkorValue,
-        graph_schema: &mut GraphSchema<C>,
+        graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
         let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] =
             value.into_vec()?.try_into().map_err(|_| {

@@ -22,7 +22,7 @@ use std::{collections::HashMap, fmt::Display, sync::Arc};
 pub struct AsyncGraph {
     pub(crate) client: Arc<FalkorAsyncClientInner>,
     graph_name: String,
-    pub(crate) graph_schema: GraphSchema<FalkorAsyncClientInner>,
+    pub(crate) graph_schema: GraphSchema,
 }
 
 impl AsyncGraph {
@@ -126,12 +126,7 @@ impl AsyncGraph {
     pub fn query<T: Display>(
         &mut self,
         query_string: T,
-    ) -> QueryBuilder<
-        FalkorResponse<LazyResultSet<FalkorAsyncClientInner>>,
-        T,
-        FalkorAsyncClientInner,
-        Self,
-    > {
+    ) -> QueryBuilder<FalkorResponse<LazyResultSet>, T, FalkorAsyncClientInner, Self> {
         QueryBuilder::new(self, "GRAPH.QUERY", query_string)
     }
 
@@ -147,12 +142,7 @@ impl AsyncGraph {
     pub async fn ro_query<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<
-        FalkorResponse<LazyResultSet<FalkorAsyncClientInner>>,
-        &str,
-        FalkorAsyncClientInner,
-        Self,
-    > {
+    ) -> QueryBuilder<FalkorResponse<LazyResultSet>, &str, FalkorAsyncClientInner, Self> {
         QueryBuilder::new(self, "GRAPH.QUERY_RO", query_string)
     }
 
@@ -216,17 +206,16 @@ impl AsyncGraph {
         label: &str,
         properties: &[P],
         options: Option<&HashMap<String, String>>,
-    ) -> FalkorResult<FalkorResponse<LazyResultSet<FalkorAsyncClientInner>>> {
+    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
         // Create index from these properties
         let query_str =
             generate_create_index_query(index_field_type, entity_type, label, properties, options);
 
-        QueryBuilder::<
-            FalkorResponse<LazyResultSet<FalkorAsyncClientInner>>,
-            String,
-            FalkorAsyncClientInner,
-            Self,
-        >::new(self, "GRAPH.QUERY", query_str)
+        QueryBuilder::<FalkorResponse<LazyResultSet>, String, FalkorAsyncClientInner, Self>::new(
+            self,
+            "GRAPH.QUERY",
+            query_str,
+        )
         .execute()
         .await
     }
@@ -241,7 +230,7 @@ impl AsyncGraph {
         entity_type: EntityType,
         label: &str,
         properties: &[P],
-    ) -> FalkorResult<FalkorResponse<LazyResultSet<FalkorAsyncClientInner>>> {
+    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
         let query_str = generate_drop_index_query(index_field_type, entity_type, label, properties);
         self.query(query_str).execute().await
     }
@@ -360,7 +349,7 @@ impl AsyncGraph {
 }
 
 impl HasGraphSchema<FalkorAsyncClientInner> for AsyncGraph {
-    fn get_graph_schema_mut(&mut self) -> &mut GraphSchema<FalkorAsyncClientInner> {
+    fn get_graph_schema_mut(&mut self) -> &mut GraphSchema {
         &mut self.graph_schema
     }
 }

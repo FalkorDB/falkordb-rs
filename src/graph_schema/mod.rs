@@ -68,8 +68,9 @@ pub enum SchemaType {
 pub(crate) type IdMap = HashMap<i64, String>;
 
 /// A struct containing the various schema maps, allowing conversions between ids and their string representations.
-pub struct GraphSchema<C: ProvidesSyncConnections> {
-    client: Arc<C>,
+#[derive(Clone)]
+pub struct GraphSchema {
+    client: Arc<dyn ProvidesSyncConnections + Sync + Send>,
     graph_name: String,
     version: i64,
     labels: IdMap,
@@ -77,24 +78,10 @@ pub struct GraphSchema<C: ProvidesSyncConnections> {
     relationships: IdMap,
 }
 
-// Manually implement clone otherwise we need the trait to provide it as well which is annoying, either that or use Arc<C> as the generic
-impl<C: ProvidesSyncConnections> Clone for GraphSchema<C> {
-    fn clone(&self) -> Self {
-        Self {
-            client: self.client.clone(),
-            graph_name: self.graph_name.clone(),
-            version: self.version,
-            labels: self.labels.clone(),
-            properties: self.properties.clone(),
-            relationships: self.relationships.clone(),
-        }
-    }
-}
-
-impl<C: ProvidesSyncConnections> GraphSchema<C> {
+impl GraphSchema {
     pub(crate) fn new<T: ToString>(
         graph_name: T,
-        client: Arc<C>,
+        client: Arc<dyn ProvidesSyncConnections + Sync + Send>,
     ) -> Self {
         Self {
             client,

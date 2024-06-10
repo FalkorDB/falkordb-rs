@@ -21,7 +21,7 @@ use std::{collections::HashMap, fmt::Display, sync::Arc};
 pub struct SyncGraph {
     pub(crate) client: Arc<FalkorSyncClientInner>,
     graph_name: String,
-    pub(crate) graph_schema: GraphSchema<FalkorSyncClientInner>,
+    pub(crate) graph_schema: GraphSchema,
 }
 
 impl SyncGraph {
@@ -121,12 +121,7 @@ impl SyncGraph {
     pub fn query<T: Display>(
         &mut self,
         query_string: T,
-    ) -> QueryBuilder<
-        FalkorResponse<LazyResultSet<FalkorSyncClientInner>>,
-        T,
-        FalkorSyncClientInner,
-        Self,
-    > {
+    ) -> QueryBuilder<FalkorResponse<LazyResultSet>, T, FalkorSyncClientInner, Self> {
         QueryBuilder::new(self, "GRAPH.QUERY", query_string)
     }
 
@@ -142,12 +137,7 @@ impl SyncGraph {
     pub fn ro_query<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<
-        FalkorResponse<LazyResultSet<FalkorSyncClientInner>>,
-        &str,
-        FalkorSyncClientInner,
-        Self,
-    > {
+    ) -> QueryBuilder<FalkorResponse<LazyResultSet>, &str, FalkorSyncClientInner, Self> {
         QueryBuilder::new(self, "GRAPH.QUERY_RO", query_string)
     }
 
@@ -210,17 +200,16 @@ impl SyncGraph {
         label: &str,
         properties: &[P],
         options: Option<&HashMap<String, String>>,
-    ) -> FalkorResult<FalkorResponse<LazyResultSet<FalkorSyncClientInner>>> {
+    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
         // Create index from these properties
         let query_str =
             generate_create_index_query(index_field_type, entity_type, label, properties, options);
 
-        QueryBuilder::<
-            FalkorResponse<LazyResultSet<FalkorSyncClientInner>>,
-            String,
-            FalkorSyncClientInner,
-            Self,
-        >::new(self, "GRAPH.QUERY", query_str)
+        QueryBuilder::<FalkorResponse<LazyResultSet>, String, FalkorSyncClientInner, Self>::new(
+            self,
+            "GRAPH.QUERY",
+            query_str,
+        )
         .execute()
     }
 
@@ -234,7 +223,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: &str,
         properties: &[P],
-    ) -> FalkorResult<FalkorResponse<LazyResultSet<FalkorSyncClientInner>>> {
+    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
         let query_str = generate_drop_index_query(index_field_type, entity_type, label, properties);
         self.query(query_str).execute()
     }
@@ -348,7 +337,7 @@ impl SyncGraph {
 }
 
 impl HasGraphSchema<FalkorSyncClientInner> for SyncGraph {
-    fn get_graph_schema_mut(&mut self) -> &mut GraphSchema<FalkorSyncClientInner> {
+    fn get_graph_schema_mut(&mut self) -> &mut GraphSchema {
         &mut self.graph_schema
     }
 }

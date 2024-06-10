@@ -3,9 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    client::ProvidesSyncConnections, FalkorDBError, FalkorParsable, FalkorValue, GraphSchema, Point,
-};
+use crate::{FalkorDBError, FalkorParsable, FalkorValue, GraphSchema, Point};
 
 pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValue), FalkorDBError> {
     let [type_marker, val]: [FalkorValue; 2] = value.into_vec()?.try_into().map_err(|_| {
@@ -18,10 +16,10 @@ pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValu
     Ok((type_marker, val))
 }
 
-pub(crate) fn parse_type<C: ProvidesSyncConnections>(
+pub(crate) fn parse_type(
     type_marker: i64,
     val: FalkorValue,
-    graph_schema: &mut GraphSchema<C>,
+    graph_schema: &mut GraphSchema,
 ) -> Result<FalkorValue, FalkorDBError> {
     let res = match type_marker {
         1 => FalkorValue::None,

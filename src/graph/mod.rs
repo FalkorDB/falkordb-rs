@@ -13,5 +13,5 @@ pub(crate) mod utils;
 pub(crate) mod asynchronous;
 
 pub(crate) trait HasGraphSchema<C: ProvidesSyncConnections> {
-    fn get_graph_schema_mut(&mut self) -> &mut GraphSchema<C>;
+    fn get_graph_schema_mut(&mut self) -> &mut GraphSchema;
 }

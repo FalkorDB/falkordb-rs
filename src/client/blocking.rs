@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    client::{FalkorClientProvider, ProvidesSyncConnections},
+    client::{utils::parse_config_response, FalkorClientProvider, ProvidesSyncConnections},
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
     parser::utils::string_vec_from_val,
     ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorValue, SyncGraph,
@@ -127,31 +127,7 @@ impl FalkorSyncClient {
             .execute_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))?
             .into_vec()?;
 
-        if config.len() == 2 {
-            let [key, val]: [FalkorValue; 2] = config.try_into().map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 2 elements for configuration option".to_string(),
-                )
-            })?;
-
-            return Ok(HashMap::from([(
-                key.into_string()?,
-                ConfigValue::try_from(val)?,
-            )]));
-        }
-
-        Ok(config
-            .into_iter()
-            .flat_map(|config| {
-                let [key, val]: [FalkorValue; 2] = config.into_vec()?.try_into().map_err(|_| {
-                    FalkorDBError::ParsingArrayToStructElementCount(
-                        "Expected exactly 2 elements for configuration option".to_string(),
-                    )
-                })?;
-
-                Result::<_, FalkorDBError>::Ok((key.into_string()?, ConfigValue::try_from(val)?))
-            })
-            .collect::<HashMap<String, ConfigValue>>())
+        parse_config_response(config)
     }
 
     /// Return the current value of a configuration option in the database.

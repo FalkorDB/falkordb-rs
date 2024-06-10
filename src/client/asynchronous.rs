@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    client::{FalkorClientProvider, ProvidesSyncConnections},
+    client::{utils::parse_config_response, FalkorClientProvider, ProvidesSyncConnections},
     connection::{
         asynchronous::{BorrowedAsyncConnection, FalkorAsyncConnection},
         blocking::FalkorSyncConnection,
@@ -143,31 +143,7 @@ impl FalkorAsyncClient {
             .await?
             .into_vec()?;
 
-        if config.len() == 2 {
-            let [key, val]: [FalkorValue; 2] = config.try_into().map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 2 elements for configuration option".to_string(),
-                )
-            })?;
-
-            return Ok(HashMap::from([(
-                key.into_string()?,
-                ConfigValue::try_from(val)?,
-            )]));
-        }
-
-        Ok(config
-            .into_iter()
-            .flat_map(|config| {
-                let [key, val]: [FalkorValue; 2] = config.into_vec()?.try_into().map_err(|_| {
-                    FalkorDBError::ParsingArrayToStructElementCount(
-                        "Expected exactly 2 elements for configuration option".to_string(),
-                    )
-                })?;
-
-                Result::<_, FalkorDBError>::Ok((key.into_string()?, ConfigValue::try_from(val)?))
-            })
-            .collect::<HashMap<String, ConfigValue>>())
+        parse_config_response(config)
     }
 
     /// Return the current value of a configuration option in the database.
@@ -237,11 +213,13 @@ impl FalkorAsyncClient {
         &self,
         section: Option<&str>,
     ) -> FalkorResult<HashMap<String, String>> {
-        self.borrow_connection()
-            .await?
-            .as_inner()?
-            .get_redis_info(section)
-            .await
+        let mut conn = self.borrow_connection().await?;
+
+        let redis_info = conn.as_inner()?.get_redis_info(section).await;
+
+        conn.return_to_pool().await;
+
+        redis_info
     }
 }
 

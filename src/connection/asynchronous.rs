@@ -4,11 +4,13 @@
  */
 
 use crate::{
-    client::asynchronous::FalkorAsyncClientInner, connection::utils::map_redis_error,
-    FalkorDBError, FalkorResult, FalkorValue,
+    client::asynchronous::FalkorAsyncClientInner, FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{collections::HashMap, convert::TryInto, sync::Arc};
 use tokio::sync::mpsc;
+
+#[cfg(feature = "redis")]
+use crate::redis_ext::map_redis_error;
 
 pub(crate) enum FalkorAsyncConnection {
     #[allow(unused)]

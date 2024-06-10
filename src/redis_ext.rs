@@ -51,3 +51,13 @@ impl FromRedisValue for FalkorValue {
         })
     }
 }
+
+pub(crate) fn map_redis_error(err: redis::RedisError) -> FalkorDBError {
+    match err.kind() {
+        redis::ErrorKind::IoError
+        | redis::ErrorKind::ClusterConnectionNotFound
+        | redis::ErrorKind::ClusterDown
+        | redis::ErrorKind::MasterDown => FalkorDBError::ConnectionDown,
+        _ => FalkorDBError::RedisError(err.to_string()),
+    }
+}

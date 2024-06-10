@@ -5,13 +5,15 @@
 
 use crate::{
     client::{blocking::FalkorSyncClientInner, ProvidesSyncConnections},
-    connection::utils::map_redis_error,
     FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc},
 };
+
+#[cfg(feature = "redis")]
+use crate::redis_ext::map_redis_error;
 
 pub(crate) enum FalkorSyncConnection {
     #[allow(unused)]

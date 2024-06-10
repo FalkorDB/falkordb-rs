@@ -13,8 +13,8 @@ use crate::{
     AsyncGraph, ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{collections::HashMap, sync::Arc};
-use tokio::runtime::Handle;
 use tokio::{
+    runtime::Handle,
     sync::{mpsc, Mutex, RwLock},
     task,
 };
@@ -67,7 +67,7 @@ impl ProvidesSyncConnections for FalkorAsyncClientInner {
 /// Its API uses only immutable references
 pub struct FalkorAsyncClient {
     inner: Arc<FalkorAsyncClientInner>,
-    pub(crate) _connection_info: FalkorConnectionInfo,
+    _connection_info: FalkorConnectionInfo,
 }
 
 impl FalkorAsyncClient {

@@ -58,7 +58,7 @@ impl ProvidesSyncConnections for FalkorSyncClientInner {
 #[derive(Clone)]
 pub struct FalkorSyncClient {
     inner: Arc<FalkorSyncClientInner>,
-    pub(crate) _connection_info: FalkorConnectionInfo,
+    _connection_info: FalkorConnectionInfo,
 }
 
 impl FalkorSyncClient {

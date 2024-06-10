@@ -61,6 +61,7 @@ pub(crate) fn parse_vec<T: TryFrom<FalkorValue, Error = FalkorDBError>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::HasGraphSchema;
     use crate::graph_schema::tests::open_readonly_graph_with_modified_schema;
 
     #[test]
@@ -87,7 +88,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 
@@ -136,7 +137,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 
@@ -200,7 +201,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 
@@ -242,7 +243,7 @@ mod tests {
                 FalkorValue::String("key2".to_string()),
                 FalkorValue::Array(vec![FalkorValue::I64(4), FalkorValue::Bool(true)]),
             ]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 
@@ -267,7 +268,7 @@ mod tests {
         let res = parse_type(
             11,
             FalkorValue::Array(vec![FalkorValue::F64(102.0), FalkorValue::F64(15.2)]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 

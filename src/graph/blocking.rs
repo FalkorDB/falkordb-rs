@@ -19,9 +19,9 @@ use std::{collections::HashMap, fmt::Display, sync::Arc};
 /// Graph schema is not shared between instances of SyncGraph, even with the same name, but cloning will maintain the current schema
 #[derive(Clone)]
 pub struct SyncGraph {
-    pub(crate) client: Arc<FalkorSyncClientInner>,
+    client: Arc<FalkorSyncClientInner>,
     graph_name: String,
-    pub(crate) graph_schema: GraphSchema,
+    graph_schema: GraphSchema,
 }
 
 impl SyncGraph {
@@ -42,6 +42,10 @@ impl SyncGraph {
     /// The graph name as a string slice, without cloning.
     pub fn graph_name(&self) -> &str {
         self.graph_name.as_str()
+    }
+
+    pub(crate) fn get_client(&self) -> &Arc<FalkorSyncClientInner> {
+        &self.client
     }
 
     fn execute_command(

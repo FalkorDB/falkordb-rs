@@ -19,10 +19,10 @@ pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
 
 // Intermediate type for map parsing
 #[derive(Debug)]
-pub(crate) struct FKeyTypeVal {
-    pub(crate) key: i64,
-    pub(crate) type_marker: i64,
-    pub(crate) val: FalkorValue,
+struct FKeyTypeVal {
+    key: i64,
+    type_marker: i64,
+    val: FalkorValue,
 }
 
 impl TryFrom<FalkorValue> for FKeyTypeVal {
@@ -244,7 +244,8 @@ impl GraphSchema {
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        client::blocking::create_empty_inner_sync_client, test_utils::create_test_client, SyncGraph,
+        client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
+        test_utils::create_test_client, SyncGraph,
     };
     use std::collections::HashMap;
 
@@ -252,18 +253,19 @@ pub(crate) mod tests {
         let client = create_test_client();
         let mut graph = client.select_graph("imdb");
 
-        graph.graph_schema.properties = HashMap::from([
-            (0, "age".to_string()),
-            (1, "is_boring".to_string()),
-            (2, "something_else".to_string()),
-            (3, "secs_since_login".to_string()),
-        ]);
+        {
+            let schema = graph.get_graph_schema_mut();
+            schema.properties = HashMap::from([
+                (0, "age".to_string()),
+                (1, "is_boring".to_string()),
+                (2, "something_else".to_string()),
+                (3, "secs_since_login".to_string()),
+            ]);
 
-        graph.graph_schema.labels =
-            HashMap::from([(0, "much".to_string()), (1, "actor".to_string())]);
+            schema.labels = HashMap::from([(0, "much".to_string()), (1, "actor".to_string())]);
 
-        graph.graph_schema.relationships =
-            HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
+            schema.relationships = HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
+        }
 
         graph
     }

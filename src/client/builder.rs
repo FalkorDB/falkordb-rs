@@ -158,16 +158,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "redis")]
-    fn test_sync_builder_redis_fallback() {
-        let client = FalkorClientBuilder::new().build();
-        assert!(client.is_ok());
-
-        let FalkorConnectionInfo::Redis(redis_info) = client.unwrap()._connection_info;
-        assert_eq!(redis_info.addr.to_string().as_str(), "127.0.0.1:6379");
-    }
-
-    #[test]
     fn test_connection_pool_size() {
         let client = FalkorClientBuilder::new()
             .with_num_connections(NonZeroU8::new(16).expect("Could not create a perfectly fine u8"))

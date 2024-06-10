@@ -83,7 +83,7 @@ pub(crate) mod test_utils {
             tokio::task::block_in_place(|| {
                 // Avoid copying the schema each time
                 let mut graph_handle =
-                    AsyncGraph::new(self.inner.client.clone(), self.inner.graph_name());
+                    AsyncGraph::new(self.inner.get_client().clone(), self.inner.graph_name());
                 tokio::runtime::Handle::current().block_on(async move {
                     graph_handle.delete().await.ok();
                 })

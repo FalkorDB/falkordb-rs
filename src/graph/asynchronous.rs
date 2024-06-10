@@ -20,9 +20,9 @@ use std::{collections::HashMap, fmt::Display, sync::Arc};
 /// Graph schema is not shared between instances of AsyncGraph, even with the same name, but cloning will maintain the current schema
 #[derive(Clone)]
 pub struct AsyncGraph {
-    pub(crate) client: Arc<FalkorAsyncClientInner>,
+    client: Arc<FalkorAsyncClientInner>,
     graph_name: String,
-    pub(crate) graph_schema: GraphSchema,
+    graph_schema: GraphSchema,
 }
 
 impl AsyncGraph {
@@ -43,6 +43,10 @@ impl AsyncGraph {
     /// The graph name as a string slice, without cloning.
     pub fn graph_name(&self) -> &str {
         self.graph_name.as_str()
+    }
+
+    pub(crate) fn get_client(&self) -> &Arc<FalkorAsyncClientInner> {
+        &self.client
     }
 
     async fn execute_command(

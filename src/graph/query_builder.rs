@@ -100,8 +100,8 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, FalkorSyncClientInner, SyncGr
     fn common_execute_steps(&mut self) -> FalkorResult<FalkorValue> {
         let mut conn = self
             .graph
-            .client
-            .borrow_connection(self.graph.client.clone())?;
+            .get_client()
+            .borrow_connection(self.graph.get_client().clone())?;
         let query = construct_query(&self.query_string, self.params);
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
@@ -127,8 +127,8 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, FalkorAsyncClientInner, Async
         params.extend(timeout.as_deref());
 
         self.graph
-            .client
-            .borrow_connection(self.graph.client.clone())
+            .get_client()
+            .borrow_connection(self.graph.get_client().clone())
             .await?
             .execute_command(
                 Some(self.graph.graph_name()),
@@ -346,8 +346,8 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, SyncGraph> {
     fn common_execute_steps(&mut self) -> FalkorResult<FalkorValue> {
         let mut conn = self
             .graph
-            .client
-            .borrow_connection(self.graph.client.clone())?;
+            .get_client()
+            .borrow_connection(self.graph.get_client().clone())?;
 
         let command = match self.readonly {
             true => "GRAPH.QUERY_RO",
@@ -372,8 +372,8 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
     async fn common_execute_steps(&mut self) -> FalkorResult<FalkorValue> {
         let conn = self
             .graph
-            .client
-            .borrow_connection(self.graph.client.clone())
+            .get_client()
+            .borrow_connection(self.graph.get_client().clone())
             .await?;
 
         let command = match self.readonly {
@@ -399,8 +399,9 @@ impl<'a, Out: FalkorParsable> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Out>>
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a [`Vec`] of [`FalkorParsable`]s
     /// This functions consumes self
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Out>>> {
-        self.common_execute_steps()
-            .and_then(|res| FalkorParsable::from_falkor_value(res, &mut self.graph.graph_schema))
+        self.common_execute_steps().and_then(|res| {
+            FalkorParsable::from_falkor_value(res, self.graph.get_graph_schema_mut())
+        })
     }
 }
 
@@ -409,9 +410,9 @@ impl<'a, Out: FalkorParsable> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Out>>
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a [`Vec`] of [`FalkorParsable`]s
     /// This functions consumes self
     pub async fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Out>>> {
-        self.common_execute_steps()
-            .await
-            .and_then(|res| FalkorParsable::from_falkor_value(res, &mut self.graph.graph_schema))
+        self.common_execute_steps().await.and_then(|res| {
+            FalkorParsable::from_falkor_value(res, self.graph.get_graph_schema_mut())
+        })
     }
 }
 

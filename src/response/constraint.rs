@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::client::ProvidesSyncConnections;
 use crate::{
     value::utils::parse_type, EntityType, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue,
     GraphSchema,
@@ -48,9 +49,9 @@ pub struct Constraint {
 }
 
 impl FalkorParsable for Constraint {
-    fn from_falkor_value(
+    fn from_falkor_value<C: ProvidesSyncConnections>(
         value: FalkorValue,
-        graph_schema: &mut GraphSchema,
+        graph_schema: &mut GraphSchema<C>,
     ) -> FalkorResult<Self> {
         let value_vec = parse_type(6, value, graph_schema)?.into_vec()?;
 

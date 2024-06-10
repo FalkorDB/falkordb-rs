@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::client::ProvidesSyncConnections;
 use crate::{FalkorDBError, FalkorParsable, FalkorResult, GraphSchema};
 use graph_entities::{Edge, Node};
 use path::Path;
@@ -313,9 +314,9 @@ impl FalkorValue {
 }
 
 impl FalkorParsable for FalkorValue {
-    fn from_falkor_value(
+    fn from_falkor_value<C: ProvidesSyncConnections>(
         value: FalkorValue,
-        _: &mut GraphSchema,
+        _: &mut GraphSchema<C>,
     ) -> FalkorResult<Self> {
         Ok(value)
     }

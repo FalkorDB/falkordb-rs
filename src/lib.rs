@@ -3,6 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+#![allow(private_interfaces)]
+#![allow(private_bounds)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!("../README.md")]
@@ -50,6 +52,11 @@ pub use value::{
     point::Point,
     FalkorValue,
 };
+
+#[cfg(feature = "tokio")]
+pub use client::asynchronous::FalkorAsyncClient;
+#[cfg(feature = "tokio")]
+pub use graph::asynchronous::AsyncGraph;
 
 #[cfg(test)]
 pub(crate) mod test_utils {

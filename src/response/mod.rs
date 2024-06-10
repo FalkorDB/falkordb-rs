@@ -4,6 +4,7 @@
  */
 
 use crate::{
+    client::ProvidesSyncConnections,
     parser::utils::{parse_header, string_vec_from_val},
     FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
 };
@@ -49,9 +50,9 @@ impl<T> FalkorResponse<T> {
 }
 
 impl<T: FalkorParsable> FalkorParsable for FalkorResponse<Vec<T>> {
-    fn from_falkor_value(
+    fn from_falkor_value<C: ProvidesSyncConnections>(
         value: FalkorValue,
-        graph_schema: &mut GraphSchema,
+        graph_schema: &mut GraphSchema<C>,
     ) -> FalkorResult<Self> {
         let [header, indices, stats]: [FalkorValue; 3] =
             value.into_vec()?.try_into().map_err(|_| {

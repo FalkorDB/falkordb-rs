@@ -3,20 +3,21 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::client::ProvidesSyncConnections;
 use crate::{value::utils::parse_type, FalkorValue, GraphSchema};
 use std::collections::VecDeque;
 
 /// A wrapper around the returned raw data, allowing parsing on demand of each result
 /// This implements Iterator, so can simply be collect()'ed into any desired container
-pub struct LazyResultSet<'a> {
+pub struct LazyResultSet<'a, C: ProvidesSyncConnections> {
     data: VecDeque<FalkorValue>,
-    graph_schema: &'a mut GraphSchema,
+    graph_schema: &'a mut GraphSchema<C>,
 }
 
-impl<'a> LazyResultSet<'a> {
+impl<'a, C: ProvidesSyncConnections> LazyResultSet<'a, C> {
     pub(crate) fn new(
         data: Vec<FalkorValue>,
-        graph_schema: &'a mut GraphSchema,
+        graph_schema: &'a mut GraphSchema<C>,
     ) -> Self {
         Self {
             data: data.into(),
@@ -35,7 +36,7 @@ impl<'a> LazyResultSet<'a> {
     }
 }
 
-impl<'a> Iterator for LazyResultSet<'a> {
+impl<'a, C: ProvidesSyncConnections> Iterator for LazyResultSet<'a, C> {
     type Item = Vec<FalkorValue>;
 
     fn next(&mut self) -> Option<Self::Item> {

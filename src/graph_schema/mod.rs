@@ -4,11 +4,10 @@
  */
 
 use crate::{
-    client::blocking::FalkorSyncClientInner, value::utils::parse_type, FalkorDBError, FalkorResult,
+    client::ProvidesSyncConnections, value::utils::parse_type, FalkorDBError, FalkorResult,
     FalkorValue,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
     match schema_type {
@@ -69,9 +68,8 @@ pub enum SchemaType {
 pub(crate) type IdMap = HashMap<i64, String>;
 
 /// A struct containing the various schema maps, allowing conversions between ids and their string representations.
-#[derive(Clone)]
-pub struct GraphSchema {
-    client: Arc<FalkorSyncClientInner>,
+pub struct GraphSchema<C: ProvidesSyncConnections> {
+    client: Arc<C>,
     graph_name: String,
     version: i64,
     labels: IdMap,
@@ -79,10 +77,24 @@ pub struct GraphSchema {
     relationships: IdMap,
 }
 
-impl GraphSchema {
+// Manually implement clone otherwise we need the trait to provide it as well which is annoying, either that or use Arc<C> as the generic
+impl<C: ProvidesSyncConnections> Clone for GraphSchema<C> {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+            version: self.version,
+            labels: self.labels.clone(),
+            properties: self.properties.clone(),
+            relationships: self.relationships.clone(),
+        }
+    }
+}
+
+impl<C: ProvidesSyncConnections> GraphSchema<C> {
     pub(crate) fn new<T: ToString>(
         graph_name: T,
-        client: Arc<FalkorSyncClientInner>,
+        client: Arc<C>,
     ) -> Self {
         Self {
             client,
@@ -145,7 +157,7 @@ impl GraphSchema {
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
         let [_, keys, _]: [FalkorValue; 3] = self
             .client
-            .borrow_connection(self.client.clone())?
+            .get_connection()?
             .execute_command(
                 Some(self.graph_name.as_str()),
                 "GRAPH.QUERY",
@@ -245,7 +257,7 @@ impl GraphSchema {
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        client::blocking::create_empty_inner_client, test_utils::create_test_client, SyncGraph,
+        client::blocking::create_empty_inner_sync_client, test_utils::create_test_client, SyncGraph,
     };
     use std::collections::HashMap;
 
@@ -271,7 +283,8 @@ pub(crate) mod tests {
 
     #[test]
     fn test_label_not_exists() {
-        let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
+        let mut parser =
+            GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());
         let input_value = FalkorValue::Array(vec![FalkorValue::Array(vec![
             FalkorValue::I64(1),
             FalkorValue::I64(2),
@@ -284,7 +297,8 @@ pub(crate) mod tests {
 
     #[test]
     fn test_parse_properties_map() {
-        let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
+        let mut parser =
+            GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());
         parser.properties = HashMap::from([
             (1, "property1".to_string()),
             (2, "property2".to_string()),
@@ -325,7 +339,8 @@ pub(crate) mod tests {
 
     #[test]
     fn test_parse_id_vec() {
-        let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
+        let mut parser =
+            GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());
 
         parser.labels = HashMap::from([
             (1, "property1".to_string()),

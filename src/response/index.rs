@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::client::ProvidesSyncConnections;
 use crate::{
     value::utils::{parse_type, parse_vec, type_val_from_value},
     EntityType, FalkorDBError, FalkorParsable, FalkorValue, GraphSchema,
@@ -89,9 +90,9 @@ impl FalkorIndex {
 }
 
 impl FalkorParsable for FalkorIndex {
-    fn from_falkor_value(
+    fn from_falkor_value<C: ProvidesSyncConnections>(
         value: FalkorValue,
-        graph_schema: &mut GraphSchema,
+        graph_schema: &mut GraphSchema<C>,
     ) -> Result<Self, FalkorDBError> {
         let semi_parsed_items = value
             .into_vec()?

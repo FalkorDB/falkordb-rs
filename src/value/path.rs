@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::client::ProvidesSyncConnections;
 use crate::{Edge, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema, Node};
 
 /// Represents a path between two nodes, contains all the nodes, and the relationships between them along the path
@@ -15,9 +16,9 @@ pub struct Path {
 }
 
 impl FalkorParsable for Path {
-    fn from_falkor_value(
+    fn from_falkor_value<C: ProvidesSyncConnections>(
         value: FalkorValue,
-        graph_schema: &mut GraphSchema,
+        graph_schema: &mut GraphSchema<C>,
     ) -> FalkorResult<Self> {
         let [nodes, relationships]: [FalkorValue; 2] =
             value.into_vec()?.try_into().map_err(|_| {

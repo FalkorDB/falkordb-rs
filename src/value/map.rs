@@ -3,15 +3,16 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::client::ProvidesSyncConnections;
 use crate::{
     value::utils::parse_type, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
 };
 use std::collections::HashMap;
 
 impl FalkorParsable for HashMap<String, FalkorValue> {
-    fn from_falkor_value(
+    fn from_falkor_value<C: ProvidesSyncConnections>(
         value: FalkorValue,
-        graph_schema: &mut GraphSchema,
+        graph_schema: &mut GraphSchema<C>,
     ) -> FalkorResult<Self> {
         let val_vec = value.into_vec()?;
         if val_vec.len() % 2 != 0 {
@@ -54,11 +55,11 @@ impl FalkorParsable for HashMap<String, FalkorValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{client::blocking::create_empty_inner_client, GraphSchema};
+    use crate::{client::blocking::create_empty_inner_sync_client, GraphSchema};
 
     #[test]
     fn test_not_a_vec() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res: FalkorResult<HashMap<String, FalkorValue>> = FalkorParsable::from_falkor_value(
             FalkorValue::String("Hello".to_string()),
@@ -70,7 +71,7 @@ mod tests {
 
     #[test]
     fn test_vec_odd_element_count() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res: FalkorResult<HashMap<String, FalkorValue>> = FalkorParsable::from_falkor_value(
             FalkorValue::Array(vec![FalkorValue::None; 7]),
@@ -82,7 +83,7 @@ mod tests {
 
     #[test]
     fn test_val_element_is_not_array() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res: FalkorResult<HashMap<String, FalkorValue>> = FalkorParsable::from_falkor_value(
             FalkorValue::Array(vec![
@@ -97,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_val_element_has_only_1_element() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res: FalkorResult<HashMap<String, FalkorValue>> = FalkorParsable::from_falkor_value(
             FalkorValue::Array(vec![
@@ -112,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_val_element_has_ge_2_elements() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res: FalkorResult<HashMap<String, FalkorValue>> = FalkorParsable::from_falkor_value(
             FalkorValue::Array(vec![
@@ -127,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_val_element_mismatch_type_marker() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res: FalkorResult<HashMap<String, FalkorValue>> = FalkorParsable::from_falkor_value(
             FalkorValue::Array(vec![
@@ -142,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_ok_values() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res: HashMap<String, FalkorValue> = FalkorParsable::from_falkor_value(
             FalkorValue::Array(vec![

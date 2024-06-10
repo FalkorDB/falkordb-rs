@@ -4,11 +4,15 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, Constraint, ExecutionPlan, FalkorDBError,
-    FalkorIndex, FalkorParsable, FalkorResponse, FalkorResult, FalkorValue, LazyResultSet,
-    SyncGraph,
+    client::{blocking::FalkorSyncClientInner, ProvidesSyncConnections},
+    graph::HasGraphSchema,
+    ExecutionPlan, FalkorDBError, FalkorParsable, FalkorResponse, FalkorResult, FalkorValue,
+    LazyResultSet, SyncGraph,
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
+
+#[cfg(feature = "tokio")]
+use crate::{client::asynchronous::FalkorAsyncClientInner, AsyncGraph};
 
 pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
     query_str: Q,
@@ -32,23 +36,29 @@ pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
 }
 
 /// A Builder-pattern struct that allows creating and executing queries on a graph
-pub struct QueryBuilder<'a, Output, T: Display> {
-    _unused: PhantomData<Output>,
-    graph: &'a mut SyncGraph,
+pub struct QueryBuilder<'a, Out, T: Display, C: ProvidesSyncConnections, G: HasGraphSchema<C>> {
+    _unused_out: PhantomData<Out>,
+    _unused_client: PhantomData<C>,
+
+    graph: &'a mut G,
     command: &'a str,
     query_string: T,
     params: Option<&'a HashMap<String, String>>,
     timeout: Option<i64>,
 }
 
-impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
+impl<'a, Out, T: Display, C: ProvidesSyncConnections, G: HasGraphSchema<C>>
+    QueryBuilder<'a, Out, T, C, G>
+{
     pub(crate) fn new(
-        graph: &'a mut SyncGraph,
+        graph: &'a mut G,
         command: &'a str,
         query_string: T,
     ) -> Self {
         Self {
-            _unused: PhantomData,
+            _unused_out: PhantomData,
+            _unused_client: PhantomData,
+
             graph,
             command,
             query_string,
@@ -84,7 +94,9 @@ impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
             ..self
         }
     }
+}
 
+impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, FalkorSyncClientInner, SyncGraph> {
     fn common_execute_steps(&mut self) -> FalkorResult<FalkorValue> {
         let mut conn = self
             .graph
@@ -105,11 +117,36 @@ impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
     }
 }
 
-impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
-    /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member
-    pub fn execute(mut self) -> FalkorResult<FalkorResponse<LazyResultSet<'a>>> {
-        let res = self.common_execute_steps()?.into_vec()?;
+#[cfg(feature = "tokio")]
+impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, FalkorAsyncClientInner, AsyncGraph> {
+    async fn common_execute_steps(&mut self) -> FalkorResult<FalkorValue> {
+        let query = construct_query(&self.query_string, self.params);
 
+        let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
+        let mut params = vec![query.as_str(), "--compact"];
+        params.extend(timeout.as_deref());
+
+        self.graph
+            .client
+            .borrow_connection(self.graph.client.clone())
+            .await?
+            .execute_command(
+                Some(self.graph.graph_name()),
+                self.command,
+                None,
+                Some(params.as_slice()),
+            )
+            .await
+    }
+}
+
+impl<'a, T: Display, C: ProvidesSyncConnections, G: HasGraphSchema<C>>
+    QueryBuilder<'a, FalkorResponse<LazyResultSet<'a, C>>, T, C, G>
+{
+    fn parse_result_set(
+        self,
+        res: Vec<FalkorValue>,
+    ) -> FalkorResult<FalkorResponse<LazyResultSet<'a, C>>> {
         match res.len() {
             1 => {
                 let stats = res.into_iter().next().ok_or(
@@ -120,7 +157,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
 
                 FalkorResponse::from_response(
                     None,
-                    LazyResultSet::new(Default::default(), &mut self.graph.graph_schema),
+                    LazyResultSet::new(Default::default(), self.graph.get_graph_schema_mut()),
                     stats,
                 )
             }
@@ -133,7 +170,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
 
                 FalkorResponse::from_response(
                     Some(header),
-                    LazyResultSet::new(Default::default(), &mut self.graph.graph_schema),
+                    LazyResultSet::new(Default::default(), self.graph.get_graph_schema_mut()),
                     stats,
                 )
             }
@@ -146,7 +183,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
 
                 FalkorResponse::from_response(
                     Some(header),
-                    LazyResultSet::new(data.into_vec()?, &mut self.graph.graph_schema),
+                    LazyResultSet::new(data.into_vec()?, self.graph.get_graph_schema_mut()),
                     stats,
                 )
             }
@@ -157,10 +194,57 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
     }
 }
 
-impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T> {
+impl<'a, T: Display>
+    QueryBuilder<
+        'a,
+        FalkorResponse<LazyResultSet<'a, FalkorSyncClientInner>>,
+        T,
+        FalkorSyncClientInner,
+        SyncGraph,
+    >
+{
+    /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member
+    pub fn execute(
+        mut self
+    ) -> FalkorResult<FalkorResponse<LazyResultSet<'a, FalkorSyncClientInner>>> {
+        let res = self.common_execute_steps()?.into_vec()?;
+        self.parse_result_set(res)
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl<'a, T: Display>
+    QueryBuilder<
+        'a,
+        FalkorResponse<LazyResultSet<'a, FalkorAsyncClientInner>>,
+        T,
+        FalkorAsyncClientInner,
+        AsyncGraph,
+    >
+{
+    /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member
+    pub async fn execute(
+        mut self
+    ) -> FalkorResult<FalkorResponse<LazyResultSet<'a, FalkorAsyncClientInner>>> {
+        let res = self.common_execute_steps().await?.into_vec()?;
+        self.parse_result_set(res)
+    }
+}
+
+impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T, FalkorSyncClientInner, SyncGraph> {
     /// Executes the query, returning an [`ExecutionPlan`] from the data returned
     pub fn execute(mut self) -> FalkorResult<ExecutionPlan> {
         let res = self.common_execute_steps()?;
+
+        ExecutionPlan::try_from(res)
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T, FalkorAsyncClientInner, AsyncGraph> {
+    /// Executes the query, returning an [`ExecutionPlan`] from the data returned
+    pub async fn execute(mut self) -> FalkorResult<ExecutionPlan> {
+        let res = self.common_execute_steps().await?;
 
         ExecutionPlan::try_from(res)
     }
@@ -204,22 +288,24 @@ pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
 }
 
 /// A Builder-pattern struct that allows creating and executing procedure call on a graph
-pub struct ProcedureQueryBuilder<'a, Output> {
-    _unused: PhantomData<Output>,
-    graph: &'a mut SyncGraph,
+pub struct ProcedureQueryBuilder<'a, Out, G> {
+    _unused_out: PhantomData<Out>,
+
+    graph: &'a mut G,
     readonly: bool,
     procedure_name: &'a str,
     args: Option<&'a [&'a str]>,
     yields: Option<&'a [&'a str]>,
 }
 
-impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
+impl<'a, Out, G> ProcedureQueryBuilder<'a, Out, G> {
     pub(crate) fn new(
-        graph: &'a mut SyncGraph,
+        graph: &'a mut G,
         procedure_name: &'a str,
     ) -> Self {
         Self {
-            _unused: PhantomData,
+            _unused_out: PhantomData,
+
             graph,
             readonly: false,
             procedure_name,
@@ -229,11 +315,12 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
     }
 
     pub(crate) fn new_readonly(
-        graph: &'a mut SyncGraph,
+        graph: &'a mut G,
         procedure_name: &'a str,
     ) -> Self {
         Self {
-            _unused: PhantomData,
+            _unused_out: PhantomData,
+
             graph,
             readonly: true,
             procedure_name,
@@ -269,11 +356,15 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
             ..self
         }
     }
+}
 
-    fn common_execute_steps(
-        &mut self,
-        conn: &mut BorrowedSyncConnection,
-    ) -> FalkorResult<FalkorValue> {
+impl<'a, Out> ProcedureQueryBuilder<'a, Out, SyncGraph> {
+    fn common_execute_steps(&mut self) -> FalkorResult<FalkorValue> {
+        let mut conn = self
+            .graph
+            .client
+            .borrow_connection(self.graph.client.clone())?;
+
         let command = match self.readonly {
             true => "GRAPH.QUERY_RO",
             false => "GRAPH.QUERY",
@@ -292,35 +383,52 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
     }
 }
 
-impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
-    /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`FalkorIndex`]s
-    /// This functions consumes self
-    pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
-        FalkorParsable::from_falkor_value(
-            self.common_execute_steps(
-                &mut self
-                    .graph
-                    .client
-                    .borrow_connection(self.graph.client.clone())?,
-            )?,
-            &mut self.graph.graph_schema,
+#[cfg(feature = "tokio")]
+impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
+    async fn common_execute_steps(&mut self) -> FalkorResult<FalkorValue> {
+        let conn = self
+            .graph
+            .client
+            .borrow_connection(self.graph.client.clone())
+            .await?;
+
+        let command = match self.readonly {
+            true => "GRAPH.QUERY_RO",
+            false => "GRAPH.QUERY",
+        };
+
+        let (query_string, params) =
+            generate_procedure_call(self.procedure_name, self.args, self.yields);
+        let query = construct_query(query_string, params.as_ref());
+
+        conn.execute_command(
+            Some(self.graph.graph_name()),
+            command,
+            None,
+            Some(&[query.as_str(), "--compact"]),
         )
+        .await
     }
 }
 
-impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
-    /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`Constraint`]s
+impl<'a, Out: FalkorParsable> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Out>>, SyncGraph> {
+    /// Executes the procedure call and return a [`FalkorResponse`] type containing a vec of [`Out`]s
     /// This functions consumes self
-    pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
-        FalkorParsable::from_falkor_value(
-            self.common_execute_steps(
-                &mut self
-                    .graph
-                    .client
-                    .borrow_connection(self.graph.client.clone())?,
-            )?,
-            &mut self.graph.graph_schema,
-        )
+    pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Out>>> {
+        self.common_execute_steps().and_then(|res| {
+            FalkorParsable::from_falkor_value(res, self.graph.get_graph_schema_mut())
+        })
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl<'a, Out: FalkorParsable> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Out>>, AsyncGraph> {
+    /// Executes the procedure call and return a [`FalkorResponse`] type containing a vec of [`Out`]s
+    /// This functions consumes self
+    pub async fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Out>>> {
+        self.common_execute_steps().await.and_then(|res| {
+            FalkorParsable::from_falkor_value(res, self.graph.get_graph_schema_mut())
+        })
     }
 }
 

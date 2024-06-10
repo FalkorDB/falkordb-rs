@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::client::ProvidesSyncConnections;
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
@@ -15,7 +16,10 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-pub(crate) struct FalkorSyncClientInner {
+/// A user-opaque inner struct, containing the actual implementation of the synchronous client
+/// The idea is that each member here is locked in some form, and the public struct only has an Arc to this struct
+/// allowing thread safe operations and cloning
+pub struct FalkorSyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
 
     connection_pool_size: u8,
@@ -37,77 +41,12 @@ impl FalkorSyncClientInner {
             pool_owner,
         ))
     }
+}
 
-    pub(crate) fn get_connection(&self) -> FalkorResult<FalkorSyncConnection> {
+impl ProvidesSyncConnections for FalkorSyncClientInner {
+    fn get_connection(&self) -> FalkorResult<FalkorSyncConnection> {
         self._inner.lock().get_connection()
     }
-}
-
-#[cfg(feature = "redis")]
-fn is_sentinel(conn: &mut FalkorSyncConnection) -> FalkorResult<bool> {
-    let info_map = conn.get_redis_info(Some("server"))?;
-    Ok(info_map
-        .get("redis_mode")
-        .map(|redis_mode| redis_mode == "sentinel")
-        .unwrap_or_default())
-}
-
-#[cfg(feature = "redis")]
-pub(crate) fn get_sentinel_client(
-    client: &mut FalkorClientProvider,
-    connection_info: &redis::ConnectionInfo,
-) -> FalkorResult<Option<redis::sentinel::SentinelClient>> {
-    let mut conn = client.get_connection()?;
-    if !is_sentinel(&mut conn)? {
-        return Ok(None);
-    }
-
-    // This could have been so simple using the Sentinel API, but it requires a service name
-    // Perhaps in the future we can use it if we only support the master instance to be called 'master'?
-    let sentinel_masters = conn
-        .execute_command(None, "SENTINEL", Some("MASTERS"), None)?
-        .into_vec()?;
-
-    if sentinel_masters.len() != 1 {
-        return Err(FalkorDBError::SentinelMastersCount);
-    }
-
-    let sentinel_master: HashMap<_, _> = sentinel_masters
-        .into_iter()
-        .next()
-        .ok_or(FalkorDBError::SentinelMastersCount)?
-        .into_vec()?
-        .chunks_exact(2)
-        .flat_map(|chunk| TryInto::<[FalkorValue; 2]>::try_into(chunk.to_vec()))
-        .flat_map(|[key, val]| {
-            Result::<_, FalkorDBError>::Ok((key.into_string()?, val.into_string()?))
-        })
-        .collect();
-
-    let name = sentinel_master
-        .get("name")
-        .ok_or(FalkorDBError::SentinelMastersCount)?;
-
-    Ok(Some(
-        redis::sentinel::SentinelClient::build(
-            vec![connection_info.to_owned()],
-            name.to_string(),
-            Some(redis::sentinel::SentinelNodeConnectionInfo {
-                tls_mode: match connection_info.addr {
-                    redis::ConnectionAddr::TcpTls { insecure: true, .. } => {
-                        Some(redis::TlsMode::Insecure)
-                    }
-                    redis::ConnectionAddr::TcpTls {
-                        insecure: false, ..
-                    } => Some(redis::TlsMode::Secure),
-                    _ => None,
-                },
-                redis_connection_info: Some(connection_info.redis.clone()),
-            }),
-            redis::sentinel::SentinelServerType::Master,
-        )
-        .map_err(|err| FalkorDBError::SentinelConnection(err.to_string()))?,
-    ))
 }
 
 /// This is the publicly exposed API of the sync Falkor Client
@@ -284,7 +223,7 @@ impl FalkorSyncClient {
 }
 
 #[cfg(test)]
-pub(crate) fn create_empty_inner_client() -> Arc<FalkorSyncClientInner> {
+pub(crate) fn create_empty_inner_sync_client() -> Arc<FalkorSyncClientInner> {
     let (tx, rx) = mpsc::sync_channel(1);
     tx.send(FalkorSyncConnection::None).ok();
     Arc::new(FalkorSyncClientInner {

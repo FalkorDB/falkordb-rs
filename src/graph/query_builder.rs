@@ -415,9 +415,8 @@ impl<'a, Out: FalkorParsable> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Out>>
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a vec of [`Out`]s
     /// This functions consumes self
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Out>>> {
-        self.common_execute_steps().and_then(|res| {
-            FalkorParsable::from_falkor_value(res, self.graph.get_graph_schema_mut())
-        })
+        self.common_execute_steps()
+            .and_then(|res| FalkorParsable::from_falkor_value(res, &mut self.graph.graph_schema))
     }
 }
 
@@ -426,9 +425,9 @@ impl<'a, Out: FalkorParsable> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Out>>
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a vec of [`Out`]s
     /// This functions consumes self
     pub async fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Out>>> {
-        self.common_execute_steps().await.and_then(|res| {
-            FalkorParsable::from_falkor_value(res, self.graph.get_graph_schema_mut())
-        })
+        self.common_execute_steps()
+            .await
+            .and_then(|res| FalkorParsable::from_falkor_value(res, &mut self.graph.graph_schema))
     }
 }
 

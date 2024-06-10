@@ -4,9 +4,12 @@
  */
 
 use crate::{
-    client::blocking::FalkorSyncClientInner, graph::HasGraphSchema, Constraint, ConstraintType,
-    EntityType, ExecutionPlan, FalkorIndex, FalkorResponse, FalkorResult, FalkorValue, GraphSchema,
-    IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, SlowlogEntry,
+    client::blocking::FalkorSyncClientInner,
+    graph::utils::{generate_create_index_query, generate_drop_index_query},
+    graph::HasGraphSchema,
+    Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResponse,
+    FalkorResult, FalkorValue, GraphSchema, IndexType, LazyResultSet, ProcedureQueryBuilder,
+    QueryBuilder, SlowlogEntry,
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
@@ -209,38 +212,9 @@ impl SyncGraph {
         options: Option<&HashMap<String, String>>,
     ) -> FalkorResult<FalkorResponse<LazyResultSet<FalkorSyncClientInner>>> {
         // Create index from these properties
-        let properties_string = properties
-            .iter()
-            .map(|element| format!("l.{}", element))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let query_str =
+            generate_create_index_query(index_field_type, entity_type, label, properties, options);
 
-        let pattern = match entity_type {
-            EntityType::Node => format!("(l:{})", label),
-            EntityType::Edge => format!("()-[l:{}]->()", label),
-        };
-
-        let idx_type = match index_field_type {
-            IndexType::Range => "",
-            IndexType::Vector => "VECTOR ",
-            IndexType::Fulltext => "FULLTEXT ",
-        };
-
-        let options_string = options
-            .map(|hashmap| {
-                hashmap
-                    .iter()
-                    .map(|(key, val)| format!("'{key}':'{val}'"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
-            .map(|options_string| format!(" OPTIONS {{ {} }}", options_string))
-            .unwrap_or_default();
-
-        let query_str = format!(
-            "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
-            properties_string, options_string
-        );
         QueryBuilder::<
             FalkorResponse<LazyResultSet<FalkorSyncClientInner>>,
             String,
@@ -254,35 +228,14 @@ impl SyncGraph {
     ///
     /// # Arguments
     /// * `index_field_type`
-    pub fn drop_index<L: ToString, P: ToString>(
+    pub fn drop_index<P: Display>(
         &mut self,
         index_field_type: IndexType,
         entity_type: EntityType,
-        label: L,
+        label: &str,
         properties: &[P],
     ) -> FalkorResult<FalkorResponse<LazyResultSet<FalkorSyncClientInner>>> {
-        let properties_string = properties
-            .iter()
-            .map(|element| format!("e.{}", element.to_string()))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let pattern = match entity_type {
-            EntityType::Node => format!("(e:{})", label.to_string()),
-            EntityType::Edge => format!("()-[e:{}]->()", label.to_string()),
-        };
-
-        let idx_type = match index_field_type {
-            IndexType::Range => "",
-            IndexType::Vector => "VECTOR",
-            IndexType::Fulltext => "FULLTEXT",
-        }
-        .to_string();
-
-        let query_str = format!(
-            "DROP {idx_type} INDEX for {pattern} ON ({})",
-            properties_string
-        );
+        let query_str = generate_drop_index_query(index_field_type, entity_type, label, properties);
         self.query(query_str).execute()
     }
 
@@ -395,10 +348,6 @@ impl SyncGraph {
 }
 
 impl HasGraphSchema<FalkorSyncClientInner> for SyncGraph {
-    fn get_graph_schema(&self) -> &GraphSchema<FalkorSyncClientInner> {
-        &self.graph_schema
-    }
-
     fn get_graph_schema_mut(&mut self) -> &mut GraphSchema<FalkorSyncClientInner> {
         &mut self.graph_schema
     }
@@ -433,12 +382,7 @@ mod tests {
 
         graph
             .inner
-            .drop_index(
-                IndexType::Fulltext,
-                EntityType::Node,
-                "actor".to_string(),
-                &["Hello"],
-            )
+            .drop_index(IndexType::Fulltext, EntityType::Node, "actor", &["Hello"])
             .expect("Could not drop index");
     }
 

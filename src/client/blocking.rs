@@ -3,9 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::client::ProvidesSyncConnections;
 use crate::{
-    client::FalkorClientProvider,
+    client::{FalkorClientProvider, ProvidesSyncConnections},
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
     parser::utils::string_vec_from_val,
     ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorValue, SyncGraph,

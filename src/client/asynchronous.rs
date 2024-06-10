@@ -198,7 +198,7 @@ impl FalkorAsyncClient {
     /// * `graph_name`: A string identifier of the graph to open.
     ///
     /// # Returns
-    /// a [`SyncGraph`] object, allowing various graph operations.
+    /// a [`AsyncGraph`] object, allowing various graph operations.
     pub fn select_graph<T: ToString>(
         &self,
         graph_name: T,
@@ -206,14 +206,14 @@ impl FalkorAsyncClient {
         AsyncGraph::new(self.inner.clone(), graph_name)
     }
 
-    /// Copies an entire graph and returns the [`SyncGraph`] for the new copied graph.
+    /// Copies an entire graph and returns the [`AsyncGraph`] for the new copied graph.
     ///
     /// # Arguments
     /// * `graph_to_clone`: A string identifier of the graph to copy.
     /// * `new_graph_name`: The name to give the new graph.
     ///
     /// # Returns
-    /// If successful, will return the new [`SyncGraph`] object.
+    /// If successful, will return the new [`AsyncGraph`] object.
     pub async fn copy_graph(
         &self,
         graph_to_clone: &str,
@@ -255,4 +255,177 @@ pub(crate) async fn create_empty_inner_async_client() -> Arc<FalkorAsyncClientIn
         connection_pool_tx: RwLock::new(tx),
         connection_pool_rx: Mutex::new(rx),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        test_utils::{create_async_test_client, TestAsyncGraphHandle},
+        FalkorClientBuilder,
+    };
+    use std::{mem, num::NonZeroU8, thread};
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_borrow_connection() {
+        let client = FalkorClientBuilder::new_async()
+            .with_num_connections(NonZeroU8::new(6).expect("Could not create a perfectly valid u8"))
+            .build()
+            .await
+            .expect("Could not create client for this test");
+
+        // Client was created with 6 connections
+        let mut conn_vec = Vec::with_capacity(6);
+        for _ in 0..6 {
+            let conn = client.borrow_connection().await;
+            assert!(conn.is_ok());
+            conn_vec.push(conn);
+        }
+
+        let non_existing_conn = client.inner.connection_pool_rx.lock().await.try_recv();
+        assert!(non_existing_conn.is_err());
+
+        let Err(TryRecvError::Empty) = non_existing_conn else {
+            panic!("Got error, but not a TryRecvError::Empty, as expected");
+        };
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_graphs() {
+        let client = create_async_test_client().await;
+        let res = client.list_graphs().await;
+        assert!(res.is_ok());
+
+        let graphs = res.unwrap();
+        assert_eq!(graphs[0], "imdb");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_select_graph_and_query() {
+        let client = create_async_test_client().await;
+
+        let mut graph = client.select_graph("imdb");
+        assert_eq!(graph.graph_name(), "imdb".to_string());
+
+        let res = graph
+            .query("MATCH (a:actor) return a")
+            .execute()
+            .await
+            .expect("Could not get actors from unmodified graph");
+
+        assert_eq!(res.data.collect::<Vec<_>>().len(), 1317);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_copy_graph() {
+        let client = create_async_test_client().await;
+
+        client.select_graph("imdb_ro_copy").delete().await.ok();
+
+        let graph = client.copy_graph("imdb", "imdb_ro_copy").await;
+        assert!(graph.is_ok());
+
+        let mut graph = TestAsyncGraphHandle {
+            inner: graph.unwrap(),
+        };
+
+        let mut original_graph = client.select_graph("imdb");
+
+        assert_eq!(
+            graph
+                .inner
+                .query("MATCH (a:actor) RETURN a")
+                .execute()
+                .await
+                .expect("Could not get actors from unmodified graph")
+                .data
+                .collect::<Vec<_>>(),
+            original_graph
+                .query("MATCH (a:actor) RETURN a")
+                .execute()
+                .await
+                .expect("Could not get actors from unmodified graph")
+                .data
+                .collect::<Vec<_>>()
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_get_config() {
+        let client = create_async_test_client().await;
+
+        let config = client
+            .config_get("QUERY_MEM_CAPACITY")
+            .await
+            .expect("Could not get configuration");
+
+        assert_eq!(config.len(), 1);
+        assert!(config.contains_key("QUERY_MEM_CAPACITY"));
+        assert_eq!(
+            mem::discriminant(config.get("QUERY_MEM_CAPACITY").unwrap()),
+            mem::discriminant(&ConfigValue::Int64(0))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_get_config_all() {
+        let client = create_async_test_client().await;
+        let configuration = client
+            .config_get("*")
+            .await
+            .expect("Could not get configuration");
+        assert_eq!(
+            configuration.get("THREAD_COUNT").cloned().unwrap(),
+            ConfigValue::Int64(thread::available_parallelism().unwrap().get() as i64)
+        );
+    }
+
+    // #[tokio::test(flavor = "multi_thread")]
+    // async fn test_set_config() {
+    //     let client = create_async_test_client().await;
+    //
+    //     let config = client
+    //         .config_get("MAX_QUEUED_QUERIES")
+    //         .await
+    //         .expect("Could not get configuration");
+    //
+    //     let current_val = config
+    //         .get("MAX_QUEUED_QUERIES")
+    //         .cloned()
+    //         .unwrap()
+    //         .as_i64()
+    //         .unwrap();
+    //
+    //     let desired_val = if current_val == 4294967295 {
+    //         4294967295 / 2
+    //     } else {
+    //         4294967295
+    //     };
+    //
+    //     client
+    //         .config_set("MAX_QUEUED_QUERIES", desired_val)
+    //         .await
+    //         .expect("Could not set config value");
+    //
+    //     let new_config = client
+    //         .config_get("MAX_QUEUED_QUERIES")
+    //         .await
+    //         .expect("Could not get configuration");
+    //
+    //     assert_eq!(
+    //         new_config
+    //             .get("MAX_QUEUED_QUERIES")
+    //             .cloned()
+    //             .unwrap()
+    //             .as_i64()
+    //             .unwrap(),
+    //         desired_val
+    //     );
+    //
+    //     client
+    //         .config_set("MAX_QUEUED_QUERIES", current_val)
+    //         .await
+    //         .ok();
+    // }
 }

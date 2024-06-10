@@ -5,6 +5,7 @@
 
 use crate::{connection::blocking::FalkorSyncConnection, FalkorDBError, FalkorResult, FalkorValue};
 use std::collections::HashMap;
+use std::time::Duration;
 
 #[cfg(feature = "tokio")]
 use crate::connection::asynchronous::FalkorAsyncConnection;
@@ -63,7 +64,10 @@ impl FalkorClientProvider {
             #[cfg(feature = "redis")]
             FalkorClientProvider::Redis { client, .. } => FalkorAsyncConnection::Redis(
                 client
-                    .get_multiplexed_async_connection()
+                    .get_multiplexed_tokio_connection_with_response_timeouts(
+                        Duration::from_secs(2),
+                        Duration::from_secs(2),
+                    )
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),

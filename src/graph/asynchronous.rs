@@ -4,10 +4,12 @@
  */
 
 use crate::{
-    client::asynchronous::FalkorAsyncClientInner, graph::HasGraphSchema, Constraint,
-    ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResponse, FalkorResult,
-    FalkorValue, GraphSchema, IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder,
-    SlowlogEntry,
+    client::asynchronous::FalkorAsyncClientInner,
+    graph::utils::{generate_create_index_query, generate_drop_index_query},
+    graph::HasGraphSchema,
+    Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResponse,
+    FalkorResult, FalkorValue, GraphSchema, IndexType, LazyResultSet, ProcedureQueryBuilder,
+    QueryBuilder, SlowlogEntry,
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
@@ -216,38 +218,9 @@ impl AsyncGraph {
         options: Option<&HashMap<String, String>>,
     ) -> FalkorResult<FalkorResponse<LazyResultSet<FalkorAsyncClientInner>>> {
         // Create index from these properties
-        let properties_string = properties
-            .iter()
-            .map(|element| format!("l.{}", element))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let query_str =
+            generate_create_index_query(index_field_type, entity_type, label, properties, options);
 
-        let pattern = match entity_type {
-            EntityType::Node => format!("(l:{})", label),
-            EntityType::Edge => format!("()-[l:{}]->()", label),
-        };
-
-        let idx_type = match index_field_type {
-            IndexType::Range => "",
-            IndexType::Vector => "VECTOR ",
-            IndexType::Fulltext => "FULLTEXT ",
-        };
-
-        let options_string = options
-            .map(|hashmap| {
-                hashmap
-                    .iter()
-                    .map(|(key, val)| format!("'{key}':'{val}'"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
-            .map(|options_string| format!(" OPTIONS {{ {} }}", options_string))
-            .unwrap_or_default();
-
-        let query_str = format!(
-            "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
-            properties_string, options_string
-        );
         QueryBuilder::<
             FalkorResponse<LazyResultSet<FalkorAsyncClientInner>>,
             String,
@@ -262,35 +235,14 @@ impl AsyncGraph {
     ///
     /// # Arguments
     /// * `index_field_type`
-    pub async fn drop_index<L: ToString, P: ToString>(
+    pub async fn drop_index<P: Display>(
         &mut self,
         index_field_type: IndexType,
         entity_type: EntityType,
-        label: L,
+        label: &str,
         properties: &[P],
     ) -> FalkorResult<FalkorResponse<LazyResultSet<FalkorAsyncClientInner>>> {
-        let properties_string = properties
-            .iter()
-            .map(|element| format!("e.{}", element.to_string()))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let pattern = match entity_type {
-            EntityType::Node => format!("(e:{})", label.to_string()),
-            EntityType::Edge => format!("()-[e:{}]->()", label.to_string()),
-        };
-
-        let idx_type = match index_field_type {
-            IndexType::Range => "",
-            IndexType::Vector => "VECTOR",
-            IndexType::Fulltext => "FULLTEXT",
-        }
-        .to_string();
-
-        let query_str = format!(
-            "DROP {idx_type} INDEX for {pattern} ON ({})",
-            properties_string
-        );
+        let query_str = generate_drop_index_query(index_field_type, entity_type, label, properties);
         self.query(query_str).execute().await
     }
 
@@ -408,11 +360,220 @@ impl AsyncGraph {
 }
 
 impl HasGraphSchema<FalkorAsyncClientInner> for AsyncGraph {
-    fn get_graph_schema(&self) -> &GraphSchema<FalkorAsyncClientInner> {
-        &self.graph_schema
-    }
-
     fn get_graph_schema_mut(&mut self) -> &mut GraphSchema<FalkorAsyncClientInner> {
         &mut self.graph_schema
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{test_utils::open_async_test_graph, IndexType};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_drop_index() {
+        let mut graph = open_async_test_graph("test_create_drop_index_async").await;
+        graph
+            .inner
+            .create_index(
+                IndexType::Fulltext,
+                EntityType::Node,
+                "actor",
+                &["Hello"],
+                None,
+            )
+            .await
+            .expect("Could not create index");
+
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices");
+
+        assert_eq!(indices.data.len(), 2);
+        assert_eq!(
+            indices.data[0].field_types["Hello"],
+            vec![IndexType::Fulltext]
+        );
+
+        graph
+            .inner
+            .drop_index(IndexType::Fulltext, EntityType::Node, "actor", &["Hello"])
+            .await
+            .expect("Could not drop index");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_indices() {
+        let mut graph = open_async_test_graph("test_list_indices_async").await;
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices");
+
+        assert_eq!(indices.data.len(), 1);
+        assert_eq!(indices.data[0].entity_type, EntityType::Node);
+        assert_eq!(indices.data[0].index_label, "actor".to_string());
+        assert_eq!(indices.data[0].field_types.len(), 1);
+        assert_eq!(
+            indices.data[0].field_types,
+            HashMap::from([("name".to_string(), vec![IndexType::Fulltext])])
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_drop_mandatory_constraint() {
+        let graph = open_async_test_graph("test_mandatory_constraint_async").await;
+
+        graph
+            .inner
+            .create_mandatory_constraint(EntityType::Edge, "act", &["hello", "goodbye"])
+            .await
+            .expect("Could not create constraint");
+
+        graph
+            .inner
+            .drop_constraint(
+                ConstraintType::Mandatory,
+                EntityType::Edge,
+                "act",
+                &["hello", "goodbye"],
+            )
+            .await
+            .expect("Could not drop constraint");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_drop_unique_constraint() {
+        let mut graph = open_async_test_graph("test_unique_constraint_async").await;
+
+        graph
+            .inner
+            .create_unique_constraint(
+                EntityType::Node,
+                "actor".to_string(),
+                &["first_name", "last_name"],
+            )
+            .await
+            .expect("Could not create constraint");
+
+        graph
+            .inner
+            .drop_constraint(
+                ConstraintType::Unique,
+                EntityType::Node,
+                "actor",
+                &["first_name", "last_name"],
+            )
+            .await
+            .expect("Could not drop constraint");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_constraints() {
+        let mut graph = open_async_test_graph("test_list_constraint_async").await;
+
+        graph
+            .inner
+            .create_unique_constraint(
+                EntityType::Node,
+                "actor".to_string(),
+                &["first_name", "last_name"],
+            )
+            .await
+            .expect("Could not create constraint");
+
+        let res = graph
+            .inner
+            .list_constraints()
+            .await
+            .expect("Could not list constraints");
+        assert_eq!(res.data.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_slowlog() {
+        let mut graph = open_async_test_graph("test_slowlog_async").await;
+
+        graph
+            .inner
+            .query("UNWIND range(0, 500) AS x RETURN x")
+            .execute()
+            .await
+            .expect("Could not generate the fast query");
+        graph
+            .inner
+            .query("UNWIND range(0, 100000) AS x RETURN x")
+            .execute()
+            .await
+            .expect("Could not generate the slow query");
+
+        let slowlog = graph
+            .inner
+            .slowlog()
+            .await
+            .expect("Could not get slowlog entries");
+
+        assert_eq!(slowlog.len(), 2);
+        assert_eq!(
+            slowlog[0].arguments,
+            "UNWIND range(0, 500) AS x RETURN x".to_string()
+        );
+        assert_eq!(
+            slowlog[1].arguments,
+            "UNWIND range(0, 100000) AS x RETURN x".to_string()
+        );
+
+        graph
+            .inner
+            .slowlog_reset()
+            .await
+            .expect("Could not reset slowlog memory");
+        let slowlog_after_reset = graph
+            .inner
+            .slowlog()
+            .await
+            .expect("Could not get slowlog entries after reset");
+        assert!(slowlog_after_reset.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_explain() {
+        let mut graph = open_async_test_graph("test_explain_async").await;
+
+        let execution_plan = graph.inner.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().await.expect("Could not create execution plan");
+        assert_eq!(execution_plan.plan().len(), 7);
+        assert!(execution_plan.operations().get("Aggregate").is_some());
+        assert_eq!(execution_plan.operations()["Aggregate"].len(), 1);
+
+        assert_eq!(
+            execution_plan.string_representation(),
+            "\nResults\n    Limit\n        Aggregate\n            Filter\n                Node By Label Scan | (b:actor)\n                    Project\n                        Node By Label Scan | (a:actor)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_profile() {
+        let mut graph = open_async_test_graph("test_profile_async").await;
+
+        let execution_plan = graph
+            .inner
+            .profile("UNWIND range(0, 1000) AS x RETURN x")
+            .execute()
+            .await
+            .expect("Could not generate the query");
+
+        assert_eq!(execution_plan.plan().len(), 3);
+
+        let expected = vec!["Results", "Project", "Unwind"];
+        let mut current_rc = execution_plan.operation_tree().clone();
+        for step in expected {
+            assert_eq!(current_rc.name, step);
+            if step != "Unwind" {
+                current_rc = current_rc.children[0].clone();
+            }
+        }
     }
 }

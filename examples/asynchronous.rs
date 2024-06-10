@@ -5,8 +5,7 @@
 
 use falkordb::{FalkorClientBuilder, FalkorResult};
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::task::JoinSet;
+use tokio::{sync::Mutex, task::JoinSet};
 
 // Usage of the asynchronous client REQUIRES the multi-threaded rt
 #[tokio::main]
@@ -61,6 +60,11 @@ async fn main() -> FalkorResult<()> {
         let actual_res = res?;
         println!("{:?}", actual_res[0])
     }
+
+    graph_a.lock().await.delete().await.ok();
+    graph_b.lock().await.delete().await.ok();
+    graph_c.lock().await.delete().await.ok();
+    graph_d.lock().await.delete().await.ok();
 
     Ok(())
 }

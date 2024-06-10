@@ -72,9 +72,36 @@ pub(crate) mod test_utils {
         }
     }
 
+    #[cfg(feature = "tokio")]
+    pub(crate) struct TestAsyncGraphHandle {
+        pub(crate) inner: AsyncGraph,
+    }
+
+    #[cfg(feature = "tokio")]
+    impl Drop for TestAsyncGraphHandle {
+        fn drop(&mut self) {
+            tokio::task::block_in_place(|| {
+                // Avoid copying the schema each time
+                let mut graph_handle =
+                    AsyncGraph::new(self.inner.client.clone(), self.inner.graph_name());
+                tokio::runtime::Handle::current().block_on(async move {
+                    graph_handle.delete().await.ok();
+                })
+            })
+        }
+    }
+
     pub(crate) fn create_test_client() -> FalkorSyncClient {
         FalkorClientBuilder::new()
             .build()
+            .expect("Could not create client")
+    }
+
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn create_async_test_client() -> FalkorAsyncClient {
+        FalkorClientBuilder::new_async()
+            .build()
+            .await
             .expect("Could not create client")
     }
 
@@ -86,6 +113,19 @@ pub(crate) mod test_utils {
         TestSyncGraphHandle {
             inner: client
                 .copy_graph("imdb", graph_name)
+                .expect("Could not copy graph for test"),
+        }
+    }
+
+    pub(crate) async fn open_async_test_graph(graph_name: &str) -> TestAsyncGraphHandle {
+        let client = create_async_test_client().await;
+
+        client.select_graph(graph_name).delete().await.ok();
+
+        TestAsyncGraphHandle {
+            inner: client
+                .copy_graph("imdb", graph_name)
+                .await
                 .expect("Could not copy graph for test"),
         }
     }

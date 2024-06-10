@@ -113,7 +113,7 @@ impl BorrowedAsyncConnection {
         subcommand: Option<&str>,
         params: Option<&[&str]>,
     ) -> FalkorResult<FalkorValue> {
-        let res = match (&mut self)
+        let res = match self
             .as_inner()?
             .execute_command(graph_name, command, subcommand, params)
             .await
@@ -129,7 +129,6 @@ impl BorrowedAsyncConnection {
         };
 
         self.return_to_pool().await;
-
         res
     }
 

@@ -6,7 +6,7 @@
 use crate::{ConfigValue, FalkorDBError, FalkorResult, FalkorValue};
 use std::collections::HashMap;
 
-pub(crate) fn parse_config_response(
+pub(super) fn parse_config_response(
     config: Vec<FalkorValue>
 ) -> FalkorResult<HashMap<String, ConfigValue>> {
     if config.len() == 2 {

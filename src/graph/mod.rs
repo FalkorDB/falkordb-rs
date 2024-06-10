@@ -7,7 +7,7 @@ use crate::{client::ProvidesSyncConnections, GraphSchema};
 
 pub(crate) mod blocking;
 pub(crate) mod query_builder;
-pub(crate) mod utils;
+mod utils;
 
 #[cfg(feature = "tokio")]
 pub(crate) mod asynchronous;

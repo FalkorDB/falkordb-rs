@@ -6,7 +6,7 @@
 use crate::{EntityType, IndexType};
 use std::{collections::HashMap, fmt::Display};
 
-pub(crate) fn generate_create_index_query<P: Display>(
+pub(super) fn generate_create_index_query<P: Display>(
     index_field_type: IndexType,
     entity_type: EntityType,
     label: &str,
@@ -47,7 +47,7 @@ pub(crate) fn generate_create_index_query<P: Display>(
     )
 }
 
-pub(crate) fn generate_drop_index_query<P: Display>(
+pub(super) fn generate_drop_index_query<P: Display>(
     index_field_type: IndexType,
     entity_type: EntityType,
     label: &str,

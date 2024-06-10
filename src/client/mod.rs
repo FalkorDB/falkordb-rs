@@ -13,7 +13,7 @@ use crate::connection::asynchronous::FalkorAsyncConnection;
 pub(crate) mod asynchronous;
 pub(crate) mod blocking;
 pub(crate) mod builder;
-pub(crate) mod utils;
+mod utils;
 
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum FalkorClientProvider {
@@ -115,12 +115,13 @@ impl FalkorClientProvider {
                 name.to_string(),
                 Some(redis::sentinel::SentinelNodeConnectionInfo {
                     tls_mode: match connection_info.addr {
-                        redis::ConnectionAddr::TcpTls { insecure: true, .. } => {
-                            Some(redis::TlsMode::Insecure)
+                        redis::ConnectionAddr::TcpTls { insecure, .. } => {
+                            if insecure {
+                                Some(redis::TlsMode::Insecure)
+                            } else {
+                                Some(redis::TlsMode::Secure)
+                            }
                         }
-                        redis::ConnectionAddr::TcpTls {
-                            insecure: false, ..
-                        } => Some(redis::TlsMode::Secure),
                         _ => None,
                     },
                     redis_connection_info: Some(connection_info.redis.clone()),

@@ -5,6 +5,7 @@
 
 use crate::{
     client::{blocking::FalkorSyncClientInner, ProvidesSyncConnections},
+    connection::utils::map_redis_error,
     FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{
@@ -40,15 +41,7 @@ impl FalkorSyncConnection {
                     }
                 }
                 redis::FromRedisValue::from_owned_redis_value(
-                    redis_conn
-                        .req_command(&cmd)
-                        .map_err(|err| match err.kind() {
-                            redis::ErrorKind::IoError
-                            | redis::ErrorKind::ClusterConnectionNotFound
-                            | redis::ErrorKind::ClusterDown
-                            | redis::ErrorKind::MasterDown => FalkorDBError::ConnectionDown,
-                            _ => FalkorDBError::RedisError(err.to_string()),
-                        })?,
+                    redis_conn.req_command(&cmd).map_err(map_redis_error)?,
                 )
                 .map_err(|err| FalkorDBError::RedisParsingError(err.to_string()))
             }

@@ -4,7 +4,8 @@
  */
 
 use crate::{
-    client::asynchronous::FalkorAsyncClientInner, FalkorDBError, FalkorResult, FalkorValue,
+    client::asynchronous::FalkorAsyncClientInner, connection::utils::map_redis_error,
+    FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{collections::HashMap, convert::TryInto, sync::Arc};
 use tokio::sync::mpsc;
@@ -39,13 +40,7 @@ impl FalkorAsyncConnection {
                     redis_conn
                         .send_packed_command(&cmd)
                         .await
-                        .map_err(|err| match err.kind() {
-                            redis::ErrorKind::IoError
-                            | redis::ErrorKind::ClusterConnectionNotFound
-                            | redis::ErrorKind::ClusterDown
-                            | redis::ErrorKind::MasterDown => FalkorDBError::ConnectionDown,
-                            _ => FalkorDBError::RedisError(err.to_string()),
-                        })?,
+                        .map_err(map_redis_error)?,
                 )
                 .map_err(|err| FalkorDBError::RedisParsingError(err.to_string()))
             }

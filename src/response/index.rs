@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::parser::{parse_falkor_enum, string_vec_from_val};
 use crate::{parser::parse_raw_redis_value, EntityType, FalkorDBError, FalkorValue, GraphSchema};
 use std::collections::HashMap;
 
@@ -96,37 +97,15 @@ impl FalkorIndex {
             })?;
 
         Ok(Self {
-            entity_type: EntityType::try_from(
-                parse_raw_redis_value(entity_type, graph_schema)
-                    .and_then(|parsed_entity_type| parsed_entity_type.into_string())?
-                    .as_str(),
-            )?,
-            status: IndexStatus::try_from(
-                parse_raw_redis_value(status, graph_schema)
-                    .and_then(|parsed_status| parsed_status.into_string())?
-                    .as_str(),
-            )?,
+            entity_type: parse_falkor_enum(entity_type, graph_schema)?,
+            status: parse_falkor_enum(status, graph_schema)?,
             index_label: parse_raw_redis_value(label, graph_schema)
                 .and_then(|parsed_entity_type| parsed_entity_type.into_string())?,
-            fields: parse_raw_redis_value(fields, graph_schema)
-                .and_then(|parsed_fields| parsed_fields.into_vec())
-                .map(|parsed_fields_vec| {
-                    parsed_fields_vec
-                        .into_iter()
-                        .flat_map(FalkorValue::into_string)
-                        .collect()
-                })?,
+            fields: string_vec_from_val(fields, graph_schema)?,
             field_types: parse_types_map(field_types, graph_schema)?,
             language: parse_raw_redis_value(language, graph_schema)
                 .and_then(FalkorValue::into_string)?,
-            stopwords: parse_raw_redis_value(stopwords, graph_schema)
-                .and_then(|stopwords_raw| stopwords_raw.into_vec())
-                .map(|stopwords_vec| {
-                    stopwords_vec
-                        .into_iter()
-                        .flat_map(FalkorValue::into_string)
-                        .collect()
-                })?,
+            stopwords: string_vec_from_val(stopwords, graph_schema)?,
             info: parse_raw_redis_value(info, graph_schema)
                 .and_then(FalkorValue::into_map)
                 .map(|as_map| {

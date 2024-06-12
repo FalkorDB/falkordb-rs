@@ -6,7 +6,7 @@
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
-    parser::string_vec_from_val,
+    parser::string_vec_from_untyped_val,
     redis_ext::redis_value_as_string,
     ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
 };
@@ -176,7 +176,7 @@ impl FalkorSyncClient {
     pub fn list_graphs(&self) -> FalkorResult<Vec<String>> {
         let mut conn = self.borrow_connection()?;
         conn.execute_command(None, "GRAPH.LIST", None, None)
-            .and_then(string_vec_from_val)
+            .and_then(string_vec_from_untyped_val)
     }
 
     /// Return the current value of a configuration option in the database.

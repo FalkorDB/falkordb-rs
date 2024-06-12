@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    parser::{parse_header, string_vec_from_val},
+    parser::{parse_header, string_vec_from_untyped_val},
     FalkorResult,
 };
 
@@ -43,7 +43,7 @@ impl<T> FalkorResponse<T> {
                 None => vec![],
             },
             data,
-            stats: string_vec_from_val(stats)?,
+            stats: string_vec_from_untyped_val(stats)?,
         })
     }
 }

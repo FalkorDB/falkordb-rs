@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    parser::parse_raw_redis_value, EntityType, FalkorDBError, FalkorResult, FalkorValue,
-    GraphSchema,
+    parser::{parse_falkor_enum, parse_raw_redis_value, string_vec_from_val},
+    EntityType, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
 };
 
 /// The type of restriction to apply for the property
@@ -58,31 +58,12 @@ impl Constraint {
                 .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object")))?;
 
         Ok(Self {
-            constraint_type: ConstraintType::try_from(
-                parse_raw_redis_value(constraint_type_raw, graph_schema)
-                    .and_then(|parsed_constraint_type| parsed_constraint_type.into_string())?
-                    .as_str(),
-            )?,
+            constraint_type: parse_falkor_enum(constraint_type_raw, graph_schema)?,
             label: parse_raw_redis_value(label_raw, graph_schema)
                 .and_then(FalkorValue::into_string)?,
-            properties: parse_raw_redis_value(properties_raw, graph_schema)
-                .and_then(|properties_parsed| properties_parsed.into_vec())
-                .map(|properties_vec| {
-                    properties_vec
-                        .into_iter()
-                        .flat_map(FalkorValue::into_string)
-                        .collect()
-                })?,
-            entity_type: EntityType::try_from(
-                parse_raw_redis_value(entity_type_raw, graph_schema)
-                    .and_then(|parsed_entity_type| parsed_entity_type.into_string())?
-                    .as_str(),
-            )?,
-            status: ConstraintStatus::try_from(
-                parse_raw_redis_value(status_raw, graph_schema)
-                    .and_then(|parsed_status| parsed_status.into_string())?
-                    .as_str(),
-            )?,
+            properties: string_vec_from_val(properties_raw, graph_schema)?,
+            entity_type: parse_falkor_enum(entity_type_raw, graph_schema)?,
+            status: parse_falkor_enum(status_raw, graph_schema)?,
         })
     }
 }

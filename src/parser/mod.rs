@@ -11,7 +11,33 @@ use crate::{
 };
 use std::collections::HashMap;
 
-pub(crate) fn string_vec_from_val(value: redis::Value) -> FalkorResult<Vec<String>> {
+pub(crate) fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToString>>(
+    val: redis::Value,
+    graph_schema: &mut GraphSchema,
+) -> FalkorResult<T> {
+    T::try_from(
+        parse_raw_redis_value(val, graph_schema)
+            .and_then(FalkorValue::into_string)?
+            .as_str(),
+    )
+    .map_err(|err| FalkorDBError::InvalidEnumType(err.to_string()))
+}
+
+pub(crate) fn string_vec_from_val(
+    value: redis::Value,
+    graph_schema: &mut GraphSchema,
+) -> FalkorResult<Vec<String>> {
+    parse_raw_redis_value(value, graph_schema)
+        .and_then(|parsed_value| parsed_value.into_vec())
+        .map(|parsed_value_vec| {
+            parsed_value_vec
+                .into_iter()
+                .flat_map(FalkorValue::into_string)
+                .collect()
+        })
+}
+
+pub(crate) fn string_vec_from_untyped_val(value: redis::Value) -> FalkorResult<Vec<String>> {
     value
         .into_sequence()
         .map(|as_vec| as_vec.into_iter().flat_map(redis_value_as_string).collect())
@@ -46,7 +72,7 @@ pub(crate) fn parse_header(header: redis::Value) -> FalkorResult<Vec<String>> {
                 key
             } else {
                 // Get the first element from the item sequence
-                item_sequence.into_iter().next().ok_or_else(|| {
+                item_sequence.into_iter().next().ok_or({
                     FalkorDBError::ParsingHeader("Expected at least one item in header vector")
                 })?
             };

@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    parser::utils::{parse_header, string_vec_from_val},
+    parser::{parse_header, string_vec_from_val},
     FalkorResult,
 };
 

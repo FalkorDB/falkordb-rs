@@ -3,9 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    value::utils::parse_raw_redis_value, EntityType, FalkorDBError, FalkorValue, GraphSchema,
-};
+use crate::{parser::parse_raw_redis_value, EntityType, FalkorDBError, FalkorValue, GraphSchema};
 use std::collections::HashMap;
 
 /// The status of this index

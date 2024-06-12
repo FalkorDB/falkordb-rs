@@ -6,7 +6,7 @@
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
-    parser::utils::string_vec_from_val,
+    parser::string_vec_from_val,
     redis_ext::redis_value_as_string,
     ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
 };

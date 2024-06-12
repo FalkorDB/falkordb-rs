@@ -3,7 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{FalkorDBError, FalkorParsable, FalkorResult, GraphSchema};
+use crate::{FalkorDBError, FalkorResult};
 use graph_entities::{Edge, Node};
 use path::Path;
 use point::Point;
@@ -13,7 +13,6 @@ pub(crate) mod config;
 pub(crate) mod graph_entities;
 pub(crate) mod path;
 pub(crate) mod point;
-pub(crate) mod utils;
 
 /// An enum of all the supported Falkor types
 #[derive(Clone, Debug, PartialEq)]
@@ -325,15 +324,6 @@ impl FalkorValue {
         } else {
             Err(FalkorDBError::ParsingFMap)
         }
-    }
-}
-
-impl FalkorParsable for FalkorValue {
-    fn from_falkor_value(
-        value: FalkorValue,
-        _: &mut GraphSchema,
-    ) -> FalkorResult<Self> {
-        Ok(value)
     }
 }
 

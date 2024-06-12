@@ -30,7 +30,6 @@ pub use graph::{
     query_builder::{ProcedureQueryBuilder, QueryBuilder},
 };
 pub use graph_schema::{GraphSchema, SchemaType};
-pub use parser::FalkorParsable;
 pub use response::{
     constraint::{Constraint, ConstraintStatus, ConstraintType},
     execution_plan::ExecutionPlan,

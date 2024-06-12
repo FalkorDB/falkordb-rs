@@ -3,7 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{value::utils::parse_raw_redis_value, FalkorValue, GraphSchema};
+use crate::{parser::parse_raw_redis_value, FalkorValue, GraphSchema};
 use std::collections::VecDeque;
 
 /// A wrapper around the returned raw data, allowing parsing on demand of each result

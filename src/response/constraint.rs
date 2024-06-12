@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    value::utils::parse_raw_redis_value, EntityType, FalkorDBError, FalkorResult, FalkorValue,
+    parser::parse_raw_redis_value, EntityType, FalkorDBError, FalkorResult, FalkorValue,
     GraphSchema,
 };
 

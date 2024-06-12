@@ -5,8 +5,8 @@
 
 use crate::{
     client::blocking::FalkorSyncClientInner,
+    parser::parse_type,
     redis_ext::{redis_value_as_int, redis_value_as_string},
-    value::utils::parse_type,
     FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{collections::HashMap, sync::Arc};

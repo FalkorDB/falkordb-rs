@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::redis_ext::redis_value_as_string;
 use crate::{FalkorDBError, FalkorValue};
 
 /// A slowlog entry, representing one of the N slowest queries in the current log
@@ -25,7 +26,7 @@ impl TryFrom<FalkorValue> for SlowlogEntry {
         let [timestamp, command, arguments, time_taken] =
             value.into_vec()?.try_into().map_err(|_| {
                 FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 4 elements of slowlog entry".to_string(),
+                    "Expected exactly 4 elements of slowlog entry",
                 )
             })?;
 
@@ -40,6 +41,36 @@ impl TryFrom<FalkorValue> for SlowlogEntry {
                 .into_string()?
                 .parse()
                 .map_err(|_| FalkorDBError::ParsingF64)?,
+        })
+    }
+}
+
+impl TryFrom<redis::Value> for SlowlogEntry {
+    type Error = FalkorDBError;
+
+    fn try_from(value: redis::Value) -> Result<Self, Self::Error> {
+        let [timestamp, command, arguments, time_taken]: [redis::Value; 4] = value
+            .into_sequence()
+            .map_err(|_| FalkorDBError::ParsingArray)
+            .and_then(|as_vec| {
+                as_vec.try_into().map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "Expected exactly 4 elements of slowlog entry",
+                    )
+                })
+            })?;
+
+        Ok(Self {
+            timestamp: redis_value_as_string(timestamp)
+                .ok()
+                .and_then(|timestamp| timestamp.parse().ok())
+                .ok_or(FalkorDBError::ParsingI64)?,
+            command: redis_value_as_string(command)?,
+            arguments: redis_value_as_string(arguments)?,
+            time_taken: redis_value_as_string(time_taken)
+                .ok()
+                .and_then(|time_taken| time_taken.parse().ok())
+                .ok_or(FalkorDBError::ParsingF64)?,
         })
     }
 }

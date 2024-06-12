@@ -3,7 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{Edge, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema, Node};
+use crate::{Edge, FalkorDBError, FalkorResult, GraphSchema, Node};
 
 /// Represents a path between two nodes, contains all the nodes, and the relationships between them along the path
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -14,28 +14,33 @@ pub struct Path {
     pub relationships: Vec<Edge>,
 }
 
-impl FalkorParsable for Path {
-    fn from_falkor_value(
-        value: FalkorValue,
+impl Path {
+    pub(crate) fn parse(
+        value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [nodes, relationships]: [FalkorValue; 2] =
-            value.into_vec()?.try_into().map_err(|_| {
+        let [nodes, relationships]: [redis::Value; 2] = value
+            .into_sequence()
+            .map_err(|_| FalkorDBError::ParsingArray)?
+            .try_into()
+            .map_err(|_| {
                 FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 2 elements for path".to_string(),
+                    "Expected exactly 2 elements for path",
                 )
             })?;
 
         Ok(Self {
             nodes: nodes
-                .into_vec()?
+                .into_sequence()
+                .map_err(|_| FalkorDBError::ParsingArray)?
                 .into_iter()
-                .flat_map(|node| Node::from_falkor_value(node, graph_schema))
+                .flat_map(|node| Node::parse(node, graph_schema))
                 .collect(),
             relationships: relationships
-                .into_vec()?
+                .into_sequence()
+                .map_err(|_| FalkorDBError::ParsingArray)?
                 .into_iter()
-                .flat_map(|edge| Edge::from_falkor_value(edge, graph_schema))
+                .flat_map(|edge| Edge::parse(edge, graph_schema))
                 .collect(),
         })
     }

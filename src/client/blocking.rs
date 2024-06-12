@@ -3,11 +3,12 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::redis_ext::redis_value_as_string;
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
     parser::utils::string_vec_from_val,
-    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorValue, SyncGraph,
+    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
 };
 use parking_lot::{Mutex, RwLock};
 use std::{
@@ -24,6 +25,10 @@ pub(crate) struct FalkorSyncClientInner {
 }
 
 impl FalkorSyncClientInner {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Borrow Connection From Connection Pool", skip_all)
+    )]
     pub(crate) fn borrow_connection(
         &self,
         pool_owner: Arc<Self>,
@@ -38,12 +43,15 @@ impl FalkorSyncClientInner {
         ))
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Get New Sync Connection From Client", skip_all)
+    )]
     pub(crate) fn get_connection(&self) -> FalkorResult<FalkorSyncConnection> {
         self._inner.lock().get_connection()
     }
 }
 
-#[cfg(feature = "redis")]
 fn is_sentinel(conn: &mut FalkorSyncConnection) -> FalkorResult<bool> {
     let info_map = conn.get_redis_info(Some("server"))?;
     Ok(info_map
@@ -52,7 +60,6 @@ fn is_sentinel(conn: &mut FalkorSyncConnection) -> FalkorResult<bool> {
         .unwrap_or_default())
 }
 
-#[cfg(feature = "redis")]
 pub(crate) fn get_sentinel_client(
     client: &mut FalkorClientProvider,
     connection_info: &redis::ConnectionInfo,
@@ -66,21 +73,21 @@ pub(crate) fn get_sentinel_client(
     // Perhaps in the future we can use it if we only support the master instance to be called 'master'?
     let sentinel_masters = conn
         .execute_command(None, "SENTINEL", Some("MASTERS"), None)?
-        .into_vec()?;
-
-    if sentinel_masters.len() != 1 {
-        return Err(FalkorDBError::SentinelMastersCount);
-    }
+        .into_sequence()
+        .ok()
+        .and_then(|vec| (vec.len() == 1).then_some(vec))
+        .ok_or(FalkorDBError::SentinelMastersCount)?;
 
     let sentinel_master: HashMap<_, _> = sentinel_masters
         .into_iter()
         .next()
+        .and_then(|master| master.into_sequence().ok())
         .ok_or(FalkorDBError::SentinelMastersCount)?
-        .into_vec()?
         .chunks_exact(2)
-        .flat_map(|chunk| TryInto::<[FalkorValue; 2]>::try_into(chunk.to_vec()))
+        .flat_map(|chunk| TryInto::<&[redis::Value; 2]>::try_into(chunk)) // TODO: check if this can be done with no copying
         .flat_map(|[key, val]| {
-            Result::<_, FalkorDBError>::Ok((key.into_string()?, val.into_string()?))
+            redis_value_as_string(key.to_owned())
+                .and_then(|key| redis_value_as_string(val.to_owned()).map(|val| (key, val)))
         })
         .collect();
 
@@ -184,34 +191,42 @@ impl FalkorSyncClient {
         &self,
         config_key: &str,
     ) -> FalkorResult<HashMap<String, ConfigValue>> {
-        let mut conn = self.borrow_connection()?;
-        let config = conn
-            .execute_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))?
-            .into_vec()?;
+        let config = self
+            .borrow_connection()
+            .and_then(|mut conn| {
+                conn.execute_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))
+            })
+            .and_then(|res| res.into_sequence().map_err(|_| FalkorDBError::ParsingArray))?;
 
         if config.len() == 2 {
-            let [key, val]: [FalkorValue; 2] = config.try_into().map_err(|_| {
+            let [key, val]: [redis::Value; 2] = config.try_into().map_err(|_| {
                 FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 2 elements for configuration option".to_string(),
+                    "Expected exactly 2 elements for configuration option",
                 )
             })?;
 
-            return Ok(HashMap::from([(
-                key.into_string()?,
-                ConfigValue::try_from(val)?,
-            )]));
+            return redis_value_as_string(key)
+                .and_then(|key| ConfigValue::try_from(val).map(|val| HashMap::from([(key, val)])));
         }
 
         Ok(config
             .into_iter()
             .flat_map(|config| {
-                let [key, val]: [FalkorValue; 2] = config.into_vec()?.try_into().map_err(|_| {
-                    FalkorDBError::ParsingArrayToStructElementCount(
-                        "Expected exactly 2 elements for configuration option".to_string(),
-                    )
-                })?;
+                config
+                    .into_sequence()
+                    .map_err(|_| FalkorDBError::ParsingArray)
+                    .and_then(|as_vec| {
+                        let [key, val]: [redis::Value; 2] = as_vec.try_into().map_err(|_| {
+                            FalkorDBError::ParsingArrayToStructElementCount(
+                                "Expected exactly 2 elements for configuration option",
+                            )
+                        })?;
 
-                Result::<_, FalkorDBError>::Ok((key.into_string()?, ConfigValue::try_from(val)?))
+                        Result::<_, FalkorDBError>::Ok((
+                            redis_value_as_string(key)?,
+                            ConfigValue::try_from(val)?,
+                        ))
+                    })
             })
             .collect::<HashMap<String, ConfigValue>>())
     }
@@ -226,7 +241,7 @@ impl FalkorSyncClient {
         &self,
         config_key: &str,
         value: C,
-    ) -> FalkorResult<FalkorValue> {
+    ) -> FalkorResult<redis::Value> {
         self.borrow_connection()?.execute_command(
             None,
             "GRAPH.CONFIG",
@@ -271,7 +286,6 @@ impl FalkorSyncClient {
         Ok(self.select_graph(new_graph_name))
     }
 
-    #[cfg(feature = "redis")]
     /// Retrieves redis information
     pub fn redis_info(
         &self,

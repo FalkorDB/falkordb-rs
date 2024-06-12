@@ -11,7 +11,6 @@ use std::{collections::HashMap, fmt::Debug};
 
 pub(crate) mod config;
 pub(crate) mod graph_entities;
-pub(crate) mod map;
 pub(crate) mod path;
 pub(crate) mod point;
 pub(crate) mod utils;
@@ -94,7 +93,7 @@ impl TryFrom<FalkorValue> for Vec<FalkorValue> {
     fn try_from(value: FalkorValue) -> FalkorResult<Self> {
         match value {
             FalkorValue::Array(val) => Ok(val),
-            _ => Err(FalkorDBError::ParsingFArray),
+            _ => Err(FalkorDBError::ParsingArray),
         }
     }
 }
@@ -161,9 +160,7 @@ impl TryFrom<FalkorValue> for HashMap<String, FalkorValue> {
     fn try_from(value: FalkorValue) -> FalkorResult<Self> {
         match value {
             FalkorValue::Map(map) => Ok(map),
-            _ => Err(FalkorDBError::ParsingFMap(
-                "Attempting to get a non-map element as a map".to_string(),
-            )),
+            _ => Err(FalkorDBError::ParsingFMap),
         }
     }
 }
@@ -180,7 +177,7 @@ impl TryFrom<FalkorValue> for Point {
 }
 
 impl FalkorValue {
-    /// Returns a reference to the internal [`Vec`] if this is an FArray variant.
+    /// Returns a reference to the internal [`Vec`] if this is an Array variant.
     ///
     /// # Returns
     /// A reference to the internal [`Vec`]
@@ -295,7 +292,7 @@ impl FalkorValue {
         }
     }
 
-    /// Consumes itself and returns the inner [`Vec`] if this is an FArray variant
+    /// Consumes itself and returns the inner [`Vec`] if this is an Array variant
     ///
     /// # Returns
     /// The inner [`Vec`]

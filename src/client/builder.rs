@@ -58,7 +58,6 @@ impl<const R: char> FalkorClientBuilder<R> {
             .try_into()
             .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
         Ok(match connection_info {
-            #[cfg(feature = "redis")]
             FalkorConnectionInfo::Redis(connection_info) => FalkorClientProvider::Redis {
                 client: redis::Client::open(connection_info.clone())
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
@@ -92,7 +91,6 @@ impl FalkorClientBuilder<'S'> {
 
         let mut client = Self::get_client(connection_info.clone())?;
 
-        #[cfg(feature = "redis")]
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
             if let Some(sentinel) =
@@ -121,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "redis")]
+
     fn test_sync_builder_redis_fallback() {
         let client = FalkorClientBuilder::new().build();
         assert!(client.is_ok());

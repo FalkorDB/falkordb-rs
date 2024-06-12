@@ -3,7 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{FalkorDBError, FalkorResult, FalkorValue};
+use crate::redis_ext::redis_value_as_string;
+use crate::{FalkorDBError, FalkorResult};
 use regex::Regex;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -168,26 +169,24 @@ impl ExecutionPlan {
     }
 }
 
-impl TryFrom<FalkorValue> for ExecutionPlan {
+impl TryFrom<redis::Value> for ExecutionPlan {
     type Error = FalkorDBError;
 
-    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
-        let execution_plan_operations: Vec<_> = value
-            .into_vec()?
-            .into_iter()
-            .flat_map(FalkorValue::into_string)
-            .collect();
+    fn try_from(value: redis::Value) -> Result<Self, Self::Error> {
+        let redis_value_vec = value
+            .into_sequence()
+            .map_err(|_| FalkorDBError::ParsingArray)?;
 
-        let string_representation = ["".to_string()]
-            .into_iter()
-            .chain(execution_plan_operations.iter().cloned())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let mut string_representation = Vec::with_capacity(redis_value_vec.len() + 1);
+        string_representation.push("".to_string());
 
+        let execution_plan_operations = Vec::with_capacity(redis_value_vec.len());
         let mut current_traversal_stack = vec![];
-        for node in execution_plan_operations.iter().map(String::as_str) {
-            let depth = node.matches("    ").count();
-            let node = node.trim();
+        for node in redis_value_vec {
+            let node_string = redis_value_as_string(node)?;
+
+            let depth = node_string.matches("    ").count();
+            let node = node_string.trim();
 
             let current_node = match current_traversal_stack.last().cloned() {
                 None => {
@@ -231,6 +230,8 @@ impl TryFrom<FalkorValue> for ExecutionPlan {
                     current_node.borrow_mut().children.push(new_node);
                 }
             }
+
+            string_representation.push(node_string);
         }
 
         // Must drop traversal stack first
@@ -244,7 +245,7 @@ impl TryFrom<FalkorValue> for ExecutionPlan {
         Self::operations_map_from_tree(&operation_tree, &mut operations);
 
         Ok(ExecutionPlan {
-            string_representation,
+            string_representation: string_representation.join("\n"),
             plan: execution_plan_operations,
             operations,
             operation_tree,

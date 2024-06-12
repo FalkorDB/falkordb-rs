@@ -3,7 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{client::blocking::FalkorSyncClientInner, FalkorDBError, FalkorResult, FalkorValue};
+use crate::redis_ext::redis_value_as_string;
+use crate::{client::blocking::FalkorSyncClientInner, FalkorDBError, FalkorResult};
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc},
@@ -12,20 +13,22 @@ use std::{
 pub(crate) enum FalkorSyncConnection {
     #[allow(unused)]
     None,
-    #[cfg(feature = "redis")]
     Redis(redis::Connection),
 }
 
 impl FalkorSyncConnection {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Connection Inner Execute Command", skip_all)
+    )]
     pub(crate) fn execute_command(
         &mut self,
         graph_name: Option<&str>,
         command: &str,
         subcommand: Option<&str>,
         params: Option<&[&str]>,
-    ) -> FalkorResult<FalkorValue> {
+    ) -> FalkorResult<redis::Value> {
         match self {
-            #[cfg(feature = "redis")]
             FalkorSyncConnection::Redis(redis_conn) => {
                 use redis::ConnectionLike as _;
                 let mut cmd = redis::cmd(command);
@@ -36,36 +39,40 @@ impl FalkorSyncConnection {
                         cmd.arg(param.to_string());
                     }
                 }
-                redis::FromRedisValue::from_owned_redis_value(
-                    redis_conn
-                        .req_command(&cmd)
-                        .map_err(|err| match err.kind() {
-                            redis::ErrorKind::IoError
-                            | redis::ErrorKind::ClusterConnectionNotFound
-                            | redis::ErrorKind::ClusterDown
-                            | redis::ErrorKind::MasterDown => FalkorDBError::ConnectionDown,
-                            _ => FalkorDBError::RedisError(err.to_string()),
-                        })?,
-                )
-                .map_err(|err| FalkorDBError::RedisParsingError(err.to_string()))
+                redis_conn
+                    .req_command(&cmd)
+                    .map_err(|err| match err.kind() {
+                        redis::ErrorKind::IoError
+                        | redis::ErrorKind::ClusterConnectionNotFound
+                        | redis::ErrorKind::ClusterDown
+                        | redis::ErrorKind::MasterDown => FalkorDBError::ConnectionDown,
+                        _ => FalkorDBError::RedisError(err.to_string()),
+                    })
             }
-            FalkorSyncConnection::None => Ok(FalkorValue::None),
+            FalkorSyncConnection::None => Ok(redis::Value::Nil),
         }
     }
 
-    #[cfg(feature = "redis")]
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Get Redis Info", skip_all)
+    )]
     pub(crate) fn get_redis_info(
         &mut self,
         section: Option<&str>,
     ) -> FalkorResult<HashMap<String, String>> {
-        Ok(self
-            .execute_command(None, "INFO", section, None)?
-            .into_string()?
-            .split("\r\n")
-            .map(|info_item| info_item.split(':').collect::<Vec<_>>())
-            .flat_map(TryInto::<[&str; 2]>::try_into)
-            .map(|[key, val]| (key.to_string(), val.to_string()))
-            .collect())
+        self.execute_command(None, "INFO", section, None)
+            .and_then(|res| {
+                redis_value_as_string(res)
+                    .map(|info| {
+                        info.split("\r\n")
+                            .map(|info_item| info_item.split(':').collect::<Vec<_>>())
+                            .flat_map(TryInto::<[&str; 2]>::try_into)
+                            .map(|[key, val]| (key.to_string(), val.to_string()))
+                            .collect()
+                    })
+                    .map_err(|_| FalkorDBError::ParsingFString)
+            })
     }
 }
 
@@ -96,13 +103,17 @@ impl BorrowedSyncConnection {
         self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Borrowed Connection Execute Command", skip_all)
+    )]
     pub(crate) fn execute_command(
         &mut self,
         graph_name: Option<&str>,
         command: &str,
         subcommand: Option<&str>,
         params: Option<&[&str]>,
-    ) -> Result<FalkorValue, FalkorDBError> {
+    ) -> Result<redis::Value, FalkorDBError> {
         match self
             .as_inner()?
             .execute_command(graph_name, command, subcommand, params)

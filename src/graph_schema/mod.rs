@@ -4,11 +4,12 @@
  */
 
 use crate::{
-    client::blocking::FalkorSyncClientInner, value::utils::parse_type, FalkorDBError, FalkorResult,
-    FalkorValue,
+    client::blocking::FalkorSyncClientInner,
+    redis_ext::{redis_value_as_int, redis_value_as_string},
+    value::utils::parse_type,
+    FalkorDBError, FalkorResult, FalkorValue,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
     match schema_type {
@@ -23,31 +24,31 @@ pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
 pub(crate) struct FKeyTypeVal {
     pub(crate) key: i64,
     pub(crate) type_marker: i64,
-    pub(crate) val: FalkorValue,
+    pub(crate) val: redis::Value,
 }
 
-impl TryFrom<FalkorValue> for FKeyTypeVal {
+impl TryFrom<redis::Value> for FKeyTypeVal {
     type Error = FalkorDBError;
 
-    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        let [key_raw, type_raw, val]: [FalkorValue; 3] =
-            value.into_vec()?.try_into().map_err(|_| {
+    fn try_from(value: redis::Value) -> FalkorResult<Self> {
+        let [key_raw, type_raw, val]: [redis::Value; 3] = value
+            .into_sequence()
+            .ok()
+            .and_then(|seq| seq.try_into().ok())
+            .ok_or({
                 FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 elements for key-type-value property".to_string(),
+                    "Expected exactly 3 elements for key-type-value property",
                 )
             })?;
 
-        let key = key_raw.to_i64();
-        let type_marker = type_raw.to_i64();
-
-        match (key, type_marker) {
-            (Some(key), Some(type_marker)) => Ok(FKeyTypeVal {
+        match (redis_value_as_int(key_raw), redis_value_as_int(type_raw)) {
+            (Ok(key), Ok(type_marker)) => Ok(FKeyTypeVal {
                 key,
                 type_marker,
                 val,
             }),
-            (Some(_), None) => Err(FalkorDBError::ParsingTypeMarkerTypeMismatch)?,
-            (None, Some(_)) => Err(FalkorDBError::ParsingKeyIdTypeMismatch)?,
+            (Ok(_), Err(_)) => Err(FalkorDBError::ParsingTypeMarkerTypeMismatch)?,
+            (Err(_), Ok(_)) => Err(FalkorDBError::ParsingKeyIdTypeMismatch)?,
             _ => Err(FalkorDBError::ParsingKTVTypes)?,
         }
     }
@@ -132,6 +133,10 @@ impl GraphSchema {
         }
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Refresh Schema Type", skip_all)
+    )]
     fn refresh(
         &mut self,
         schema_type: SchemaType,
@@ -143,7 +148,7 @@ impl GraphSchema {
         };
 
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
-        let [_, keys, _]: [FalkorValue; 3] = self
+        let [_, keys, _]: [redis::Value; 3] = self
             .client
             .borrow_connection(self.client.clone())?
             .execute_command(
@@ -152,30 +157,30 @@ impl GraphSchema {
                 None,
                 Some(&[format!("CALL {}()", get_refresh_command(schema_type)).as_str()]),
             )?
-            .into_vec()?
+            .into_sequence().map_err(|_| FalkorDBError::ParsingArray)?
             .try_into()
             .map_err(|_| {
                 FalkorDBError::ParsingArrayToStructElementCount(
                     "Expected exactly 3 types for header-resultset-stats response from refresh query"
-                        .to_string(),
                 )
             })?;
 
         let new_keys = keys
-            .into_vec()?
+            .into_sequence()
+            .map_err(|_| FalkorDBError::ParsingArray)?
             .into_iter()
             .enumerate()
             .flat_map(|(idx, item)| {
                 FalkorResult::<(i64, String)>::Ok((
                     idx as i64,
-                    item.into_vec()?
-                        .into_iter()
-                        .next()
+                    item.into_sequence()
+                        .ok()
+                        .and_then(|item_seq| item_seq.into_iter().next())
                         .ok_or(FalkorDBError::ParsingError(
                             "Expected new label/property to be the first element in an array"
                                 .to_string(),
                         ))
-                        .and_then(|item| item.into_string())?,
+                        .and_then(redis_value_as_string)?,
                 ))
             })
             .collect::<HashMap<i64, String>>();
@@ -184,16 +189,20 @@ impl GraphSchema {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse ID Vec To String Vec", skip_all)
+    )]
     pub(crate) fn parse_id_vec(
         &mut self,
-        raw_ids: Vec<FalkorValue>,
+        raw_ids: Vec<redis::Value>,
         schema_type: SchemaType,
     ) -> FalkorResult<Vec<String>> {
         let raw_ids_len = raw_ids.len();
         raw_ids
             .into_iter()
             .try_fold(Vec::with_capacity(raw_ids_len), |mut acc, raw_id| {
-                let id = raw_id.to_i64().ok_or(FalkorDBError::ParsingI64)?;
+                let id = redis_value_as_int(raw_id)?;
                 let value = match self
                     .get_id_map_by_schema_type(schema_type)
                     .get(&id)
@@ -213,31 +222,37 @@ impl GraphSchema {
             })
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Properties Map", skip_all)
+    )]
     pub(crate) fn parse_properties_map(
         &mut self,
-        value: FalkorValue,
+        value: redis::Value,
     ) -> FalkorResult<HashMap<String, FalkorValue>> {
-        let raw_properties_vec = value.into_vec()?;
-        let mut out_map = HashMap::with_capacity(raw_properties_vec.len());
-
-        for item in raw_properties_vec {
-            let ktv = FKeyTypeVal::try_from(item)?;
-            let key = match self.properties.get(&ktv.key).cloned() {
-                None => {
-                    // Refresh, but this time when we try again, throw an error on failure
+        let raw_properties_vec = value
+            .into_sequence()
+            .map_err(|_| FalkorDBError::ParsingArray)?;
+        let raw_properties_len = raw_properties_vec.len();
+        raw_properties_vec.into_iter().try_fold(
+            HashMap::with_capacity(raw_properties_len),
+            |mut out_map, item| {
+                let ktv = FKeyTypeVal::try_from(item)?;
+                let key = if let Some(key) = self.properties.get(&ktv.key).cloned() {
+                    key
+                } else {
+                    // Refresh the schema and attempt to retrieve the key again
                     self.refresh(SchemaType::Properties)?;
                     self.properties
                         .get(&ktv.key)
                         .cloned()
                         .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Properties))?
-                }
-                Some(key) => key,
-            };
+                };
 
-            out_map.insert(key, parse_type(ktv.type_marker, ktv.val, self)?);
-        }
-
-        Ok(out_map)
+                out_map.insert(key, parse_type(ktv.type_marker, ktv.val, self)?);
+                Ok(out_map)
+            },
+        )
     }
 }
 
@@ -272,10 +287,10 @@ pub(crate) mod tests {
     #[test]
     fn test_label_not_exists() {
         let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
-        let input_value = FalkorValue::Array(vec![FalkorValue::Array(vec![
-            FalkorValue::I64(1),
-            FalkorValue::I64(2),
-            FalkorValue::String("test".to_string()),
+        let input_value = redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+            redis::Value::Int(1),
+            redis::Value::Int(2),
+            redis::Value::Status("test".to_string()),
         ])]);
 
         let result = parser.parse_properties_map(input_value);
@@ -292,21 +307,21 @@ pub(crate) mod tests {
         ]);
 
         // Create a FalkorValue to test
-        let input_value = FalkorValue::Array(vec![
-            FalkorValue::Array(vec![
-                FalkorValue::I64(1),
-                FalkorValue::I64(2),
-                FalkorValue::String("test".to_string()),
+        let input_value = redis::Value::Bulk(vec![
+            redis::Value::Bulk(vec![
+                redis::Value::Int(1),
+                redis::Value::Int(2),
+                redis::Value::Status("test".to_string()),
             ]),
-            FalkorValue::Array(vec![
-                FalkorValue::I64(2),
-                FalkorValue::I64(3),
-                FalkorValue::I64(42),
+            redis::Value::Bulk(vec![
+                redis::Value::Int(2),
+                redis::Value::Int(3),
+                redis::Value::Int(42),
             ]),
-            FalkorValue::Array(vec![
-                FalkorValue::I64(3),
-                FalkorValue::I64(4),
-                FalkorValue::Bool(true),
+            redis::Value::Bulk(vec![
+                redis::Value::Int(3),
+                redis::Value::Int(4),
+                redis::Value::Status("true".to_string()),
             ]),
         ]);
 
@@ -333,8 +348,14 @@ pub(crate) mod tests {
             (3, "property3".to_string()),
         ]);
 
-        let labels_ok_res =
-            parser.parse_id_vec(vec![3.into(), 1.into(), 2.into()], SchemaType::Labels);
+        let labels_ok_res = parser.parse_id_vec(
+            vec![
+                redis::Value::Int(3),
+                redis::Value::Int(1),
+                redis::Value::Int(2),
+            ],
+            SchemaType::Labels,
+        );
         assert!(labels_ok_res.is_ok());
         assert_eq!(
             labels_ok_res.unwrap(),
@@ -343,7 +364,11 @@ pub(crate) mod tests {
 
         // Should fail, these are not relationships
         let labels_not_ok_res = parser.parse_id_vec(
-            vec![3.into(), 1.into(), 2.into()],
+            vec![
+                redis::Value::Int(3),
+                redis::Value::Int(1),
+                redis::Value::Int(2),
+            ],
             SchemaType::Relationships,
         );
         assert!(labels_not_ok_res.is_err());
@@ -357,7 +382,11 @@ pub(crate) mod tests {
         ]);
 
         let rels_ok_res = parser.parse_id_vec(
-            vec![3.into(), 1.into(), 2.into()],
+            vec![
+                redis::Value::Int(3),
+                redis::Value::Int(1),
+                redis::Value::Int(2),
+            ],
             SchemaType::Relationships,
         );
         assert!(rels_ok_res.is_ok());

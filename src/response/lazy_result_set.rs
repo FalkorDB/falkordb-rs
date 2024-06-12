@@ -9,13 +9,17 @@ use std::collections::VecDeque;
 /// A wrapper around the returned raw data, allowing parsing on demand of each result
 /// This implements Iterator, so can simply be collect()'ed into any desired container
 pub struct LazyResultSet<'a> {
-    data: VecDeque<FalkorValue>,
+    data: VecDeque<redis::Value>,
     graph_schema: &'a mut GraphSchema,
 }
 
 impl<'a> LazyResultSet<'a> {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Create New Lazy Result Set", skip_all)
+    )]
     pub(crate) fn new(
-        data: Vec<FalkorValue>,
+        data: Vec<redis::Value>,
         graph_schema: &'a mut GraphSchema,
     ) -> Self {
         Self {
@@ -38,6 +42,10 @@ impl<'a> LazyResultSet<'a> {
 impl<'a> Iterator for LazyResultSet<'a> {
     type Item = Vec<FalkorValue>;
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Next Result", skip_all)
+    )]
     fn next(&mut self) -> Option<Self::Item> {
         self.data.pop_front().map(|current_result| {
             parse_type(6, current_result, self.graph_schema)

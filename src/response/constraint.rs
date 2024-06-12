@@ -3,10 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    value::utils::parse_type, EntityType, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue,
-    GraphSchema,
-};
+use crate::redis_ext::redis_value_as_string;
+use crate::{EntityType, FalkorDBError, FalkorResult};
 
 /// The type of restriction to apply for the property
 #[derive(Copy, Clone, Debug, Eq, PartialEq, strum::EnumString, strum::Display)]
@@ -47,26 +45,24 @@ pub struct Constraint {
     pub status: ConstraintStatus,
 }
 
-impl FalkorParsable for Constraint {
-    fn from_falkor_value(
-        value: FalkorValue,
-        graph_schema: &mut GraphSchema,
-    ) -> FalkorResult<Self> {
-        let value_vec = parse_type(6, value, graph_schema)?.into_vec()?;
+impl Constraint {
+    pub(crate) fn parse(value: redis::Value) -> FalkorResult<Self> {
+        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [redis::Value; 5] = value.into_sequence()
+            .map_err(|_| FalkorDBError::ParsingArray)
+            .and_then(|res| res.try_into()
+                .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object")))?;
 
-        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = value_vec.try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object".to_string()))?;
-
-        Ok(Constraint {
-            constraint_type: constraint_type_raw.into_string()?.as_str().try_into()?,
-            label: label_raw.into_string()?,
+        Ok(Self {
+            constraint_type: ConstraintType::try_from(
+                redis_value_as_string(constraint_type_raw)?.as_str(),
+            )?,
+            label: redis_value_as_string(label_raw)?,
             properties: properties_raw
-                .into_vec()?
-                .into_iter()
-                .flat_map(FalkorValue::into_string)
-                .collect(),
-            entity_type: entity_type_raw.into_string()?.as_str().try_into()?,
-            status: status_raw.into_string()?.as_str().try_into()?,
+                .into_sequence()
+                .map(|data| data.into_iter().flat_map(redis_value_as_string).collect())
+                .map_err(|_| FalkorDBError::ParsingArray)?,
+            entity_type: EntityType::try_from(redis_value_as_string(entity_type_raw)?.as_str())?,
+            status: ConstraintStatus::try_from(redis_value_as_string(status_raw)?.as_str())?,
         })
     }
 }

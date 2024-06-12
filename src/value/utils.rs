@@ -3,32 +3,68 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{FalkorDBError, FalkorParsable, FalkorValue, GraphSchema, Point};
+use crate::redis_ext::{
+    redis_value_as_bool, redis_value_as_double, redis_value_as_int, redis_value_as_string,
+};
+use crate::{Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point};
+use std::collections::HashMap;
 
-pub(crate) fn type_val_from_value(value: FalkorValue) -> Result<(i64, FalkorValue), FalkorDBError> {
-    let [type_marker, val]: [FalkorValue; 2] = value.into_vec()?.try_into().map_err(|_| {
-        FalkorDBError::ParsingArrayToStructElementCount(
-            "Expected exactly 2 elements: type marker, and value".to_string(),
-        )
-    })?;
-    let type_marker = type_marker.to_i64().ok_or(FalkorDBError::ParsingI64)?;
+pub(crate) fn type_val_from_value(
+    value: redis::Value
+) -> Result<(i64, redis::Value), FalkorDBError> {
+    let [type_marker, val]: [redis::Value; 2] = value
+        .into_sequence()
+        .map_err(|_| FalkorDBError::ParsingArray)?
+        .try_into()
+        .map_err(|_| {
+            FalkorDBError::ParsingArrayToStructElementCount(
+                "Expected exactly 2 elements: type marker, and value",
+            )
+        })?;
 
-    Ok((type_marker, val))
+    Ok((redis_value_as_int(type_marker)?, val))
 }
 
+fn parse_regular_falkor_map(
+    value: redis::Value,
+    graph_schema: &mut GraphSchema,
+) -> FalkorResult<HashMap<String, FalkorValue>> {
+    value
+        .into_map_iter()
+        .map_err(|_| FalkorDBError::ParsingFMap)?
+        .try_fold(HashMap::new(), |mut out_map, (key, val)| {
+            let [type_marker, val]: [redis::Value; 2] = val
+                .into_sequence()
+                .ok()
+                .and_then(|val_seq| val_seq.try_into().ok())
+                .ok_or(FalkorDBError::ParsingFMap)?;
+
+            out_map.insert(
+                redis_value_as_string(key)?,
+                parse_type(redis_value_as_int(type_marker)?, val, graph_schema)?,
+            );
+            Ok(out_map)
+        })
+}
+
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Parse Element With Type Marker", skip_all)
+)]
 pub(crate) fn parse_type(
     type_marker: i64,
-    val: FalkorValue,
+    val: redis::Value,
     graph_schema: &mut GraphSchema,
 ) -> Result<FalkorValue, FalkorDBError> {
     let res = match type_marker {
         1 => FalkorValue::None,
-        2 => FalkorValue::String(val.into_string()?),
-        3 => FalkorValue::I64(val.to_i64().ok_or(FalkorDBError::ParsingI64)?),
-        4 => FalkorValue::Bool(val.to_bool().ok_or(FalkorDBError::ParsingBool)?),
-        5 => FalkorValue::F64(val.try_into()?),
+        2 => FalkorValue::String(redis_value_as_string(val)?),
+        3 => FalkorValue::I64(redis_value_as_int(val)?),
+        4 => FalkorValue::Bool(redis_value_as_bool(val)?),
+        5 => FalkorValue::F64(redis_value_as_double(val)?),
         6 => FalkorValue::Array(
-            val.into_vec()?
+            val.into_sequence()
+                .map_err(|_| FalkorDBError::ParsingArray)?
                 .into_iter()
                 .flat_map(|item| {
                     type_val_from_value(item)
@@ -37,10 +73,10 @@ pub(crate) fn parse_type(
                 .collect(),
         ),
         // The following types are sent as an array and require specific parsing functions
-        7 => FalkorValue::Edge(FalkorParsable::from_falkor_value(val, graph_schema)?),
-        8 => FalkorValue::Node(FalkorParsable::from_falkor_value(val, graph_schema)?),
-        9 => FalkorValue::Path(FalkorParsable::from_falkor_value(val, graph_schema)?),
-        10 => FalkorValue::Map(FalkorParsable::from_falkor_value(val, graph_schema)?),
+        7 => FalkorValue::Edge(Edge::parse(val, graph_schema)?),
+        8 => FalkorValue::Node(Node::parse(val, graph_schema)?),
+        9 => FalkorValue::Path(Path::parse(val, graph_schema)?),
+        10 => FalkorValue::Map(parse_regular_falkor_map(val, graph_schema)?),
         11 => FalkorValue::Point(Point::parse(val)?),
         _ => Err(FalkorDBError::ParsingUnknownType)?,
     };
@@ -48,20 +84,13 @@ pub(crate) fn parse_type(
     Ok(res)
 }
 
-pub(crate) fn parse_vec<T: TryFrom<FalkorValue, Error = FalkorDBError>>(
-    value: FalkorValue
-) -> Result<Vec<T>, FalkorDBError> {
-    Ok(value
-        .into_vec()?
-        .into_iter()
-        .flat_map(TryFrom::try_from)
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph_schema::tests::open_readonly_graph_with_modified_schema;
+    use crate::{
+        client::blocking::create_empty_inner_client,
+        graph_schema::tests::open_readonly_graph_with_modified_schema,
+    };
 
     #[test]
     fn test_parse_edge() {
@@ -69,21 +98,21 @@ mod tests {
 
         let res = parse_type(
             7,
-            FalkorValue::Array(vec![
-                FalkorValue::I64(100), // edge id
-                FalkorValue::I64(0),   // edge type
-                FalkorValue::I64(51),  // src node
-                FalkorValue::I64(52),  // dst node
-                FalkorValue::Array(vec![
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(0),
-                        FalkorValue::I64(3),
-                        FalkorValue::I64(20),
+            redis::Value::Bulk(vec![
+                redis::Value::Int(100), // edge id
+                redis::Value::Int(0),   // edge type
+                redis::Value::Int(51),  // src node
+                redis::Value::Int(52),  // dst node
+                redis::Value::Bulk(vec![
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(0),
+                        redis::Value::Int(3),
+                        redis::Value::Int(20),
                     ]),
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(1),
-                        FalkorValue::I64(4),
-                        FalkorValue::Bool(false),
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(1),
+                        redis::Value::Int(4),
+                        redis::Value::Status("false".to_string()),
                     ]),
                 ]),
             ]),
@@ -105,7 +134,7 @@ mod tests {
         assert_eq!(edge.properties.get("age"), Some(&FalkorValue::I64(20)));
         assert_eq!(
             edge.properties.get("is_boring"),
-            Some(&FalkorValue::Bool(false))
+            Some(&FalkorValue::String("false".to_string()))
         );
     }
 
@@ -115,24 +144,24 @@ mod tests {
 
         let res = parse_type(
             8,
-            FalkorValue::Array(vec![
-                FalkorValue::I64(51),                                               // node id
-                FalkorValue::Array(vec![FalkorValue::I64(0), FalkorValue::I64(1)]), // node type
-                FalkorValue::Array(vec![
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(0),
-                        FalkorValue::I64(3),
-                        FalkorValue::I64(15),
+            redis::Value::Bulk(vec![
+                redis::Value::Int(51),                                                // node id
+                redis::Value::Bulk(vec![redis::Value::Int(0), redis::Value::Int(1)]), // node type
+                redis::Value::Bulk(vec![
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(0),
+                        redis::Value::Int(3),
+                        redis::Value::Int(15),
                     ]),
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(2),
-                        FalkorValue::I64(2),
-                        FalkorValue::String("the something".to_string()),
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(2),
+                        redis::Value::Int(2),
+                        redis::Value::Status("the something".to_string()),
                     ]),
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(3),
-                        FalkorValue::I64(5),
-                        FalkorValue::F64(105.5),
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(3),
+                        redis::Value::Int(5),
+                        redis::Value::Status("105.5".to_string()),
                     ]),
                 ]),
             ]),
@@ -155,7 +184,7 @@ mod tests {
         );
         assert_eq!(
             node.properties.get("secs_since_login"),
-            Some(&FalkorValue::F64(105.5))
+            Some(&FalkorValue::String("105.5".to_string()))
         );
     }
 
@@ -165,38 +194,38 @@ mod tests {
 
         let res = parse_type(
             9,
-            FalkorValue::Array(vec![
-                FalkorValue::Array(vec![
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(51),
-                        FalkorValue::Array(vec![FalkorValue::I64(0)]),
-                        FalkorValue::Array(vec![]),
+            redis::Value::Bulk(vec![
+                redis::Value::Bulk(vec![
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(51),
+                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
+                        redis::Value::Bulk(vec![]),
                     ]),
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(52),
-                        FalkorValue::Array(vec![FalkorValue::I64(0)]),
-                        FalkorValue::Array(vec![]),
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(52),
+                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
+                        redis::Value::Bulk(vec![]),
                     ]),
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(53),
-                        FalkorValue::Array(vec![FalkorValue::I64(0)]),
-                        FalkorValue::Array(vec![]),
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(53),
+                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
+                        redis::Value::Bulk(vec![]),
                     ]),
                 ]),
-                FalkorValue::Array(vec![
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(100),
-                        FalkorValue::I64(0),
-                        FalkorValue::I64(51),
-                        FalkorValue::I64(52),
-                        FalkorValue::Array(vec![]),
+                redis::Value::Bulk(vec![
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(100),
+                        redis::Value::Int(0),
+                        redis::Value::Int(51),
+                        redis::Value::Int(52),
+                        redis::Value::Bulk(vec![]),
                     ]),
-                    FalkorValue::Array(vec![
-                        FalkorValue::I64(101),
-                        FalkorValue::I64(1),
-                        FalkorValue::I64(52),
-                        FalkorValue::I64(53),
-                        FalkorValue::Array(vec![]),
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(101),
+                        redis::Value::Int(1),
+                        redis::Value::Int(52),
+                        redis::Value::Int(53),
+                        redis::Value::Bulk(vec![]),
                     ]),
                 ]),
             ]),
@@ -231,16 +260,19 @@ mod tests {
 
         let res = parse_type(
             10,
-            FalkorValue::Array(vec![
-                FalkorValue::String("key0".to_string()),
-                FalkorValue::Array(vec![
-                    FalkorValue::I64(2),
-                    FalkorValue::String("val0".to_string()),
+            redis::Value::Bulk(vec![
+                redis::Value::Status("key0".to_string()),
+                redis::Value::Bulk(vec![
+                    redis::Value::Int(2),
+                    redis::Value::Status("val0".to_string()),
                 ]),
-                FalkorValue::String("key1".to_string()),
-                FalkorValue::Array(vec![FalkorValue::I64(3), FalkorValue::I64(1)]),
-                FalkorValue::String("key2".to_string()),
-                FalkorValue::Array(vec![FalkorValue::I64(4), FalkorValue::Bool(true)]),
+                redis::Value::Status("key1".to_string()),
+                redis::Value::Bulk(vec![redis::Value::Int(3), redis::Value::Int(1)]),
+                redis::Value::Status("key2".to_string()),
+                redis::Value::Bulk(vec![
+                    redis::Value::Int(4),
+                    redis::Value::Status("true".to_string()),
+                ]),
             ]),
             &mut graph.graph_schema,
         );
@@ -257,7 +289,10 @@ mod tests {
             Some(&FalkorValue::String("val0".to_string()))
         );
         assert_eq!(map.get("key1"), Some(&FalkorValue::I64(1)));
-        assert_eq!(map.get("key2"), Some(&FalkorValue::Bool(true)));
+        assert_eq!(
+            map.get("key2"),
+            Some(&FalkorValue::String("true".to_string()))
+        );
     }
 
     #[test]
@@ -266,7 +301,10 @@ mod tests {
 
         let res = parse_type(
             11,
-            FalkorValue::Array(vec![FalkorValue::F64(102.0), FalkorValue::F64(15.2)]),
+            redis::Value::Bulk(vec![
+                redis::Value::Status("102.0".to_string()),
+                redis::Value::Status("15.2".to_string()),
+            ]),
             &mut graph.graph_schema,
         );
         assert!(res.is_ok());
@@ -277,5 +315,115 @@ mod tests {
         };
         assert_eq!(point.latitude, 102.0);
         assert_eq!(point.longitude, 15.2);
+    }
+
+    #[test]
+    fn test_map_not_a_vec() {
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+
+        let res =
+            parse_regular_falkor_map(redis::Value::Status("Hello".to_string()), &mut graph_schema);
+
+        assert!(res.is_err())
+    }
+
+    #[test]
+    fn test_map_vec_odd_element_count() {
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+
+        let res = parse_regular_falkor_map(
+            redis::Value::Bulk(vec![redis::Value::Nil; 7]),
+            &mut graph_schema,
+        );
+
+        assert!(res.is_err())
+    }
+
+    #[test]
+    fn test_map_val_element_is_not_array() {
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+
+        let res = parse_regular_falkor_map(
+            redis::Value::Bulk(vec![
+                redis::Value::Status("Key".to_string()),
+                redis::Value::Status("false".to_string()),
+            ]),
+            &mut graph_schema,
+        );
+
+        assert!(res.is_err())
+    }
+
+    #[test]
+    fn test_map_val_element_has_only_1_element() {
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+
+        let res = parse_regular_falkor_map(
+            redis::Value::Bulk(vec![
+                redis::Value::Status("Key".to_string()),
+                redis::Value::Bulk(vec![redis::Value::Int(7)]),
+            ]),
+            &mut graph_schema,
+        );
+
+        assert!(res.is_err())
+    }
+
+    #[test]
+    fn test_map_val_element_has_ge_2_elements() {
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+
+        let res = parse_regular_falkor_map(
+            redis::Value::Bulk(vec![
+                redis::Value::Status("Key".to_string()),
+                redis::Value::Bulk(vec![redis::Value::Int(3); 3]),
+            ]),
+            &mut graph_schema,
+        );
+
+        assert!(res.is_err())
+    }
+
+    #[test]
+    fn test_map_val_element_mismatch_type_marker() {
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+
+        let res = parse_regular_falkor_map(
+            redis::Value::Bulk(vec![
+                redis::Value::Status("Key".to_string()),
+                redis::Value::Bulk(vec![
+                    redis::Value::Int(3),
+                    redis::Value::Status("true".to_string()),
+                ]),
+            ]),
+            &mut graph_schema,
+        );
+
+        assert!(res.is_err())
+    }
+
+    #[test]
+    fn test_map_ok_values() {
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+
+        let res = parse_regular_falkor_map(
+            redis::Value::Bulk(vec![
+                redis::Value::Status("IntKey".to_string()),
+                redis::Value::Bulk(vec![redis::Value::Int(3), redis::Value::Int(1)]),
+                redis::Value::Status("BoolKey".to_string()),
+                redis::Value::Bulk(vec![
+                    redis::Value::Int(4),
+                    redis::Value::Status("true".to_string()),
+                ]),
+            ]),
+            &mut graph_schema,
+        )
+        .expect("Could not parse map");
+
+        assert_eq!(res.get("IntKey"), Some(FalkorValue::I64(1)).as_ref());
+        assert_eq!(
+            res.get("BoolKey"),
+            Some(FalkorValue::String("true".to_string())).as_ref()
+        );
     }
 }

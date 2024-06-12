@@ -7,9 +7,6 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!("../README.md")]
 
-#[cfg(not(feature = "redis"))]
-compile_error!("The `redis` feature must be enabled.");
-
 mod client;
 mod connection;
 mod connection_info;
@@ -20,7 +17,6 @@ mod parser;
 mod response;
 mod value;
 
-#[cfg(feature = "redis")]
 mod redis_ext;
 
 /// A [`Result`] which only returns [`FalkorDBError`] as its E type

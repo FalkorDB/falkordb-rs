@@ -5,8 +5,8 @@
 
 use crate::{
     client::blocking::FalkorSyncClientInner, Constraint, ConstraintType, EntityType, ExecutionPlan,
-    FalkorIndex, FalkorResponse, FalkorResult, FalkorValue, GraphSchema, IndexType, LazyResultSet,
-    ProcedureQueryBuilder, QueryBuilder, SlowlogEntry,
+    FalkorDBError, FalkorIndex, FalkorResponse, FalkorResult, GraphSchema, IndexType,
+    LazyResultSet, ProcedureQueryBuilder, QueryBuilder, SlowlogEntry,
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
@@ -46,7 +46,7 @@ impl SyncGraph {
         command: &str,
         subcommand: Option<&str>,
         params: Option<&[&str]>,
-    ) -> FalkorResult<FalkorValue> {
+    ) -> FalkorResult<redis::Value> {
         self.client
             .borrow_connection(self.client.clone())?
             .execute_command(Some(self.graph_name.as_str()), command, subcommand, params)
@@ -65,15 +65,21 @@ impl SyncGraph {
     /// # Returns
     /// A [`Vec`] of [`SlowlogEntry`], providing information about each query.
     pub fn slowlog(&self) -> FalkorResult<Vec<SlowlogEntry>> {
-        let res = self
-            .execute_command("GRAPH.SLOWLOG", None, None)?
-            .into_vec()?;
-
-        Ok(res.into_iter().flat_map(SlowlogEntry::try_from).collect())
+        self.execute_command("GRAPH.SLOWLOG", None, None)
+            .and_then(|res| {
+                res.into_sequence()
+                    .map(|as_vec| {
+                        as_vec
+                            .into_iter()
+                            .flat_map(SlowlogEntry::try_from)
+                            .collect()
+                    })
+                    .map_err(|_| FalkorDBError::ParsingArray)
+            })
     }
 
     /// Resets the slowlog, all query time data will be cleared.
-    pub fn slowlog_reset(&self) -> FalkorResult<FalkorValue> {
+    pub fn slowlog_reset(&self) -> FalkorResult<redis::Value> {
         self.execute_command("GRAPH.SLOWLOG", None, Some(&["RESET"]))
     }
 
@@ -290,7 +296,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: &str,
         properties: &[&str],
-    ) -> FalkorResult<FalkorValue> {
+    ) -> FalkorResult<redis::Value> {
         let entity_type = entity_type.to_string();
         let properties_count = properties.len().to_string();
 
@@ -318,7 +324,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: String,
         properties: &[&str],
-    ) -> FalkorResult<FalkorValue> {
+    ) -> FalkorResult<redis::Value> {
         self.create_index(
             IndexType::Range,
             entity_type,
@@ -356,7 +362,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: &str,
         properties: &[&str],
-    ) -> FalkorResult<FalkorValue> {
+    ) -> FalkorResult<redis::Value> {
         let constraint_type = constraint_type.to_string();
         let entity_type = entity_type.to_string();
         let properties_count = properties.len().to_string();

@@ -3,10 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    value::utils::{parse_type, parse_vec, type_val_from_value},
-    EntityType, FalkorDBError, FalkorParsable, FalkorValue, GraphSchema,
-};
+use crate::redis_ext::redis_value_as_string;
+use crate::{EntityType, FalkorDBError};
 use std::collections::HashMap;
 
 /// The status of this index
@@ -33,21 +31,26 @@ pub enum IndexType {
     Fulltext,
 }
 
-fn parse_types_map(value: FalkorValue) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
-    let value: HashMap<String, FalkorValue> = value.try_into()?;
+fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
+    Ok(value
+        .into_map_iter()
+        .map_err(|_| FalkorDBError::ParsingFMap)?
+        .into_iter()
+        .filter_map(|(key, val)| {
+            let key_str = redis_value_as_string(key).ok()?;
+            let val_seq = val.into_sequence().ok()?;
 
-    let mut out_map = HashMap::with_capacity(value.len());
-    for (key, val) in value.into_iter() {
-        let val = val.into_vec()?;
-        let mut field_types = Vec::with_capacity(val.len());
-        for field_type in val {
-            field_types.push(field_type.into_string()?.as_str().try_into()?);
-        }
+            let index_types = val_seq
+                .into_iter()
+                .filter_map(|index_type| {
+                    let index_str = redis_value_as_string(index_type).ok()?;
+                    IndexType::try_from(index_str.as_str()).ok()
+                })
+                .collect::<Vec<_>>();
 
-        out_map.insert(key, field_types);
-    }
-
-    Ok(out_map)
+            Some((key_str, index_types))
+        })
+        .collect())
 }
 
 /// Contains all the info regarding an index on the database
@@ -68,40 +71,55 @@ pub struct FalkorIndex {
     /// Words to avoid indexing as they are very common and will just be a waste of resources
     pub stopwords: Vec<String>,
     /// Various other information for querying by the user
-    pub info: HashMap<String, FalkorValue>,
+    pub info: HashMap<String, String>,
 }
 
 impl FalkorIndex {
-    fn from_raw_values(items: Vec<FalkorValue>) -> Result<Self, FalkorDBError> {
-        let [label, fields, field_types, language, stopwords, entity_type, status, info]: [FalkorValue; 8] = items.try_into().map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 8 elements in index object".to_string()))?;
+    pub(crate) fn parse(value: redis::Value) -> Result<Self, FalkorDBError> {
+        let [label, fields, field_types, language, stopwords, entity_type, status, info] = value
+            .into_sequence()
+            .map_err(|_| FalkorDBError::ParsingArray)
+            .and_then(|as_vec| {
+                as_vec.try_into().map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "Expected exactly 8 elements in index object",
+                    )
+                })
+            })?;
+
+        eprintln!("Got here: {label:?} \n{fields:?} \n{field_types:?} \n{language:?} \n{stopwords:?} \n{entity_type:?} \n{status:?} \n{info:?}");
 
         Ok(Self {
-            entity_type: entity_type.into_string()?.as_str().try_into()?,
-            status: status.into_string()?.as_str().try_into()?,
-            index_label: label.try_into()?,
-            fields: parse_vec(fields)?,
+            entity_type: EntityType::try_from(redis_value_as_string(entity_type)?.as_str())?,
+            status: IndexStatus::try_from(redis_value_as_string(status)?.as_str())?,
+            index_label: redis_value_as_string(label)?,
+            fields: fields
+                .into_sequence()
+                .map(|fields| fields.into_iter().flat_map(redis_value_as_string).collect())
+                .map_err(|_| FalkorDBError::ParsingArray)?,
             field_types: parse_types_map(field_types)?,
-            language: language.try_into()?,
-            stopwords: parse_vec(stopwords)?,
-            info: info.try_into()?,
+            language: redis_value_as_string(language)?,
+            stopwords: stopwords
+                .into_sequence()
+                .map(|stopwords| {
+                    stopwords
+                        .into_iter()
+                        .flat_map(redis_value_as_string)
+                        .collect()
+                })
+                .map_err(|_| FalkorDBError::ParsingArray)?,
+            info: info
+                .into_map_iter()
+                .map(|map_iter| {
+                    map_iter
+                        .into_iter()
+                        .flat_map(|(key, val)| {
+                            redis_value_as_string(key)
+                                .and_then(|key| redis_value_as_string(val).map(|val| (key, val)))
+                        })
+                        .collect()
+                })
+                .map_err(|_| FalkorDBError::ParsingFMap)?,
         })
-    }
-}
-
-impl FalkorParsable for FalkorIndex {
-    fn from_falkor_value(
-        value: FalkorValue,
-        graph_schema: &mut GraphSchema,
-    ) -> Result<Self, FalkorDBError> {
-        let semi_parsed_items = value
-            .into_vec()?
-            .into_iter()
-            .flat_map(|item| {
-                let (type_marker, val) = type_val_from_value(item)?;
-                parse_type(type_marker, val, graph_schema)
-            })
-            .collect::<Vec<_>>();
-
-        Self::from_raw_values(semi_parsed_items)
     }
 }

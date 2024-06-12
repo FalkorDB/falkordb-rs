@@ -72,109 +72,6 @@ impl From<&str> for FalkorValue {
     }
 }
 
-impl<T> From<Vec<T>> for FalkorValue
-where
-    FalkorValue: From<T>,
-{
-    fn from(value: Vec<T>) -> Self {
-        Self::Array(
-            value
-                .into_iter()
-                .map(|element| FalkorValue::from(element))
-                .collect(),
-        )
-    }
-}
-
-impl TryFrom<FalkorValue> for Vec<FalkorValue> {
-    type Error = FalkorDBError;
-
-    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        match value {
-            FalkorValue::Array(val) => Ok(val),
-            _ => Err(FalkorDBError::ParsingArray),
-        }
-    }
-}
-
-impl TryFrom<FalkorValue> for f64 {
-    type Error = FalkorDBError;
-
-    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        match value {
-            FalkorValue::String(f64_str) => f64_str.parse().map_err(|_| FalkorDBError::ParsingF64),
-            FalkorValue::F64(f64_val) => Ok(f64_val),
-            _ => Err(FalkorDBError::ParsingF64),
-        }
-    }
-}
-
-impl TryFrom<FalkorValue> for String {
-    type Error = FalkorDBError;
-
-    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        match value {
-            FalkorValue::String(val) => Ok(val),
-            _ => Err(FalkorDBError::ParsingFString),
-        }
-    }
-}
-
-impl TryFrom<FalkorValue> for Edge {
-    type Error = FalkorDBError;
-
-    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        match value {
-            FalkorValue::Edge(edge) => Ok(edge),
-            _ => Err(FalkorDBError::ParsingFEdge),
-        }
-    }
-}
-
-impl TryFrom<FalkorValue> for Node {
-    type Error = FalkorDBError;
-
-    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        match value {
-            FalkorValue::Node(node) => Ok(node),
-            _ => Err(FalkorDBError::ParsingFNode),
-        }
-    }
-}
-
-impl TryFrom<FalkorValue> for Path {
-    type Error = FalkorDBError;
-
-    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        match value {
-            FalkorValue::Path(path) => Ok(path),
-            _ => Err(FalkorDBError::ParsingFPath),
-        }
-    }
-}
-
-impl TryFrom<FalkorValue> for HashMap<String, FalkorValue> {
-    type Error = FalkorDBError;
-
-    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        match value {
-            FalkorValue::Map(map) => Ok(map),
-            _ => Err(FalkorDBError::ParsingFMap),
-        }
-    }
-}
-
-impl TryFrom<FalkorValue> for Point {
-    type Error = FalkorDBError;
-
-    fn try_from(value: FalkorValue) -> FalkorResult<Self> {
-        match value {
-            FalkorValue::Point(point) => Ok(point),
-            _ => Err(FalkorDBError::ParsingFPoint),
-        }
-    }
-}
-
 impl FalkorValue {
     /// Returns a reference to the internal [`Vec`] if this is an Array variant.
     ///
@@ -296,10 +193,9 @@ impl FalkorValue {
     /// # Returns
     /// The inner [`Vec`]
     pub fn into_vec(self) -> FalkorResult<Vec<Self>> {
-        if let FalkorValue::Array(array) = self {
-            Ok(array)
-        } else {
-            Err(FalkorDBError::ParsingFMap)
+        match self {
+            FalkorValue::Array(array) => Ok(array),
+            _ => Err(FalkorDBError::ParsingArray),
         }
     }
 
@@ -308,10 +204,9 @@ impl FalkorValue {
     /// # Returns
     /// The inner [`String`]
     pub fn into_string(self) -> FalkorResult<String> {
-        if let FalkorValue::String(string) = self {
-            Ok(string)
-        } else {
-            Err(FalkorDBError::ParsingFString)
+        match self {
+            FalkorValue::String(string) => Ok(string),
+            _ => Err(FalkorDBError::ParsingFString),
         }
     }
     /// Consumes itself and returns the inner [`HashMap`] if this is a Map variant
@@ -319,10 +214,9 @@ impl FalkorValue {
     /// # Returns
     /// The inner [`HashMap`]
     pub fn into_map(self) -> FalkorResult<HashMap<String, FalkorValue>> {
-        if let FalkorValue::Map(map) = self {
-            Ok(map)
-        } else {
-            Err(FalkorDBError::ParsingFMap)
+        match self {
+            FalkorValue::Map(map) => Ok(map),
+            _ => Err(FalkorDBError::ParsingFMap),
         }
     }
 }

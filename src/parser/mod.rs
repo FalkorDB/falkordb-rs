@@ -11,6 +11,10 @@ use crate::{
 };
 use std::collections::HashMap;
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Parse Falkor Enum", skip_all, level = "trace")
+)]
 pub(crate) fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToString>>(
     val: redis::Value,
     graph_schema: &mut GraphSchema,
@@ -23,6 +27,10 @@ pub(crate) fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToStrin
     .map_err(|err| FalkorDBError::InvalidEnumType(err.to_string()))
 }
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "String Vec From Value", skip_all, level = "debug")
+)]
 pub(crate) fn string_vec_from_val(
     value: redis::Value,
     graph_schema: &mut GraphSchema,
@@ -37,6 +45,10 @@ pub(crate) fn string_vec_from_val(
         })
 }
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "String Vec From Untyped Value", skip_all, level = "trace")
+)]
 pub(crate) fn string_vec_from_untyped_val(value: redis::Value) -> FalkorResult<Vec<String>> {
     value
         .into_sequence()
@@ -44,6 +56,10 @@ pub(crate) fn string_vec_from_untyped_val(value: redis::Value) -> FalkorResult<V
         .map_err(|_| FalkorDBError::ParsingArray)
 }
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Parse Header", skip_all, level = "info")
+)]
 pub(crate) fn parse_header(header: redis::Value) -> FalkorResult<Vec<String>> {
     // Convert the header into a sequence
     let header_sequence = header
@@ -83,7 +99,10 @@ pub(crate) fn parse_header(header: redis::Value) -> FalkorResult<Vec<String>> {
         },
     )
 }
-
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Parse Raw Redis Value", skip_all, level = "debug")
+)]
 pub(crate) fn parse_raw_redis_value(
     value: redis::Value,
     graph_schema: &mut GraphSchema,
@@ -92,6 +111,10 @@ pub(crate) fn parse_raw_redis_value(
         .and_then(|(type_marker, val)| parse_type(type_marker, val, graph_schema))
 }
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "TypeVal From Value", skip_all, level = "trace")
+)]
 pub(crate) fn type_val_from_value(
     value: redis::Value
 ) -> Result<(i64, redis::Value), FalkorDBError> {
@@ -108,6 +131,10 @@ pub(crate) fn type_val_from_value(
     Ok((redis_value_as_int(type_marker)?, val))
 }
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Parse Regular Falkor Map", skip_all, level = "debug")
+)]
 fn parse_regular_falkor_map(
     value: redis::Value,
     graph_schema: &mut GraphSchema,
@@ -126,7 +153,7 @@ fn parse_regular_falkor_map(
 
 #[cfg_attr(
     feature = "tracing",
-    tracing::instrument(name = "Parse Element With Type Marker", skip_all)
+    tracing::instrument(name = "Parse Element With Type Marker", skip_all, level = "trace")
 )]
 pub(crate) fn parse_type(
     type_marker: i64,

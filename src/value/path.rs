@@ -15,6 +15,10 @@ pub struct Path {
 }
 
 impl Path {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Path", skip_all, level = "debug")
+    )]
     pub(crate) fn parse(
         value: redis::Value,
         graph_schema: &mut GraphSchema,

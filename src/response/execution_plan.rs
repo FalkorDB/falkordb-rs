@@ -24,6 +24,10 @@ struct IntermediateOperation {
 }
 
 impl IntermediateOperation {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Create New Operation", skip_all, level = "trace")
+    )]
     fn new(
         depth: usize,
         operation_string: &str,
@@ -118,6 +122,10 @@ impl ExecutionPlan {
         self.string_representation.as_str()
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Create Node", skip_all, level = "debug")
+    )]
     fn create_node(
         depth: usize,
         operation_string: &str,
@@ -132,6 +140,10 @@ impl ExecutionPlan {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Finalize Operation", skip_all, level = "debug")
+    )]
     fn finalize_operation(
         current_refcell: Rc<RefCell<IntermediateOperation>>
     ) -> FalkorResult<Rc<Operation>> {
@@ -156,6 +168,10 @@ impl ExecutionPlan {
         }))
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Operation Tree To Map", skip_all, level = "trace")
+    )]
     fn operations_map_from_tree(
         current_branch: &Rc<Operation>,
         map: &mut HashMap<String, Vec<Rc<Operation>>>,
@@ -169,6 +185,10 @@ impl ExecutionPlan {
         }
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Execution Plan", skip_all, level = "info")
+    )]
     pub(crate) fn parse(value: redis::Value) -> FalkorResult<Self> {
         let redis_value_vec = value
             .into_sequence()

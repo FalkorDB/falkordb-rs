@@ -24,6 +24,10 @@ impl Point {
     ///
     /// # Returns
     /// Self, if successful
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Point", skip_all, level = "trace")
+    )]
     pub fn parse(value: redis::Value) -> FalkorResult<Point> {
         let [lat, long]: [redis::Value; 2] = value
             .into_sequence()

@@ -81,6 +81,10 @@ pub struct FalkorIndex {
 }
 
 impl FalkorIndex {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Index", skip_all, level = "info")
+    )]
     pub(crate) fn parse(
         value: redis::Value,
         graph_schema: &mut GraphSchema,

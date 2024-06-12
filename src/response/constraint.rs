@@ -48,6 +48,10 @@ pub struct Constraint {
 }
 
 impl Constraint {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Constraint", skip_all, level = "info")
+    )]
     pub(crate) fn parse(
         value: redis::Value,
         graph_schema: &mut GraphSchema,

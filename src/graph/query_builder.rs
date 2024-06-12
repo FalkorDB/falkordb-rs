@@ -9,6 +9,10 @@ use crate::{
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Construct Query", skip_all, level = "trace")
+)]
 pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
     query_str: Q,
     params: Option<&HashMap<T, Z>>,
@@ -86,7 +90,7 @@ impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
 
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Common Query Execution Steps", skip_all)
+        tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
     )]
     fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
         let mut conn = self
@@ -112,7 +116,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
     /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute Lazy Result Set Query", skip_all)
+        tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
     )]
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<LazyResultSet<'a>>> {
         let res = self
@@ -180,6 +184,10 @@ impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T> {
     }
 }
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Generate Procedure Call", skip_all, level = "trace")
+)]
 pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
     procedure: P,
     args: Option<&[T]>,
@@ -309,6 +317,10 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
 impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`FalkorIndex`]s
     /// This functions consumes self
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute FalkorIndex Query", skip_all, level = "info")
+    )]
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
         self.common_execute_steps(
             &mut self
@@ -341,6 +353,10 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
 impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`Constraint`]s
     /// This functions consumes self
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute Constraint Procedure Call", skip_all, level = "info")
+    )]
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
         self.common_execute_steps(
             &mut self

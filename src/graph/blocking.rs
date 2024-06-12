@@ -41,6 +41,10 @@ impl SyncGraph {
         self.graph_name.as_str()
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Graph Execute Command", skip_all, level = "info")
+    )]
     fn execute_command(
         &self,
         command: &str,
@@ -54,6 +58,10 @@ impl SyncGraph {
 
     /// Deletes the graph stored in the database, and drop all the schema caches.
     /// NOTE: This still maintains the graph API, operations are still viable.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Delete Graph", skip_all, level = "info")
+    )]
     pub fn delete(&mut self) -> FalkorResult<()> {
         self.execute_command("GRAPH.DELETE", None, None)?;
         self.graph_schema.clear();
@@ -64,21 +72,24 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`Vec`] of [`SlowlogEntry`], providing information about each query.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Get Graph Slowlog", skip_all, level = "info")
+    )]
     pub fn slowlog(&self) -> FalkorResult<Vec<SlowlogEntry>> {
         self.execute_command("GRAPH.SLOWLOG", None, None)
             .and_then(|res| {
                 res.into_sequence()
-                    .map(|as_vec| {
-                        as_vec
-                            .into_iter()
-                            .flat_map(SlowlogEntry::try_from)
-                            .collect()
-                    })
+                    .map(|as_vec| as_vec.into_iter().flat_map(SlowlogEntry::parse).collect())
                     .map_err(|_| FalkorDBError::ParsingArray)
             })
     }
 
     /// Resets the slowlog, all query time data will be cleared.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Reset Graph Slowlog", skip_all, level = "info")
+    )]
     pub fn slowlog_reset(&self) -> FalkorResult<redis::Value> {
         self.execute_command("GRAPH.SLOWLOG", None, Some(&["RESET"]))
     }
@@ -180,6 +191,10 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`Vec`] of [`FalkorIndex`]
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "List Graph Indices", skip_all, level = "info")
+    )]
     pub fn list_indices(&mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
         ProcedureQueryBuilder::<FalkorResponse<Vec<FalkorIndex>>>::new(self, "DB.INDEXES").execute()
     }
@@ -195,6 +210,10 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`LazyResultSet`] containing information on the created index
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Graph Create Index", skip_all, level = "info")
+    )]
     pub fn create_index<P: Display>(
         &mut self,
         index_field_type: IndexType,
@@ -244,6 +263,10 @@ impl SyncGraph {
     ///
     /// # Arguments
     /// * `index_field_type`
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Graph Drop Index", skip_all, level = "info")
+    )]
     pub fn drop_index<L: ToString, P: ToString>(
         &mut self,
         index_field_type: IndexType,
@@ -280,6 +303,10 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A tuple where the first element is a [`Vec`] of [`Constraint`]s, and the second element is a [`Vec`] of stats as [`String`]s
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "List Graph Constraints", skip_all, level = "info")
+    )]
     pub fn list_constraints(&mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
         ProcedureQueryBuilder::<FalkorResponse<Vec<Constraint>>>::new(self, "DB.CONSTRAINTS")
             .execute()
@@ -291,6 +318,10 @@ impl SyncGraph {
     /// * `entity_type`: Whether to apply this constraint on nodes or relationships.
     /// * `label`: Entities with this label will have this constraint applied to them.
     /// * `properties`: A slice of the names of properties this constraint will apply to.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Create Graph Mandatory Constraint", skip_all, level = "info")
+    )]
     pub fn create_mandatory_constraint(
         &self,
         entity_type: EntityType,
@@ -319,6 +350,10 @@ impl SyncGraph {
     /// * `entity_type`: Whether to apply this constraint on nodes or relationships.
     /// * `label`: Entities with this label will have this constraint applied to them.
     /// * `properties`: A slice of the names of properties this constraint will apply to.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Create Graph Unique Constraint", skip_all, level = "info")
+    )]
     pub fn create_unique_constraint(
         &mut self,
         entity_type: EntityType,
@@ -356,6 +391,10 @@ impl SyncGraph {
     /// * `entity_type`: Whether this constraint exists on nodes or relationships.
     /// * `label`: Remove the constraint from entities with this label.
     /// * `properties`: A slice of the names of properties to remove the constraint from.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Drop Graph Constraint", skip_all, level = "info")
+    )]
     pub fn drop_constraint(
         &self,
         constraint_type: ConstraintType,

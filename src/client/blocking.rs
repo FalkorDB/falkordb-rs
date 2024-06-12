@@ -27,7 +27,11 @@ pub(crate) struct FalkorSyncClientInner {
 impl FalkorSyncClientInner {
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Borrow Connection From Connection Pool", skip_all)
+        tracing::instrument(
+            name = "Borrow Connection From Connection Pool",
+            skip_all,
+            level = "debug"
+        )
     )]
     pub(crate) fn borrow_connection(
         &self,
@@ -45,13 +49,20 @@ impl FalkorSyncClientInner {
 
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Get New Sync Connection From Client", skip_all)
+        tracing::instrument(
+            name = "Get New Sync Connection From Client",
+            skip_all,
+            level = "info"
+        )
     )]
     pub(crate) fn get_connection(&self) -> FalkorResult<FalkorSyncConnection> {
         self._inner.lock().get_connection()
     }
 }
-
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Check Is Sentinel", skip_all, level = "info")
+)]
 fn is_sentinel(conn: &mut FalkorSyncConnection) -> FalkorResult<bool> {
     let info_map = conn.get_redis_info(Some("server"))?;
     Ok(info_map
@@ -60,6 +71,10 @@ fn is_sentinel(conn: &mut FalkorSyncConnection) -> FalkorResult<bool> {
         .unwrap_or_default())
 }
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Get Sentinel Client", skip_all, level = "info")
+)]
 pub(crate) fn get_sentinel_client(
     client: &mut FalkorClientProvider,
     connection_info: &redis::ConnectionInfo,
@@ -131,6 +146,10 @@ pub struct FalkorSyncClient {
 }
 
 impl FalkorSyncClient {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Create Sync Client", skip_all, level = "info")
+    )]
     pub(crate) fn create(
         mut client: FalkorClientProvider,
         connection_info: FalkorConnectionInfo,
@@ -173,6 +192,10 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// A [`Vec`] of [`String`]s, containing the names of available graphs
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "List Graphs", skip_all, level = "info")
+    )]
     pub fn list_graphs(&self) -> FalkorResult<Vec<String>> {
         let mut conn = self.borrow_connection()?;
         conn.execute_command(None, "GRAPH.LIST", None, None)
@@ -187,6 +210,10 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Get Config Value", skip_all, level = "info")
+    )]
     pub fn config_get(
         &self,
         config_key: &str,
@@ -237,6 +264,10 @@ impl FalkorSyncClient {
     /// * `config_Key`: A [`String`] representation of a configuration's key.
     /// The config key can also be "*", which will return ALL the configuration options.
     /// * `value`: The new value to set, which is anything that can be converted into a [`ConfigValue`], namely string types and i64.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Set Config Value", skip_all, level = "info")
+    )]
     pub fn config_set<C: Into<ConfigValue>>(
         &self,
         config_key: &str,
@@ -272,6 +303,10 @@ impl FalkorSyncClient {
     ///
     /// # Returns
     /// If successful, will return the new [`SyncGraph`] object.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Copy Graph", skip_all, level = "info")
+    )]
     pub fn copy_graph(
         &self,
         graph_to_clone: &str,
@@ -287,6 +322,10 @@ impl FalkorSyncClient {
     }
 
     /// Retrieves redis information
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Client Get Redis Info", skip_all, level = "info")
+    )]
     pub fn redis_info(
         &self,
         section: Option<&str>,

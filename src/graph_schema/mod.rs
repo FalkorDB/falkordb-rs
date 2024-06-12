@@ -30,6 +30,10 @@ pub(crate) struct FKeyTypeVal {
 impl TryFrom<redis::Value> for FKeyTypeVal {
     type Error = FalkorDBError;
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "New KeyTypeValue", skip_all, level = "trace")
+    )]
     fn try_from(value: redis::Value) -> FalkorResult<Self> {
         let [key_raw, type_raw, val]: [redis::Value; 3] = value
             .into_sequence()
@@ -135,7 +139,7 @@ impl GraphSchema {
 
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Refresh Schema Type", skip_all)
+        tracing::instrument(name = "Refresh Schema Type", skip_all, level = "info")
     )]
     fn refresh(
         &mut self,
@@ -191,7 +195,7 @@ impl GraphSchema {
 
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Parse ID Vec To String Vec", skip_all)
+        tracing::instrument(name = "Parse ID Vec To String Vec", skip_all, level = "debug")
     )]
     pub(crate) fn parse_id_vec(
         &mut self,
@@ -224,7 +228,7 @@ impl GraphSchema {
 
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Parse Properties Map", skip_all)
+        tracing::instrument(name = "Parse Properties Map", skip_all, level = "debug")
     )]
     pub(crate) fn parse_properties_map(
         &mut self,

@@ -32,6 +32,10 @@ impl<T> FalkorResponse<T> {
     /// * `headers`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Bulk`], where each element is expected to be of variant [`redis::Value::Data`] or [`redis::Value::Status`]
     /// * `data`: The actual data
     /// * `stats`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Bulk`], where each element is expected to be of variant [`redis::Value::Data`] or [`redis::Value::Status`]
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "New Falkor Response", skip_all, level = "trace")
+    )]
     pub fn from_response(
         headers: Option<redis::Value>,
         data: T,

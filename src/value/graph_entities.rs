@@ -3,8 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::redis_ext::redis_value_as_int;
-use crate::{FalkorDBError, FalkorResult, FalkorValue, GraphSchema, SchemaType};
+use crate::{
+    redis_ext::redis_value_as_int, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
+    SchemaType,
+};
 use std::collections::HashMap;
 
 /// Whether this element is a node or edge in the graph
@@ -32,7 +34,7 @@ pub struct Node {
 impl Node {
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Parse Node", skip_all)
+        tracing::instrument(name = "Parse Node", skip_all, level = "debug")
     )]
     pub(crate) fn parse(
         value: redis::Value,
@@ -78,7 +80,7 @@ pub struct Edge {
 impl Edge {
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Parse Edge", skip_all)
+        tracing::instrument(name = "Parse Edge", skip_all, level = "debug")
     )]
     pub(crate) fn parse(
         value: redis::Value,

@@ -14,10 +14,6 @@ pub struct LazyResultSet<'a> {
 }
 
 impl<'a> LazyResultSet<'a> {
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(name = "Create New Lazy Result Set", skip_all)
-    )]
     pub(crate) fn new(
         data: Vec<redis::Value>,
         graph_schema: &'a mut GraphSchema,

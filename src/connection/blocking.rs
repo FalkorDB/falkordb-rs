@@ -19,7 +19,7 @@ pub(crate) enum FalkorSyncConnection {
 impl FalkorSyncConnection {
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Connection Inner Execute Command", skip_all)
+        tracing::instrument(name = "Connection Inner Execute Command", skip_all, level = "debug")
     )]
     pub(crate) fn execute_command(
         &mut self,
@@ -55,7 +55,7 @@ impl FalkorSyncConnection {
 
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Get Redis Info", skip_all)
+        tracing::instrument(name = "Connection Get Redis Info", skip_all, level = "info")
     )]
     pub(crate) fn get_redis_info(
         &mut self,
@@ -105,7 +105,11 @@ impl BorrowedSyncConnection {
 
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Borrowed Connection Execute Command", skip_all)
+        tracing::instrument(
+            name = "Borrowed Connection Execute Command",
+            skip_all,
+            level = "trace"
+        )
     )]
     pub(crate) fn execute_command(
         &mut self,

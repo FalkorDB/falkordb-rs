@@ -3,14 +3,15 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::redis_ext::redis_value_as_string;
-use crate::{FalkorDBError, FalkorResult};
+use crate::{redis_ext::redis_value_as_string, FalkorDBError, FalkorResult};
 use regex::Regex;
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
-use std::ops::Not;
-use std::rc::Rc;
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    collections::{HashMap, VecDeque},
+    ops::Not,
+    rc::Rc,
+};
 
 #[derive(Debug)]
 struct IntermediateOperation {
@@ -167,20 +168,13 @@ impl ExecutionPlan {
             Self::operations_map_from_tree(child, map);
         }
     }
-}
 
-impl TryFrom<redis::Value> for ExecutionPlan {
-    type Error = FalkorDBError;
-
-    fn try_from(value: redis::Value) -> Result<Self, Self::Error> {
+    pub(crate) fn parse(value: redis::Value) -> FalkorResult<Self> {
         let redis_value_vec = value
             .into_sequence()
             .map_err(|_| FalkorDBError::ParsingArray)?;
 
         let mut string_representation = Vec::with_capacity(redis_value_vec.len() + 1);
-        string_representation.push("".to_string());
-
-        let execution_plan_operations = Vec::with_capacity(redis_value_vec.len());
         let mut current_traversal_stack = vec![];
         for node in redis_value_vec {
             let node_string = redis_value_as_string(node)?;
@@ -193,6 +187,7 @@ impl TryFrom<redis::Value> for ExecutionPlan {
                     current_traversal_stack.push(Rc::new(RefCell::new(
                         IntermediateOperation::new(depth, node)?,
                     )));
+                    string_representation.push(node_string);
                     continue;
                 }
                 Some(current_node) => current_node,
@@ -245,8 +240,8 @@ impl TryFrom<redis::Value> for ExecutionPlan {
         Self::operations_map_from_tree(&operation_tree, &mut operations);
 
         Ok(ExecutionPlan {
-            string_representation: string_representation.join("\n"),
-            plan: execution_plan_operations,
+            string_representation: format!("\n{}", string_representation.join("\n")),
+            plan: string_representation,
             operations,
             operation_tree,
         })

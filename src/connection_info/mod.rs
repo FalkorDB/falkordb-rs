@@ -49,12 +49,10 @@ impl TryFrom<&str> for FalkorConnectionInfo {
             .unwrap_or((format!("falkor://{value}"), "falkor"));
 
         match url_schema {
-            "redis" | "rediss" => {
-                return Ok(FalkorConnectionInfo::Redis(
-                    redis::IntoConnectionInfo::into_connection_info(value)
-                        .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?,
-                ));
-            }
+            "redis" | "rediss" => Ok(FalkorConnectionInfo::Redis(
+                redis::IntoConnectionInfo::into_connection_info(value)
+                    .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?,
+            )),
             _ => FalkorConnectionInfo::fallback_provider(url),
         }
     }

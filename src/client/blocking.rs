@@ -3,11 +3,11 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::redis_ext::redis_value_as_string;
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
     parser::utils::string_vec_from_val,
+    redis_ext::redis_value_as_string,
     ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
 };
 use parking_lot::{Mutex, RwLock};
@@ -84,7 +84,7 @@ pub(crate) fn get_sentinel_client(
         .and_then(|master| master.into_sequence().ok())
         .ok_or(FalkorDBError::SentinelMastersCount)?
         .chunks_exact(2)
-        .flat_map(|chunk| TryInto::<&[redis::Value; 2]>::try_into(chunk)) // TODO: check if this can be done with no copying
+        .flat_map(TryInto::<&[redis::Value; 2]>::try_into) // TODO: check if this can be done with no copying
         .flat_map(|[key, val]| {
             redis_value_as_string(key.to_owned())
                 .and_then(|key| redis_value_as_string(val.to_owned()).map(|val| (key, val)))

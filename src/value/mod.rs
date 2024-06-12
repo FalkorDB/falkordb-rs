@@ -297,7 +297,11 @@ impl FalkorValue {
     /// # Returns
     /// The inner [`Vec`]
     pub fn into_vec(self) -> FalkorResult<Vec<Self>> {
-        self.try_into()
+        if let FalkorValue::Array(array) = self {
+            Ok(array)
+        } else {
+            Err(FalkorDBError::ParsingFMap)
+        }
     }
 
     /// Consumes itself and returns the inner [`String`] if this is an FString variant
@@ -305,7 +309,22 @@ impl FalkorValue {
     /// # Returns
     /// The inner [`String`]
     pub fn into_string(self) -> FalkorResult<String> {
-        self.try_into()
+        if let FalkorValue::String(string) = self {
+            Ok(string)
+        } else {
+            Err(FalkorDBError::ParsingFString)
+        }
+    }
+    /// Consumes itself and returns the inner [`HashMap`] if this is a Map variant
+    ///
+    /// # Returns
+    /// The inner [`HashMap`]
+    pub fn into_map(self) -> FalkorResult<HashMap<String, FalkorValue>> {
+        if let FalkorValue::Map(map) = self {
+            Ok(map)
+        } else {
+            Err(FalkorDBError::ParsingFMap)
+        }
     }
 }
 

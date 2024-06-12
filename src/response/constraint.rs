@@ -3,8 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::redis_ext::redis_value_as_string;
-use crate::{EntityType, FalkorDBError, FalkorResult};
+use crate::{
+    value::utils::parse_raw_redis_value, EntityType, FalkorDBError, FalkorResult, FalkorValue,
+    GraphSchema,
+};
 
 /// The type of restriction to apply for the property
 #[derive(Copy, Clone, Debug, Eq, PartialEq, strum::EnumString, strum::Display)]
@@ -46,7 +48,10 @@ pub struct Constraint {
 }
 
 impl Constraint {
-    pub(crate) fn parse(value: redis::Value) -> FalkorResult<Self> {
+    pub(crate) fn parse(
+        value: redis::Value,
+        graph_schema: &mut GraphSchema,
+    ) -> FalkorResult<Self> {
         let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [redis::Value; 5] = value.into_sequence()
             .map_err(|_| FalkorDBError::ParsingArray)
             .and_then(|res| res.try_into()
@@ -54,15 +59,30 @@ impl Constraint {
 
         Ok(Self {
             constraint_type: ConstraintType::try_from(
-                redis_value_as_string(constraint_type_raw)?.as_str(),
+                parse_raw_redis_value(constraint_type_raw, graph_schema)
+                    .and_then(|parsed_constraint_type| parsed_constraint_type.into_string())?
+                    .as_str(),
             )?,
-            label: redis_value_as_string(label_raw)?,
-            properties: properties_raw
-                .into_sequence()
-                .map(|data| data.into_iter().flat_map(redis_value_as_string).collect())
-                .map_err(|_| FalkorDBError::ParsingArray)?,
-            entity_type: EntityType::try_from(redis_value_as_string(entity_type_raw)?.as_str())?,
-            status: ConstraintStatus::try_from(redis_value_as_string(status_raw)?.as_str())?,
+            label: parse_raw_redis_value(label_raw, graph_schema)
+                .and_then(FalkorValue::into_string)?,
+            properties: parse_raw_redis_value(properties_raw, graph_schema)
+                .and_then(|properties_parsed| properties_parsed.into_vec())
+                .map(|properties_vec| {
+                    properties_vec
+                        .into_iter()
+                        .flat_map(FalkorValue::into_string)
+                        .collect()
+                })?,
+            entity_type: EntityType::try_from(
+                parse_raw_redis_value(entity_type_raw, graph_schema)
+                    .and_then(|parsed_entity_type| parsed_entity_type.into_string())?
+                    .as_str(),
+            )?,
+            status: ConstraintStatus::try_from(
+                parse_raw_redis_value(status_raw, graph_schema)
+                    .and_then(|parsed_status| parsed_status.into_string())?
+                    .as_str(),
+            )?,
         })
     }
 }

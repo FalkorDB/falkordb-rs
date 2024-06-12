@@ -3,8 +3,9 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::redis_ext::redis_value_as_string;
-use crate::{EntityType, FalkorDBError};
+use crate::{
+    value::utils::parse_raw_redis_value, EntityType, FalkorDBError, FalkorValue, GraphSchema,
+};
 use std::collections::HashMap;
 
 /// The status of this index
@@ -31,26 +32,32 @@ pub enum IndexType {
     Fulltext,
 }
 
-fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
-    Ok(value
-        .into_map_iter()
-        .map_err(|_| FalkorDBError::ParsingFMap)?
-        .into_iter()
-        .filter_map(|(key, val)| {
-            let key_str = redis_value_as_string(key).ok()?;
-            let val_seq = val.into_sequence().ok()?;
-
-            let index_types = val_seq
+fn parse_types_map(
+    value: redis::Value,
+    graph_schema: &mut GraphSchema,
+) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
+    parse_raw_redis_value(value, graph_schema)
+        .and_then(|map_val| map_val.into_map())
+        .map(|map_val| {
+            map_val
                 .into_iter()
-                .filter_map(|index_type| {
-                    let index_str = redis_value_as_string(index_type).ok()?;
-                    IndexType::try_from(index_str.as_str()).ok()
+                .flat_map(|(key, val)| {
+                    val.into_vec().map(|as_vec| {
+                        (
+                            key,
+                            as_vec
+                                .into_iter()
+                                .flat_map(|item| {
+                                    item.into_string().and_then(|as_str| {
+                                        IndexType::try_from(as_str.as_str()).map_err(Into::into)
+                                    })
+                                })
+                                .collect(),
+                        )
+                    })
                 })
-                .collect::<Vec<_>>();
-
-            Some((key_str, index_types))
+                .collect()
         })
-        .collect())
 }
 
 /// Contains all the info regarding an index on the database
@@ -75,7 +82,10 @@ pub struct FalkorIndex {
 }
 
 impl FalkorIndex {
-    pub(crate) fn parse(value: redis::Value) -> Result<Self, FalkorDBError> {
+    pub(crate) fn parse(
+        value: redis::Value,
+        graph_schema: &mut GraphSchema,
+    ) -> Result<Self, FalkorDBError> {
         let [label, fields, field_types, language, stopwords, entity_type, status, info] = value
             .into_sequence()
             .map_err(|_| FalkorDBError::ParsingArray)
@@ -87,39 +97,46 @@ impl FalkorIndex {
                 })
             })?;
 
-        eprintln!("Got here: {label:?} \n{fields:?} \n{field_types:?} \n{language:?} \n{stopwords:?} \n{entity_type:?} \n{status:?} \n{info:?}");
-
         Ok(Self {
-            entity_type: EntityType::try_from(redis_value_as_string(entity_type)?.as_str())?,
-            status: IndexStatus::try_from(redis_value_as_string(status)?.as_str())?,
-            index_label: redis_value_as_string(label)?,
-            fields: fields
-                .into_sequence()
-                .map(|fields| fields.into_iter().flat_map(redis_value_as_string).collect())
-                .map_err(|_| FalkorDBError::ParsingArray)?,
-            field_types: parse_types_map(field_types)?,
-            language: redis_value_as_string(language)?,
-            stopwords: stopwords
-                .into_sequence()
-                .map(|stopwords| {
-                    stopwords
+            entity_type: EntityType::try_from(
+                parse_raw_redis_value(entity_type, graph_schema)
+                    .and_then(|parsed_entity_type| parsed_entity_type.into_string())?
+                    .as_str(),
+            )?,
+            status: IndexStatus::try_from(
+                parse_raw_redis_value(status, graph_schema)
+                    .and_then(|parsed_status| parsed_status.into_string())?
+                    .as_str(),
+            )?,
+            index_label: parse_raw_redis_value(label, graph_schema)
+                .and_then(|parsed_entity_type| parsed_entity_type.into_string())?,
+            fields: parse_raw_redis_value(fields, graph_schema)
+                .and_then(|parsed_fields| parsed_fields.into_vec())
+                .map(|parsed_fields_vec| {
+                    parsed_fields_vec
                         .into_iter()
-                        .flat_map(redis_value_as_string)
+                        .flat_map(FalkorValue::into_string)
                         .collect()
-                })
-                .map_err(|_| FalkorDBError::ParsingArray)?,
-            info: info
-                .into_map_iter()
-                .map(|map_iter| {
-                    map_iter
+                })?,
+            field_types: parse_types_map(field_types, graph_schema)?,
+            language: parse_raw_redis_value(language, graph_schema)
+                .and_then(FalkorValue::into_string)?,
+            stopwords: parse_raw_redis_value(stopwords, graph_schema)
+                .and_then(|stopwords_raw| stopwords_raw.into_vec())
+                .map(|stopwords_vec| {
+                    stopwords_vec
                         .into_iter()
-                        .flat_map(|(key, val)| {
-                            redis_value_as_string(key)
-                                .and_then(|key| redis_value_as_string(val).map(|val| (key, val)))
-                        })
+                        .flat_map(FalkorValue::into_string)
                         .collect()
-                })
-                .map_err(|_| FalkorDBError::ParsingFMap)?,
+                })?,
+            info: parse_raw_redis_value(info, graph_schema)
+                .and_then(FalkorValue::into_map)
+                .map(|as_map| {
+                    as_map
+                        .into_iter()
+                        .flat_map(|(key, val)| val.into_string().map(|val_str| (key, val_str)))
+                        .collect()
+                })?,
         })
     }
 }

@@ -176,7 +176,7 @@ impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T> {
     pub fn execute(mut self) -> FalkorResult<ExecutionPlan> {
         let res = self.common_execute_steps()?;
 
-        ExecutionPlan::try_from(res)
+        ExecutionPlan::parse(res)
     }
 }
 
@@ -330,7 +330,7 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
                     .into_sequence()
                     .map_err(|_| FalkorDBError::ParsingArray)?
                     .into_iter()
-                    .flat_map(FalkorIndex::parse)
+                    .flat_map(|index| FalkorIndex::parse(index, &mut self.graph.graph_schema))
                     .collect(),
                 stats,
             )
@@ -360,7 +360,14 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
                 Some(header),
                 indices
                     .into_sequence()
-                    .map(|indices| indices.into_iter().flat_map(Constraint::parse).collect())
+                    .map(|indices| {
+                        indices
+                            .into_iter()
+                            .flat_map(|constraint| {
+                                Constraint::parse(constraint, &mut self.graph.graph_schema)
+                            })
+                            .collect()
+                    })
                     .map_err(|_| FalkorDBError::ParsingArray)?,
                 stats,
             )

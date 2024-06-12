@@ -9,6 +9,14 @@ use crate::redis_ext::{
 use crate::{Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point};
 use std::collections::HashMap;
 
+pub(crate) fn parse_raw_redis_value(
+    value: redis::Value,
+    graph_schema: &mut GraphSchema,
+) -> FalkorResult<FalkorValue> {
+    type_val_from_value(value)
+        .and_then(|(type_marker, val)| parse_type(type_marker, val, graph_schema))
+}
+
 pub(crate) fn type_val_from_value(
     value: redis::Value
 ) -> Result<(i64, redis::Value), FalkorDBError> {
@@ -33,15 +41,9 @@ fn parse_regular_falkor_map(
         .into_map_iter()
         .map_err(|_| FalkorDBError::ParsingFMap)?
         .try_fold(HashMap::new(), |mut out_map, (key, val)| {
-            let [type_marker, val]: [redis::Value; 2] = val
-                .into_sequence()
-                .ok()
-                .and_then(|val_seq| val_seq.try_into().ok())
-                .ok_or(FalkorDBError::ParsingFMap)?;
-
             out_map.insert(
                 redis_value_as_string(key)?,
-                parse_type(redis_value_as_int(type_marker)?, val, graph_schema)?,
+                parse_raw_redis_value(val, graph_schema)?,
             );
             Ok(out_map)
         })
@@ -66,10 +68,7 @@ pub(crate) fn parse_type(
             val.into_sequence()
                 .map_err(|_| FalkorDBError::ParsingArray)?
                 .into_iter()
-                .flat_map(|item| {
-                    type_val_from_value(item)
-                        .and_then(|(type_marker, val)| parse_type(type_marker, val, graph_schema))
-                })
+                .flat_map(|item| parse_raw_redis_value(item, graph_schema))
                 .collect(),
         ),
         // The following types are sent as an array and require specific parsing functions
@@ -134,7 +133,7 @@ mod tests {
         assert_eq!(edge.properties.get("age"), Some(&FalkorValue::I64(20)));
         assert_eq!(
             edge.properties.get("is_boring"),
-            Some(&FalkorValue::String("false".to_string()))
+            Some(&FalkorValue::Bool(false))
         );
     }
 
@@ -184,7 +183,7 @@ mod tests {
         );
         assert_eq!(
             node.properties.get("secs_since_login"),
-            Some(&FalkorValue::String("105.5".to_string()))
+            Some(&FalkorValue::F64(105.5))
         );
     }
 
@@ -289,10 +288,7 @@ mod tests {
             Some(&FalkorValue::String("val0".to_string()))
         );
         assert_eq!(map.get("key1"), Some(&FalkorValue::I64(1)));
-        assert_eq!(
-            map.get("key2"),
-            Some(&FalkorValue::String("true".to_string()))
-        );
+        assert_eq!(map.get("key2"), Some(&FalkorValue::Bool(true)));
     }
 
     #[test]
@@ -421,9 +417,6 @@ mod tests {
         .expect("Could not parse map");
 
         assert_eq!(res.get("IntKey"), Some(FalkorValue::I64(1)).as_ref());
-        assert_eq!(
-            res.get("BoolKey"),
-            Some(FalkorValue::String("true".to_string())).as_ref()
-        );
+        assert_eq!(res.get("BoolKey"), Some(FalkorValue::Bool(true)).as_ref());
     }
 }

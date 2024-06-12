@@ -15,10 +15,6 @@ strum = { version = "0.26.2", default-features = false, features = ["std", "deri
 thiserror = "1.0.61"
 tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"], optional = true }
 
-[dev-dependencies]
-tracing-tracy = { version = "0.11.0" }
-tracing-subscriber = { version = "0.3.18", default-features = false, features = ["std"] }
-
 [features]
 default = []
 

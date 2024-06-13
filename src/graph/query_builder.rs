@@ -5,8 +5,7 @@
 
 use crate::{
     connection::blocking::BorrowedSyncConnection, parser::redis_value_as_vec, Constraint,
-    ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResponse, FalkorResult, LazyResultSet,
-    SyncGraph,
+    ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet, QueryResult, SyncGraph,
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 
@@ -113,13 +112,13 @@ impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
     }
 }
 
-impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
-    /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member
+impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T> {
+    /// Executes the query, retuning a [`QueryResult`], with a [`LazyResultSet`] as its `data` member
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
     )]
-    pub fn execute(mut self) -> FalkorResult<FalkorResponse<LazyResultSet<'a>>> {
+    pub fn execute(mut self) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
         let res = self.common_execute_steps().and_then(redis_value_as_vec)?;
 
         match res.len() {
@@ -130,7 +129,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
                     ),
                 )?;
 
-                FalkorResponse::from_response(
+                QueryResult::from_response(
                     None,
                     LazyResultSet::new(Default::default(), &mut self.graph.graph_schema),
                     stats,
@@ -143,7 +142,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
                     )
                 })?;
 
-                FalkorResponse::from_response(
+                QueryResult::from_response(
                     Some(header),
                     LazyResultSet::new(Default::default(), &mut self.graph.graph_schema),
                     stats,
@@ -156,7 +155,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
                     )
                 })?;
 
-                FalkorResponse::from_response(
+                QueryResult::from_response(
                     Some(header),
                     LazyResultSet::new(redis_value_as_vec(data)?, &mut self.graph.graph_schema),
                     stats,
@@ -308,14 +307,14 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
     }
 }
 
-impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
-    /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`FalkorIndex`]s
+impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>> {
+    /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`FalkorIndex`]s
     /// This functions consumes self
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Execute FalkorIndex Query", skip_all, level = "info")
     )]
-    pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
+    pub fn execute(mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
         self.common_execute_steps(
             &mut self
                 .graph
@@ -332,7 +331,7 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
                     })
                 })?;
 
-            FalkorResponse::from_response(
+            QueryResult::from_response(
                 Some(header),
                 redis_value_as_vec(indices).map(|indices| {
                     indices
@@ -346,14 +345,14 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
     }
 }
 
-impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
-    /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`Constraint`]s
+impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>> {
+    /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`Constraint`]s
     /// This functions consumes self
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Execute Constraint Procedure Call", skip_all, level = "info")
     )]
-    pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
+    pub fn execute(mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
         self.common_execute_steps(
             &mut self
                 .graph
@@ -370,7 +369,7 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
                     })
                 })?;
 
-            FalkorResponse::from_response(
+            QueryResult::from_response(
                 Some(header),
                 redis_value_as_vec(constraints).map(|constraints| {
                     constraints

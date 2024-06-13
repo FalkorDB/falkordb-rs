@@ -34,7 +34,7 @@ pub use response::{
     index::{FalkorIndex, IndexStatus, IndexType},
     lazy_result_set::LazyResultSet,
     slowlog_entry::SlowlogEntry,
-    FalkorResponse,
+    QueryResult,
 };
 pub use value::{
     config::ConfigValue,

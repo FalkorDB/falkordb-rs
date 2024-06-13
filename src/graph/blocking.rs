@@ -5,8 +5,8 @@
 
 use crate::{
     client::blocking::FalkorSyncClientInner, parser::redis_value_as_vec, Constraint,
-    ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResponse, FalkorResult,
-    GraphSchema, IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, SlowlogEntry,
+    ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema, IndexType,
+    LazyResultSet, ProcedureQueryBuilder, QueryBuilder, QueryResult, SlowlogEntry,
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 

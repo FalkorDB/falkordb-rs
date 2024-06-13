@@ -17,8 +17,6 @@ mod parser;
 mod response;
 mod value;
 
-mod redis_ext;
-
 /// A [`Result`] which only returns [`FalkorDBError`] as its E type
 pub type FalkorResult<T> = Result<T, FalkorDBError>;
 

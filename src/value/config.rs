@@ -4,6 +4,7 @@
  */
 
 use crate::{FalkorDBError, FalkorValue};
+use redis::{RedisWrite, ToRedisArgs};
 use std::fmt::{Display, Formatter};
 
 /// An enum representing the two viable types for a config value
@@ -64,5 +65,46 @@ impl TryFrom<FalkorValue> for ConfigValue {
             FalkorValue::I64(int_val) => Ok(ConfigValue::Int64(int_val)),
             _ => Err(FalkorDBError::ParsingConfigValue),
         }
+    }
+}
+
+impl ToRedisArgs for ConfigValue {
+    fn write_redis_args<W>(
+        &self,
+        out: &mut W,
+    ) where
+        W: ?Sized + RedisWrite,
+    {
+        match self {
+            ConfigValue::String(str_val) => str_val.write_redis_args(out),
+            ConfigValue::Int64(int_val) => int_val.write_redis_args(out),
+        }
+    }
+}
+
+impl TryFrom<&redis::Value> for ConfigValue {
+    type Error = FalkorDBError;
+    fn try_from(value: &redis::Value) -> Result<ConfigValue, Self::Error> {
+        Ok(match value {
+            redis::Value::Int(int_val) => ConfigValue::Int64(*int_val),
+            redis::Value::Data(str_data) => {
+                ConfigValue::String(String::from_utf8_lossy(str_data.as_slice()).to_string())
+            }
+            _ => return Err(FalkorDBError::InvalidDataReceived),
+        })
+    }
+}
+
+impl TryFrom<redis::Value> for ConfigValue {
+    type Error = FalkorDBError;
+
+    fn try_from(value: redis::Value) -> Result<Self, Self::Error> {
+        Ok(match value {
+            redis::Value::Int(int_val) => ConfigValue::Int64(int_val),
+            redis::Value::Data(str_data) => ConfigValue::String(
+                String::from_utf8(str_data).map_err(|_| FalkorDBError::ParsingFString)?,
+            ),
+            _ => return Err(FalkorDBError::InvalidDataReceived),
+        })
     }
 }

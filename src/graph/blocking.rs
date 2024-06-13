@@ -4,9 +4,9 @@
  */
 
 use crate::{
-    client::blocking::FalkorSyncClientInner, Constraint, ConstraintType, EntityType, ExecutionPlan,
-    FalkorDBError, FalkorIndex, FalkorResponse, FalkorResult, GraphSchema, IndexType,
-    LazyResultSet, ProcedureQueryBuilder, QueryBuilder, SlowlogEntry,
+    client::blocking::FalkorSyncClientInner, parser::redis_value_as_vec, Constraint,
+    ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResponse, FalkorResult,
+    GraphSchema, IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, SlowlogEntry,
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
@@ -79,9 +79,8 @@ impl SyncGraph {
     pub fn slowlog(&self) -> FalkorResult<Vec<SlowlogEntry>> {
         self.execute_command("GRAPH.SLOWLOG", None, None)
             .and_then(|res| {
-                res.into_sequence()
+                redis_value_as_vec(res)
                     .map(|as_vec| as_vec.into_iter().flat_map(SlowlogEntry::parse).collect())
-                    .map_err(|_| FalkorDBError::ParsingArray)
             })
     }
 

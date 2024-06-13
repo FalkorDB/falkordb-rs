@@ -3,8 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::redis_ext::redis_value_as_string;
-use crate::{client::blocking::FalkorSyncClientInner, FalkorDBError, FalkorResult};
+use crate::{
+    client::blocking::FalkorSyncClientInner, parser::redis_value_as_string, FalkorDBError,
+    FalkorResult,
+};
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc},

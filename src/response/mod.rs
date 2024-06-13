@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    parser::{parse_header, string_vec_from_untyped_val},
+    parser::{parse_header, redis_value_as_untyped_string_vec},
     FalkorResult,
 };
 
@@ -47,7 +47,7 @@ impl<T> FalkorResponse<T> {
                 None => vec![],
             },
             data,
-            stats: string_vec_from_untyped_val(stats)?,
+            stats: redis_value_as_untyped_string_vec(stats)?,
         })
     }
 }

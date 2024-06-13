@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    redis_ext::redis_value_as_int, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
-    SchemaType,
+    parser::{redis_value_as_int, redis_value_as_vec},
+    FalkorDBError, FalkorResult, FalkorValue, GraphSchema, SchemaType,
 };
 use std::collections::HashMap;
 
@@ -40,23 +40,18 @@ impl Node {
         value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [entity_id, labels, properties]: [redis::Value; 3] = value
-            .into_sequence()
-            .map_err(|_| FalkorDBError::ParsingArray)?
-            .try_into()
-            .map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 elements in node object",
-                )
+        let [entity_id, labels, properties]: [redis::Value; 3] = redis_value_as_vec(value)
+            .and_then(|val_vec| {
+                TryInto::try_into(val_vec).map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "Expected exactly 3 elements in node object",
+                    )
+                })
             })?;
+
         Ok(Node {
             entity_id: redis_value_as_int(entity_id)?,
-            labels: graph_schema.parse_id_vec(
-                labels
-                    .into_sequence()
-                    .map_err(|_| FalkorDBError::ParsingArray)?,
-                SchemaType::Labels,
-            )?,
+            labels: graph_schema.parse_id_vec(redis_value_as_vec(labels)?, SchemaType::Labels)?,
             properties: graph_schema.parse_properties_map(properties)?,
         })
     }
@@ -87,15 +82,13 @@ impl Edge {
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
         let [entity_id, relationship_id_raw, src_node_id, dst_node_id, properties]: [redis::Value;
-            5] = value
-            .into_sequence()
-            .map_err(|_| FalkorDBError::ParsingArray)?
-            .try_into()
-            .map_err(|_| {
+            5] = redis_value_as_vec(value).and_then(|val_vec| {
+            val_vec.try_into().map_err(|_| {
                 FalkorDBError::ParsingArrayToStructElementCount(
                     "Expected exactly 5 elements in edge object",
                 )
-            })?;
+            })
+        })?;
 
         let relationship = graph_schema
             .relationships()

@@ -4,8 +4,9 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, Constraint, ExecutionPlan, FalkorDBError,
-    FalkorIndex, FalkorResponse, FalkorResult, LazyResultSet, SyncGraph,
+    connection::blocking::BorrowedSyncConnection, parser::redis_value_as_vec, Constraint,
+    ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResponse, FalkorResult, LazyResultSet,
+    SyncGraph,
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 
@@ -119,10 +120,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
         tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
     )]
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<LazyResultSet<'a>>> {
-        let res = self
-            .common_execute_steps()?
-            .into_sequence()
-            .map_err(|_| FalkorDBError::ParsingArray)?;
+        let res = self.common_execute_steps().and_then(redis_value_as_vec)?;
 
         match res.len() {
             1 => {
@@ -160,11 +158,7 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
 
                 FalkorResponse::from_response(
                     Some(header),
-                    LazyResultSet::new(
-                        data.into_sequence()
-                            .map_err(|_| FalkorDBError::ParsingArray)?,
-                        &mut self.graph.graph_schema,
-                    ),
+                    LazyResultSet::new(redis_value_as_vec(data)?, &mut self.graph.graph_schema),
                     stats,
                 )
             }
@@ -328,22 +322,24 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
                 .client
                 .borrow_connection(self.graph.client.clone())?,
         )
-        .and_then(|res| res.into_sequence().map_err(|_| FalkorDBError::ParsingArray))
-        .and_then(|res_vec| {
-            let [header, indices, stats]: [redis::Value; 3] = res_vec.try_into().map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 elements in query response",
-                )
-            })?;
+        .and_then(|res| {
+            let [header, indices, stats]: [redis::Value; 3] =
+                redis_value_as_vec(res).and_then(|res_vec| {
+                    res_vec.try_into().map_err(|_| {
+                        FalkorDBError::ParsingArrayToStructElementCount(
+                            "Expected exactly 3 elements in query response",
+                        )
+                    })
+                })?;
 
             FalkorResponse::from_response(
                 Some(header),
-                indices
-                    .into_sequence()
-                    .map_err(|_| FalkorDBError::ParsingArray)?
-                    .into_iter()
-                    .flat_map(|index| FalkorIndex::parse(index, &mut self.graph.graph_schema))
-                    .collect(),
+                redis_value_as_vec(indices).map(|indices| {
+                    indices
+                        .into_iter()
+                        .flat_map(|index| FalkorIndex::parse(index, &mut self.graph.graph_schema))
+                        .collect()
+                })?,
                 stats,
             )
         })
@@ -364,27 +360,26 @@ impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
                 .client
                 .borrow_connection(self.graph.client.clone())?,
         )
-        .and_then(|res| res.into_sequence().map_err(|_| FalkorDBError::ParsingArray))
-        .and_then(|res_vec| {
-            let [header, indices, stats]: [redis::Value; 3] = res_vec.try_into().map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 elements in query response",
-                )
-            })?;
+        .and_then(|res| {
+            let [header, constraints, stats]: [redis::Value; 3] = redis_value_as_vec(res)
+                .and_then(|res_vec| {
+                    res_vec.try_into().map_err(|_| {
+                        FalkorDBError::ParsingArrayToStructElementCount(
+                            "Expected exactly 3 elements in query response",
+                        )
+                    })
+                })?;
 
             FalkorResponse::from_response(
                 Some(header),
-                indices
-                    .into_sequence()
-                    .map(|indices| {
-                        indices
-                            .into_iter()
-                            .flat_map(|constraint| {
-                                Constraint::parse(constraint, &mut self.graph.graph_schema)
-                            })
-                            .collect()
-                    })
-                    .map_err(|_| FalkorDBError::ParsingArray)?,
+                redis_value_as_vec(constraints).map(|constraints| {
+                    constraints
+                        .into_iter()
+                        .flat_map(|constraint| {
+                            Constraint::parse(constraint, &mut self.graph.graph_schema)
+                        })
+                        .collect()
+                })?,
                 stats,
             )
         })

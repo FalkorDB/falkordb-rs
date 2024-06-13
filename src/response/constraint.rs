@@ -4,7 +4,10 @@
  */
 
 use crate::{
-    parser::{parse_falkor_enum, parse_raw_redis_value, string_vec_from_val},
+    parser::{
+        parse_falkor_enum, parse_raw_redis_value, redis_value_as_typed_string_vec,
+        redis_value_as_vec,
+    },
     EntityType, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
 };
 
@@ -56,18 +59,17 @@ impl Constraint {
         value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [redis::Value; 5] = value.into_sequence()
-            .map_err(|_| FalkorDBError::ParsingArray)
+        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [redis::Value; 5] = redis_value_as_vec(value)
             .and_then(|res| res.try_into()
                 .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object")))?;
 
         Ok(Self {
-            constraint_type: parse_falkor_enum(constraint_type_raw, graph_schema)?,
+            constraint_type: parse_falkor_enum(constraint_type_raw)?,
             label: parse_raw_redis_value(label_raw, graph_schema)
                 .and_then(FalkorValue::into_string)?,
-            properties: string_vec_from_val(properties_raw, graph_schema)?,
-            entity_type: parse_falkor_enum(entity_type_raw, graph_schema)?,
-            status: parse_falkor_enum(status_raw, graph_schema)?,
+            properties: redis_value_as_typed_string_vec(properties_raw)?,
+            entity_type: parse_falkor_enum(entity_type_raw)?,
+            status: parse_falkor_enum(status_raw)?,
         })
     }
 }

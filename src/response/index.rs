@@ -3,8 +3,13 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::parser::{parse_falkor_enum, string_vec_from_val};
-use crate::{parser::parse_raw_redis_value, EntityType, FalkorDBError, FalkorValue, GraphSchema};
+use crate::{
+    parser::{
+        parse_falkor_enum, parse_raw_redis_value, redis_value_as_typed_string_vec,
+        redis_value_as_vec,
+    },
+    EntityType, FalkorDBError, FalkorValue, GraphSchema,
+};
 use std::collections::HashMap;
 
 /// The status of this index
@@ -89,10 +94,8 @@ impl FalkorIndex {
         value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> Result<Self, FalkorDBError> {
-        let [label, fields, field_types, language, stopwords, entity_type, status, info] = value
-            .into_sequence()
-            .map_err(|_| FalkorDBError::ParsingArray)
-            .and_then(|as_vec| {
+        let [label, fields, field_types, language, stopwords, entity_type, status, info] =
+            redis_value_as_vec(value).and_then(|as_vec| {
                 as_vec.try_into().map_err(|_| {
                     FalkorDBError::ParsingArrayToStructElementCount(
                         "Expected exactly 8 elements in index object",
@@ -101,15 +104,15 @@ impl FalkorIndex {
             })?;
 
         Ok(Self {
-            entity_type: parse_falkor_enum(entity_type, graph_schema)?,
-            status: parse_falkor_enum(status, graph_schema)?,
+            entity_type: parse_falkor_enum(entity_type)?,
+            status: parse_falkor_enum(status)?,
             index_label: parse_raw_redis_value(label, graph_schema)
-                .and_then(|parsed_entity_type| parsed_entity_type.into_string())?,
-            fields: string_vec_from_val(fields, graph_schema)?,
+                .and_then(FalkorValue::into_string)?,
+            fields: redis_value_as_typed_string_vec(fields)?,
             field_types: parse_types_map(field_types, graph_schema)?,
             language: parse_raw_redis_value(language, graph_schema)
                 .and_then(FalkorValue::into_string)?,
-            stopwords: string_vec_from_val(stopwords, graph_schema)?,
+            stopwords: redis_value_as_typed_string_vec(stopwords)?,
             info: parse_raw_redis_value(info, graph_schema)
                 .and_then(FalkorValue::into_map)
                 .map(|as_map| {

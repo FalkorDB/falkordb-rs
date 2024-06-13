@@ -3,7 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{redis_ext::redis_value_as_string, FalkorDBError, FalkorResult};
+use crate::{
+    parser::{redis_value_as_string, redis_value_as_vec},
+    FalkorDBError, FalkorResult,
+};
 use regex::Regex;
 use std::{
     cell::RefCell,
@@ -190,9 +193,7 @@ impl ExecutionPlan {
         tracing::instrument(name = "Parse Execution Plan", skip_all, level = "info")
     )]
     pub(crate) fn parse(value: redis::Value) -> FalkorResult<Self> {
-        let redis_value_vec = value
-            .into_sequence()
-            .map_err(|_| FalkorDBError::ParsingArray)?;
+        let redis_value_vec = redis_value_as_vec(value)?;
 
         let mut string_representation = Vec::with_capacity(redis_value_vec.len() + 1);
         let mut current_traversal_stack = vec![];

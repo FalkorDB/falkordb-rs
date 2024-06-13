@@ -3,8 +3,10 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::redis_ext::redis_value_as_double;
-use crate::{FalkorDBError, FalkorResult};
+use crate::{
+    parser::{redis_value_as_double, redis_value_as_vec},
+    FalkorDBError, FalkorResult,
+};
 
 /// A point in the world.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -29,15 +31,13 @@ impl Point {
         tracing::instrument(name = "Parse Point", skip_all, level = "trace")
     )]
     pub fn parse(value: redis::Value) -> FalkorResult<Point> {
-        let [lat, long]: [redis::Value; 2] = value
-            .into_sequence()
-            .map_err(|_| FalkorDBError::ParsingArray)?
-            .try_into()
-            .map_err(|_| {
+        let [lat, long]: [redis::Value; 2] = redis_value_as_vec(value).and_then(|val_vec| {
+            val_vec.try_into().map_err(|_| {
                 FalkorDBError::ParsingArrayToStructElementCount(
                     "Expected exactly 2 element in point - latitude and longitude",
                 )
-            })?;
+            })
+        })?;
 
         Ok(Point {
             latitude: redis_value_as_double(lat)?,

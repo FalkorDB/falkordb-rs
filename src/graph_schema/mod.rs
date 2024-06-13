@@ -5,8 +5,7 @@
 
 use crate::{
     client::blocking::FalkorSyncClientInner,
-    parser::parse_type,
-    redis_ext::{redis_value_as_int, redis_value_as_string},
+    parser::{parse_type, redis_value_as_int, redis_value_as_string, redis_value_as_vec},
     FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{collections::HashMap, sync::Arc};
@@ -35,26 +34,22 @@ impl TryFrom<redis::Value> for FKeyTypeVal {
         tracing::instrument(name = "New KeyTypeValue", skip_all, level = "trace")
     )]
     fn try_from(value: redis::Value) -> FalkorResult<Self> {
-        let [key_raw, type_raw, val]: [redis::Value; 3] = value
-            .into_sequence()
-            .ok()
-            .and_then(|seq| seq.try_into().ok())
-            .ok_or({
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 elements for key-type-value property",
-                )
+        let [key_raw, type_raw, val]: [redis::Value; 3] =
+            redis_value_as_vec(value).and_then(|seq| {
+                seq.try_into().map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "Expected exactly 3 elements for key-type-value property",
+                    )
+                })
             })?;
 
-        match (redis_value_as_int(key_raw), redis_value_as_int(type_raw)) {
-            (Ok(key), Ok(type_marker)) => Ok(FKeyTypeVal {
+        redis_value_as_int(key_raw).and_then(|key| {
+            redis_value_as_int(type_raw).map(|type_marker| FKeyTypeVal {
                 key,
                 type_marker,
                 val,
-            }),
-            (Ok(_), Err(_)) => Err(FalkorDBError::ParsingTypeMarkerTypeMismatch)?,
-            (Err(_), Ok(_)) => Err(FalkorDBError::ParsingKeyIdTypeMismatch)?,
-            _ => Err(FalkorDBError::ParsingKTVTypes)?,
-        }
+            })
+        })
     }
 }
 
@@ -152,38 +147,41 @@ impl GraphSchema {
         };
 
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
-        let [_, keys, _]: [redis::Value; 3] = self
+        let keys = self
             .client
-            .borrow_connection(self.client.clone())?
-            .execute_command(
-                Some(self.graph_name.as_str()),
-                "GRAPH.QUERY",
-                None,
-                Some(&[format!("CALL {}()", get_refresh_command(schema_type)).as_str()]),
-            )?
-            .into_sequence().map_err(|_| FalkorDBError::ParsingArray)?
-            .try_into()
-            .map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 types for header-resultset-stats response from refresh query"
+            .borrow_connection(self.client.clone())
+            .and_then(|mut conn| {
+                conn.execute_command(
+                    Some(self.graph_name.as_str()),
+                    "GRAPH.QUERY",
+                    None,
+                    Some(&[format!("CALL {}()", get_refresh_command(schema_type)).as_str()]),
                 )
-            })?;
+            })
+            .and_then(|res| {
+                redis_value_as_vec(res).and_then(|as_vec| {
+                    as_vec.into_iter().nth(1).ok_or(FalkorDBError::ParsingArrayToStructElementCount(
+            "Expected exactly 3 types for header-resultset-stats response from refresh query"
+        ))
+                })
+            })
+            .and_then(redis_value_as_vec)?;
 
         let new_keys = keys
-            .into_sequence()
-            .map_err(|_| FalkorDBError::ParsingArray)?
             .into_iter()
             .enumerate()
             .flat_map(|(idx, item)| {
                 FalkorResult::<(i64, String)>::Ok((
                     idx as i64,
-                    item.into_sequence()
-                        .ok()
-                        .and_then(|item_seq| item_seq.into_iter().next())
-                        .ok_or(FalkorDBError::ParsingError(
+                    redis_value_as_vec(item)
+                        .and_then(|item_seq| {
+                            item_seq.into_iter().next().ok_or_else(|| {
+                                FalkorDBError::ParsingError(
                             "Expected new label/property to be the first element in an array"
                                 .to_string(),
-                        ))
+                        )
+                            })
+                        })
                         .and_then(redis_value_as_string)?,
                 ))
             })
@@ -234,9 +232,8 @@ impl GraphSchema {
         &mut self,
         value: redis::Value,
     ) -> FalkorResult<HashMap<String, FalkorValue>> {
-        let raw_properties_vec = value
-            .into_sequence()
-            .map_err(|_| FalkorDBError::ParsingArray)?;
+        let raw_properties_vec = redis_value_as_vec(value)?;
+
         let raw_properties_len = raw_properties_vec.len();
         raw_properties_vec.into_iter().try_fold(
             HashMap::with_capacity(raw_properties_len),

@@ -3,44 +3,84 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{
-    redis_ext::{
-        redis_value_as_bool, redis_value_as_double, redis_value_as_int, redis_value_as_string,
-    },
-    Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point,
-};
+use crate::{Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point};
 use std::collections::HashMap;
+
+pub(crate) fn redis_value_as_string(value: redis::Value) -> FalkorResult<String> {
+    match value {
+        redis::Value::Data(data) => {
+            String::from_utf8(data).map_err(|_| FalkorDBError::ParsingFString)
+        }
+        redis::Value::Status(status) => Ok(status),
+        _ => Err(FalkorDBError::ParsingFString),
+    }
+}
+
+pub(crate) fn redis_value_as_int(value: redis::Value) -> FalkorResult<i64> {
+    match value {
+        redis::Value::Int(int_val) => Ok(int_val),
+        _ => Err(FalkorDBError::ParsingI64),
+    }
+}
+
+pub(crate) fn redis_value_as_bool(value: redis::Value) -> FalkorResult<bool> {
+    redis_value_as_string(value).and_then(|string_val| match string_val.as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(FalkorDBError::ParsingBool),
+    })
+}
+
+pub(crate) fn redis_value_as_double(value: redis::Value) -> FalkorResult<f64> {
+    redis_value_as_string(value)
+        .and_then(|string_val| string_val.parse().map_err(|_| FalkorDBError::ParsingF64))
+}
+
+pub(crate) fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
+    match value {
+        redis::Value::Bulk(bulk_val) => Ok(bulk_val),
+        _ => Err(FalkorDBError::ParsingArray),
+    }
+}
 
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(name = "Parse Falkor Enum", skip_all, level = "trace")
 )]
 pub(crate) fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToString>>(
-    val: redis::Value,
-    graph_schema: &mut GraphSchema,
+    value: redis::Value
 ) -> FalkorResult<T> {
-    T::try_from(
-        parse_raw_redis_value(val, graph_schema)
-            .and_then(FalkorValue::into_string)?
-            .as_str(),
-    )
-    .map_err(|err| FalkorDBError::InvalidEnumType(err.to_string()))
+    type_val_from_value(value)
+        .and_then(|(type_marker, val)| {
+            if type_marker == 2 {
+                redis_value_as_string(val)
+            } else {
+                Err(FalkorDBError::ParsingArray)
+            }
+        })
+        .and_then(|val_string| {
+            T::try_from(val_string.as_str())
+                .map_err(|err| FalkorDBError::InvalidEnumType(err.to_string()))
+        })
 }
 
 #[cfg_attr(
     feature = "tracing",
-    tracing::instrument(name = "String Vec From Value", skip_all, level = "debug")
+    tracing::instrument(name = "String Vec From Redis Value", skip_all, level = "debug")
 )]
-pub(crate) fn string_vec_from_val(
-    value: redis::Value,
-    graph_schema: &mut GraphSchema,
-) -> FalkorResult<Vec<String>> {
-    parse_raw_redis_value(value, graph_schema)
-        .and_then(|parsed_value| parsed_value.into_vec())
-        .map(|parsed_value_vec| {
-            parsed_value_vec
+pub(crate) fn redis_value_as_typed_string_vec(value: redis::Value) -> FalkorResult<Vec<String>> {
+    type_val_from_value(value)
+        .and_then(|(type_marker, val)| {
+            if type_marker == 6 {
+                redis_value_as_vec(val)
+            } else {
+                Err(FalkorDBError::ParsingArray)
+            }
+        })
+        .map(|val_vec| {
+            val_vec
                 .into_iter()
-                .flat_map(FalkorValue::into_string)
+                .flat_map(redis_value_as_string)
                 .collect()
         })
 }
@@ -49,11 +89,9 @@ pub(crate) fn string_vec_from_val(
     feature = "tracing",
     tracing::instrument(name = "String Vec From Untyped Value", skip_all, level = "trace")
 )]
-pub(crate) fn string_vec_from_untyped_val(value: redis::Value) -> FalkorResult<Vec<String>> {
-    value
-        .into_sequence()
+pub(crate) fn redis_value_as_untyped_string_vec(value: redis::Value) -> FalkorResult<Vec<String>> {
+    redis_value_as_vec(value)
         .map(|as_vec| as_vec.into_iter().flat_map(redis_value_as_string).collect())
-        .map_err(|_| FalkorDBError::ParsingArray)
 }
 
 #[cfg_attr(
@@ -62,9 +100,7 @@ pub(crate) fn string_vec_from_untyped_val(value: redis::Value) -> FalkorResult<V
 )]
 pub(crate) fn parse_header(header: redis::Value) -> FalkorResult<Vec<String>> {
     // Convert the header into a sequence
-    let header_sequence = header
-        .into_sequence()
-        .map_err(|_| FalkorDBError::ParsingArray)?;
+    let header_sequence = redis_value_as_vec(header)?;
 
     // Initialize a vector with the capacity of the header sequence length
     let header_sequence_len = header_sequence.len();
@@ -73,9 +109,7 @@ pub(crate) fn parse_header(header: redis::Value) -> FalkorResult<Vec<String>> {
         Vec::with_capacity(header_sequence_len),
         |mut result, item| {
             // Convert the item into a sequence
-            let item_sequence = item
-                .into_sequence()
-                .map_err(|_| FalkorDBError::ParsingArray)?;
+            let item_sequence = redis_value_as_vec(item)?;
 
             // Determine the key based on the length of the item sequence
             let key = if item_sequence.len() == 2 {
@@ -118,17 +152,18 @@ pub(crate) fn parse_raw_redis_value(
 pub(crate) fn type_val_from_value(
     value: redis::Value
 ) -> Result<(i64, redis::Value), FalkorDBError> {
-    let [type_marker, val]: [redis::Value; 2] = value
-        .into_sequence()
-        .map_err(|_| FalkorDBError::ParsingArray)?
-        .try_into()
-        .map_err(|_| {
-            FalkorDBError::ParsingArrayToStructElementCount(
-                "Expected exactly 2 elements: type marker, and value",
-            )
-        })?;
-
-    Ok((redis_value_as_int(type_marker)?, val))
+    redis_value_as_vec(value).and_then(|val_vec| {
+        val_vec
+            .try_into()
+            .map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 2 elements: type marker, and value",
+                )
+            })
+            .and_then(|[type_marker_raw, val]: [redis::Value; 2]| {
+                redis_value_as_int(type_marker_raw).map(|type_marker| (type_marker, val))
+            })
+    })
 }
 
 #[cfg_attr(
@@ -166,13 +201,15 @@ pub(crate) fn parse_type(
         3 => FalkorValue::I64(redis_value_as_int(val)?),
         4 => FalkorValue::Bool(redis_value_as_bool(val)?),
         5 => FalkorValue::F64(redis_value_as_double(val)?),
-        6 => FalkorValue::Array(
-            val.into_sequence()
-                .map_err(|_| FalkorDBError::ParsingArray)?
+        6 => FalkorValue::Array(redis_value_as_vec(val).and_then(|val_vec| {
+            let len = val_vec.len();
+            val_vec
                 .into_iter()
-                .flat_map(|item| parse_raw_redis_value(item, graph_schema))
-                .collect(),
-        ),
+                .try_fold(Vec::with_capacity(len), |mut acc, item| {
+                    acc.push(parse_raw_redis_value(item, graph_schema)?);
+                    Ok(acc)
+                })
+        })?),
         // The following types are sent as an array and require specific parsing functions
         7 => FalkorValue::Edge(Edge::parse(val, graph_schema)?),
         8 => FalkorValue::Node(Node::parse(val, graph_schema)?),

@@ -6,8 +6,7 @@
 use crate::{
     client::FalkorClientProvider,
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
-    parser::string_vec_from_untyped_val,
-    redis_ext::redis_value_as_string,
+    parser::{redis_value_as_string, redis_value_as_untyped_string_vec, redis_value_as_vec},
     ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
 };
 use parking_lot::{Mutex, RwLock};
@@ -87,11 +86,12 @@ pub(crate) fn get_sentinel_client(
     // This could have been so simple using the Sentinel API, but it requires a service name
     // Perhaps in the future we can use it if we only support the master instance to be called 'master'?
     let sentinel_masters = conn
-        .execute_command(None, "SENTINEL", Some("MASTERS"), None)?
-        .into_sequence()
-        .ok()
-        .and_then(|vec| (vec.len() == 1).then_some(vec))
-        .ok_or(FalkorDBError::SentinelMastersCount)?;
+        .execute_command(None, "SENTINEL", Some("MASTERS"), None)
+        .and_then(redis_value_as_vec)?;
+
+    if sentinel_masters.len() != 1 {
+        return Err(FalkorDBError::SentinelMastersCount);
+    }
 
     let sentinel_master: HashMap<_, _> = sentinel_masters
         .into_iter()
@@ -99,7 +99,7 @@ pub(crate) fn get_sentinel_client(
         .and_then(|master| master.into_sequence().ok())
         .ok_or(FalkorDBError::SentinelMastersCount)?
         .chunks_exact(2)
-        .flat_map(TryInto::<&[redis::Value; 2]>::try_into) // TODO: check if this can be done with no copying
+        .flat_map(TryInto::<&[redis::Value; 2]>::try_into) // TODO: In the future, check if this can be done with no copying, but this should be a rare function call tbh
         .flat_map(|[key, val]| {
             redis_value_as_string(key.to_owned())
                 .and_then(|key| redis_value_as_string(val.to_owned()).map(|val| (key, val)))
@@ -199,7 +199,7 @@ impl FalkorSyncClient {
     pub fn list_graphs(&self) -> FalkorResult<Vec<String>> {
         let mut conn = self.borrow_connection()?;
         conn.execute_command(None, "GRAPH.LIST", None, None)
-            .and_then(string_vec_from_untyped_val)
+            .and_then(redis_value_as_untyped_string_vec)
     }
 
     /// Return the current value of a configuration option in the database.
@@ -223,7 +223,7 @@ impl FalkorSyncClient {
             .and_then(|mut conn| {
                 conn.execute_command(None, "GRAPH.CONFIG", Some("GET"), Some(&[config_key]))
             })
-            .and_then(|res| res.into_sequence().map_err(|_| FalkorDBError::ParsingArray))?;
+            .and_then(redis_value_as_vec)?;
 
         if config.len() == 2 {
             let [key, val]: [redis::Value; 2] = config.try_into().map_err(|_| {
@@ -239,21 +239,18 @@ impl FalkorSyncClient {
         Ok(config
             .into_iter()
             .flat_map(|config| {
-                config
-                    .into_sequence()
-                    .map_err(|_| FalkorDBError::ParsingArray)
-                    .and_then(|as_vec| {
-                        let [key, val]: [redis::Value; 2] = as_vec.try_into().map_err(|_| {
-                            FalkorDBError::ParsingArrayToStructElementCount(
-                                "Expected exactly 2 elements for configuration option",
-                            )
-                        })?;
+                redis_value_as_vec(config).and_then(|as_vec| {
+                    let [key, val]: [redis::Value; 2] = as_vec.try_into().map_err(|_| {
+                        FalkorDBError::ParsingArrayToStructElementCount(
+                            "Expected exactly 2 elements for configuration option",
+                        )
+                    })?;
 
-                        Result::<_, FalkorDBError>::Ok((
-                            redis_value_as_string(key)?,
-                            ConfigValue::try_from(val)?,
-                        ))
-                    })
+                    Result::<_, FalkorDBError>::Ok((
+                        redis_value_as_string(key)?,
+                        ConfigValue::try_from(val)?,
+                    ))
+                })
             })
             .collect::<HashMap<String, ConfigValue>>())
     }

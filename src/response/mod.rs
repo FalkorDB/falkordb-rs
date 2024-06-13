@@ -89,6 +89,7 @@ impl<T> QueryResult<T> {
     {
         for stat in self.stats.iter() {
             if stat.contains(Into::<&'static str>::into(stat_type)) {
+                // Splits the statistic string by ': ', then retrieves and parses the statistic value.
                 return stat
                     .split(": ")
                     .nth(1)

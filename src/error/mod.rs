@@ -79,21 +79,21 @@ pub enum FalkorDBError {
     /// Element was not of type Array.
     #[error("Element was not of type Array")]
     ParsingArray,
-    /// Element was not of type FString.
-    #[error("Element was not of type FString")]
-    ParsingFString,
+    /// Element was not of type String.
+    #[error("Element was not of type String")]
+    ParsingString,
     /// Element was not of type FEdge.
     #[error("Element was not of type FEdge")]
     ParsingFEdge,
     /// Element was not of type FNode.
     #[error("Element was not of type FNode")]
     ParsingFNode,
-    /// Element was not of type FPath.
-    #[error("Element was not of type FPath")]
-    ParsingFPath,
-    /// Element was not of type FMap.
-    #[error("Element was not of type FMap")]
-    ParsingFMap,
+    /// Element was not of type Path.
+    #[error("Element was not of type Path")]
+    ParsingPath,
+    /// Element was not of type Map.
+    #[error("Element was not of type Map")]
+    ParsingMap,
     /// Element was not of type FPoint.
     #[error("Element was not of type FPoint")]
     ParsingFPoint,

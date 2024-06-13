@@ -102,7 +102,7 @@ impl TryFrom<redis::Value> for ConfigValue {
         Ok(match value {
             redis::Value::Int(int_val) => ConfigValue::Int64(int_val),
             redis::Value::Data(str_data) => ConfigValue::String(
-                String::from_utf8(str_data).map_err(|_| FalkorDBError::ParsingFString)?,
+                String::from_utf8(str_data).map_err(|_| FalkorDBError::ParsingString)?,
             ),
             _ => return Err(FalkorDBError::InvalidDataReceived),
         })

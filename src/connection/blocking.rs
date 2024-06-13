@@ -73,7 +73,7 @@ impl FalkorSyncConnection {
                             .map(|[key, val]| (key.to_string(), val.to_string()))
                             .collect()
                     })
-                    .map_err(|_| FalkorDBError::ParsingFString)
+                    .map_err(|_| FalkorDBError::ParsingString)
             })
     }
 }

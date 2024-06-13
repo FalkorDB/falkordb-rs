@@ -9,10 +9,10 @@ use std::collections::HashMap;
 pub(crate) fn redis_value_as_string(value: redis::Value) -> FalkorResult<String> {
     match value {
         redis::Value::Data(data) => {
-            String::from_utf8(data).map_err(|_| FalkorDBError::ParsingFString)
+            String::from_utf8(data).map_err(|_| FalkorDBError::ParsingString)
         }
         redis::Value::Status(status) => Ok(status),
-        _ => Err(FalkorDBError::ParsingFString),
+        _ => Err(FalkorDBError::ParsingString),
     }
 }
 
@@ -176,7 +176,7 @@ fn parse_regular_falkor_map(
 ) -> FalkorResult<HashMap<String, FalkorValue>> {
     value
         .into_map_iter()
-        .map_err(|_| FalkorDBError::ParsingFMap)?
+        .map_err(|_| FalkorDBError::ParsingMap)?
         .try_fold(HashMap::new(), |mut out_map, (key, val)| {
             out_map.insert(
                 redis_value_as_string(key)?,

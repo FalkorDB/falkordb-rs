@@ -119,7 +119,6 @@ mod tests {
     }
 
     #[test]
-
     fn test_sync_builder_redis_fallback() {
         let client = FalkorClientBuilder::new().build();
         assert!(client.is_ok());

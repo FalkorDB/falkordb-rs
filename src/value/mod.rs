@@ -84,7 +84,7 @@ impl FalkorValue {
         }
     }
 
-    /// Returns a reference to the internal [`String`] if this is an FString variant.
+    /// Returns a reference to the internal [`String`] if this is an String variant.
     ///
     /// # Returns
     /// A reference to the internal [`String`]
@@ -117,7 +117,7 @@ impl FalkorValue {
         }
     }
 
-    /// Returns a reference to the internal [`Path`] if this is an FPath variant.
+    /// Returns a reference to the internal [`Path`] if this is an Path variant.
     ///
     /// # Returns
     /// A reference to the internal [`Path`]
@@ -128,7 +128,7 @@ impl FalkorValue {
         }
     }
 
-    /// Returns a reference to the internal [`HashMap`] if this is an FMap variant.
+    /// Returns a reference to the internal [`HashMap`] if this is an Map variant.
     ///
     /// # Returns
     /// A reference to the internal [`HashMap`]
@@ -199,14 +199,14 @@ impl FalkorValue {
         }
     }
 
-    /// Consumes itself and returns the inner [`String`] if this is an FString variant
+    /// Consumes itself and returns the inner [`String`] if this is an String variant
     ///
     /// # Returns
     /// The inner [`String`]
     pub fn into_string(self) -> FalkorResult<String> {
         match self {
             FalkorValue::String(string) => Ok(string),
-            _ => Err(FalkorDBError::ParsingFString),
+            _ => Err(FalkorDBError::ParsingString),
         }
     }
     /// Consumes itself and returns the inner [`HashMap`] if this is a Map variant
@@ -216,7 +216,7 @@ impl FalkorValue {
     pub fn into_map(self) -> FalkorResult<HashMap<String, FalkorValue>> {
         match self {
             FalkorValue::Map(map) => Ok(map),
-            _ => Err(FalkorDBError::ParsingFMap),
+            _ => Err(FalkorDBError::ParsingMap),
         }
     }
 }

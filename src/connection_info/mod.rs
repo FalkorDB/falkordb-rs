@@ -82,7 +82,6 @@ mod tests {
     use std::{mem, str::FromStr};
 
     #[test]
-
     fn test_redis_fallback_provider() {
         let FalkorConnectionInfo::Redis(redis) =
             FalkorConnectionInfo::fallback_provider("redis://127.0.0.1:6379".to_string()).unwrap();
@@ -91,7 +90,6 @@ mod tests {
     }
 
     #[test]
-
     fn test_try_from_redis() {
         let res = FalkorConnectionInfo::try_from("redis://0.0.0.0:1234");
         assert!(res.is_ok());

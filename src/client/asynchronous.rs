@@ -253,24 +253,14 @@ impl FalkorAsyncClient {
         &self,
         section: Option<&str>,
     ) -> FalkorResult<HashMap<String, String>> {
-        self.borrow_connection()
-            .await?
-            .as_inner()?
-            .get_redis_info(section)
-            .await
-    }
-}
+        let mut conn = self.borrow_connection().await?;
 
-#[cfg(test)]
-pub(crate) async fn create_empty_inner_async_client() -> Arc<FalkorAsyncClientInner> {
-    let (tx, rx) = mpsc::channel(1);
-    tx.send(FalkorAsyncConnection::None).await.ok();
-    Arc::new(FalkorAsyncClientInner {
-        _inner: Mutex::new(FalkorClientProvider::None),
-        connection_pool_size: 0,
-        connection_pool_tx: RwLock::new(tx),
-        connection_pool_rx: Mutex::new(rx),
-    })
+        let redis_info = conn.as_inner()?.get_redis_info(section).await;
+
+        conn.return_to_pool().await;
+
+        redis_info
+    }
 }
 
 #[cfg(test)]

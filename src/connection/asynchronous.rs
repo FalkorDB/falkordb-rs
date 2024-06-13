@@ -111,7 +111,7 @@ impl BorrowedAsyncConnection {
         subcommand: Option<&str>,
         params: Option<&[&str]>,
     ) -> FalkorResult<redis::Value> {
-        match self
+        let res = match self
             .as_inner()?
             .execute_command(graph_name, command, subcommand, params)
             .await
@@ -124,7 +124,10 @@ impl BorrowedAsyncConnection {
                 Err(FalkorDBError::NoConnection)
             }
             res => res,
-        }
+        };
+
+        self.return_to_pool().await;
+        res
     }
 
     pub(crate) async fn return_to_pool(self) {

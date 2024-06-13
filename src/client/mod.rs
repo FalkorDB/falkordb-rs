@@ -3,12 +3,15 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{connection::blocking::FalkorSyncConnection, FalkorDBError, FalkorResult};
+use crate::{
+    connection::blocking::FalkorSyncConnection,
+    parser::{redis_value_as_string, redis_value_as_vec},
+    FalkorDBError, FalkorResult,
+};
 use std::collections::HashMap;
 
 #[cfg(feature = "tokio")]
 use crate::connection::asynchronous::FalkorAsyncConnection;
-use crate::parser::{redis_value_as_string, redis_value_as_vec};
 
 pub(crate) mod blocking;
 pub(crate) mod builder;
@@ -62,7 +65,7 @@ impl FalkorClientProvider {
             ),
             FalkorClientProvider::Redis { client, .. } => FalkorAsyncConnection::Redis(
                 client
-                    .get_multiplexed_async_connection()
+                    .get_multiplexed_tokio_connection()
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
@@ -171,6 +174,6 @@ impl FalkorClientProvider {
     }
 }
 
-pub(crate) trait ProvidesSyncConnections {
+pub(crate) trait ProvidesSyncConnections: Sync + Send {
     fn get_connection(&self) -> FalkorResult<FalkorSyncConnection>;
 }

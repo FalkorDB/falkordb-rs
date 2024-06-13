@@ -20,7 +20,7 @@
 Just add it to your `Cargo.toml`, like so:
 
 ```toml
-falkordb = { version = "*" }
+falkordb = { version = "0.1" }
 ```
 
 ### Run FalkorDB instance
@@ -60,25 +60,28 @@ for n in nodes.data {
 
 ### SSL/TLS Support
 
-This client is currently built upon the [`redis`](https://docs.rs/redis/latest/redis/) crate, and therefor supports TLS using
+This client is currently built upon the [`redis`](https://docs.rs/redis/latest/redis/) crate, and therefore supports TLS using
 its implementation, which uses either [`rustls`](https://docs.rs/rustls/latest/rustls/) or [`native_tls`](https://docs.rs/native-tls/latest/native_tls/).
 This is not enabled by default, and the user ust opt-in by enabling the respective features: `"rustls"`/`"native-tls"`.\
 
 For Rustls:
+
 ```toml
-falkordb = { version = "*", features = ["rustls"] }
+falkordb = { version = "0.1", features = ["rustls"] }
 ```
 
 For NativeTLS:
+
 ```toml
-falkordb = { version = "*", features = ["native-tls"] }
+falkordb = { version = "0.1", features = ["native-tls"] }
 ```
 
 ### Tracing
 
 This crate fully supports instrumentation using the [`tracing`](https://docs.rs/tracing/latest/tracing/) crate, to use it, simply, enable the `tracing` feature:
+
 ```toml
-falkordb = { version = "*", features = ["tracing"] }
+falkordb = { version = "0.1", features = ["tracing"] }
 ```
 
 Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the correct level as you desire it.

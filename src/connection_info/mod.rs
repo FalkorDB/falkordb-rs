@@ -9,14 +9,12 @@ use crate::{FalkorDBError, FalkorResult};
 /// The different enum variants are enabled based on compilation features
 #[derive(Clone, Debug)]
 pub enum FalkorConnectionInfo {
-    #[cfg(feature = "redis")]
     /// A Redis database connection
     Redis(redis::ConnectionInfo),
 }
 
 impl FalkorConnectionInfo {
     fn fallback_provider(mut full_url: String) -> FalkorResult<FalkorConnectionInfo> {
-        #[cfg(feature = "redis")]
         Ok(FalkorConnectionInfo::Redis({
             if full_url.starts_with("falkor://") {
                 full_url = full_url.replace("falkor://", "redis://");
@@ -34,7 +32,6 @@ impl FalkorConnectionInfo {
     /// A [`String`] representation of the address and port, or a UNIX socket path
     pub fn address(&self) -> String {
         match self {
-            #[cfg(feature = "redis")]
             FalkorConnectionInfo::Redis(redis_info) => redis_info.addr.to_string(),
         }
     }
@@ -52,15 +49,10 @@ impl TryFrom<&str> for FalkorConnectionInfo {
             .unwrap_or((format!("falkor://{value}"), "falkor"));
 
         match url_schema {
-            "redis" | "rediss" => {
-                #[cfg(feature = "redis")]
-                return Ok(FalkorConnectionInfo::Redis(
-                    redis::IntoConnectionInfo::into_connection_info(value)
-                        .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?,
-                ));
-                #[cfg(not(feature = "redis"))]
-                return Err(FalkorDBError::UnavailableProvider);
-            }
+            "redis" | "rediss" => Ok(FalkorConnectionInfo::Redis(
+                redis::IntoConnectionInfo::into_connection_info(value)
+                    .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?,
+            )),
             _ => FalkorConnectionInfo::fallback_provider(url),
         }
     }
@@ -90,7 +82,6 @@ mod tests {
     use std::{mem, str::FromStr};
 
     #[test]
-    #[cfg(feature = "redis")]
     fn test_redis_fallback_provider() {
         let FalkorConnectionInfo::Redis(redis) =
             FalkorConnectionInfo::fallback_provider("redis://127.0.0.1:6379".to_string()).unwrap();
@@ -99,7 +90,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "redis")]
     fn test_try_from_redis() {
         let res = FalkorConnectionInfo::try_from("redis://0.0.0.0:1234");
         assert!(res.is_ok());

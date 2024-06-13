@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    parser::utils::{parse_header, string_vec_from_val},
-    FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema,
+    parser::{parse_header, redis_value_as_untyped_string_vec},
+    FalkorResult,
 };
 
 pub(crate) mod constraint;
@@ -29,13 +29,17 @@ impl<T> FalkorResponse<T> {
     /// Creates a [`FalkorResponse`] from the specified data, and raw stats, where raw headers are optional
     ///
     /// # Arguments
-    /// * `headers`: a [`FalkorValue`] that is expected to be of variant [`FalkorValue::Array`], where each element is expected to be of variant [`FalkorValue::String`]
+    /// * `headers`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Bulk`], where each element is expected to be of variant [`redis::Value::Data`] or [`redis::Value::Status`]
     /// * `data`: The actual data
-    /// * `stats`: a [`FalkorValue`] that is expected to be of variant [`FalkorValue::Array`], where each element is expected to be of variant [`FalkorValue::String`]
+    /// * `stats`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Bulk`], where each element is expected to be of variant [`redis::Value::Data`] or [`redis::Value::Status`]
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "New Falkor Response", skip_all, level = "trace")
+    )]
     pub fn from_response(
-        headers: Option<FalkorValue>,
+        headers: Option<redis::Value>,
         data: T,
-        stats: FalkorValue,
+        stats: redis::Value,
     ) -> FalkorResult<Self> {
         Ok(Self {
             header: match headers {
@@ -43,31 +47,7 @@ impl<T> FalkorResponse<T> {
                 None => vec![],
             },
             data,
-            stats: string_vec_from_val(stats)?,
+            stats: redis_value_as_untyped_string_vec(stats)?,
         })
-    }
-}
-
-impl<T: FalkorParsable> FalkorParsable for FalkorResponse<Vec<T>> {
-    fn from_falkor_value(
-        value: FalkorValue,
-        graph_schema: &mut GraphSchema,
-    ) -> FalkorResult<Self> {
-        let [header, indices, stats]: [FalkorValue; 3] =
-            value.into_vec()?.try_into().map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 elements in query response".to_string(),
-                )
-            })?;
-
-        FalkorResponse::from_response(
-            Some(header),
-            indices
-                .into_vec()?
-                .into_iter()
-                .flat_map(|index| FalkorParsable::from_falkor_value(index, graph_schema))
-                .collect(),
-            stats,
-        )
     }
 }

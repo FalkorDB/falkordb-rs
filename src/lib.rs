@@ -7,9 +7,6 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!("../README.md")]
 
-#[cfg(not(feature = "redis"))]
-compile_error!("The `redis` feature must be enabled.");
-
 mod client;
 mod connection;
 mod connection_info;
@@ -19,9 +16,6 @@ mod graph_schema;
 mod parser;
 mod response;
 mod value;
-
-#[cfg(feature = "redis")]
-mod redis_ext;
 
 /// A [`Result`] which only returns [`FalkorDBError`] as its E type
 pub type FalkorResult<T> = Result<T, FalkorDBError>;
@@ -34,7 +28,6 @@ pub use graph::{
     query_builder::{ProcedureQueryBuilder, QueryBuilder},
 };
 pub use graph_schema::{GraphSchema, SchemaType};
-pub use parser::FalkorParsable;
 pub use response::{
     constraint::{Constraint, ConstraintStatus, ConstraintType},
     execution_plan::ExecutionPlan,

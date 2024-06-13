@@ -4,8 +4,11 @@
  */
 
 use crate::{
-    value::utils::parse_type, EntityType, FalkorDBError, FalkorParsable, FalkorResult, FalkorValue,
-    GraphSchema,
+    parser::{
+        parse_falkor_enum, parse_raw_redis_value, redis_value_as_typed_string_vec,
+        redis_value_as_vec,
+    },
+    EntityType, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
 };
 
 /// The type of restriction to apply for the property
@@ -47,26 +50,26 @@ pub struct Constraint {
     pub status: ConstraintStatus,
 }
 
-impl FalkorParsable for Constraint {
-    fn from_falkor_value(
-        value: FalkorValue,
+impl Constraint {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Constraint", skip_all, level = "info")
+    )]
+    pub(crate) fn parse(
+        value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let value_vec = parse_type(6, value, graph_schema)?.into_vec()?;
+        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [redis::Value; 5] = redis_value_as_vec(value)
+            .and_then(|res| res.try_into()
+                .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object")))?;
 
-        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [FalkorValue; 5] = value_vec.try_into()
-            .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object".to_string()))?;
-
-        Ok(Constraint {
-            constraint_type: constraint_type_raw.into_string()?.as_str().try_into()?,
-            label: label_raw.into_string()?,
-            properties: properties_raw
-                .into_vec()?
-                .into_iter()
-                .flat_map(FalkorValue::into_string)
-                .collect(),
-            entity_type: entity_type_raw.into_string()?.as_str().try_into()?,
-            status: status_raw.into_string()?.as_str().try_into()?,
+        Ok(Self {
+            constraint_type: parse_falkor_enum(constraint_type_raw)?,
+            label: parse_raw_redis_value(label_raw, graph_schema)
+                .and_then(FalkorValue::into_string)?,
+            properties: redis_value_as_typed_string_vec(properties_raw)?,
+            entity_type: parse_falkor_enum(entity_type_raw)?,
+            status: parse_falkor_enum(status_raw)?,
         })
     }
 }

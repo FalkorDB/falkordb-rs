@@ -4,12 +4,16 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, Constraint, ExecutionPlan, FalkorDBError,
-    FalkorIndex, FalkorParsable, FalkorResponse, FalkorResult, FalkorValue, LazyResultSet,
+    connection::blocking::BorrowedSyncConnection, parser::redis_value_as_vec, Constraint,
+    ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResponse, FalkorResult, LazyResultSet,
     SyncGraph,
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Construct Query", skip_all, level = "trace")
+)]
 pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
     query_str: Q,
     params: Option<&HashMap<T, Z>>,
@@ -85,7 +89,11 @@ impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
         }
     }
 
-    fn common_execute_steps(&mut self) -> FalkorResult<FalkorValue> {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
+    )]
+    fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
         let mut conn = self
             .graph
             .client
@@ -107,14 +115,18 @@ impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
 
 impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
     /// Executes the query, retuning a [`FalkorResponse`], with a [`LazyResultSet`] as its `data` member
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
+    )]
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<LazyResultSet<'a>>> {
-        let res = self.common_execute_steps()?.into_vec()?;
+        let res = self.common_execute_steps().and_then(redis_value_as_vec)?;
 
         match res.len() {
             1 => {
                 let stats = res.into_iter().next().ok_or(
                     FalkorDBError::ParsingArrayToStructElementCount(
-                        "One element exist but using next() failed".to_string(),
+                        "One element exist but using next() failed",
                     ),
                 )?;
 
@@ -125,9 +137,9 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
                 )
             }
             2 => {
-                let [header, stats]: [FalkorValue; 2] = res.try_into().map_err(|_| {
+                let [header, stats]: [redis::Value; 2] = res.try_into().map_err(|_| {
                     FalkorDBError::ParsingArrayToStructElementCount(
-                        "Two elements exist but couldn't be parsed to an array".to_string(),
+                        "Two elements exist but couldn't be parsed to an array",
                     )
                 })?;
 
@@ -138,20 +150,20 @@ impl<'a, T: Display> QueryBuilder<'a, FalkorResponse<LazyResultSet<'a>>, T> {
                 )
             }
             3 => {
-                let [header, data, stats]: [FalkorValue; 3] = res.try_into().map_err(|_| {
+                let [header, data, stats]: [redis::Value; 3] = res.try_into().map_err(|_| {
                     FalkorDBError::ParsingArrayToStructElementCount(
-                        "3 elements exist but couldn't be parsed to an array".to_string(),
+                        "3 elements exist but couldn't be parsed to an array",
                     )
                 })?;
 
                 FalkorResponse::from_response(
                     Some(header),
-                    LazyResultSet::new(data.into_vec()?, &mut self.graph.graph_schema),
+                    LazyResultSet::new(redis_value_as_vec(data)?, &mut self.graph.graph_schema),
                     stats,
                 )
             }
             _ => Err(FalkorDBError::ParsingArrayToStructElementCount(
-                "Invalid number of elements returned from query".to_string(),
+                "Invalid number of elements returned from query",
             ))?,
         }
     }
@@ -162,10 +174,14 @@ impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T> {
     pub fn execute(mut self) -> FalkorResult<ExecutionPlan> {
         let res = self.common_execute_steps()?;
 
-        ExecutionPlan::try_from(res)
+        ExecutionPlan::parse(res)
     }
 }
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Generate Procedure Call", skip_all, level = "trace")
+)]
 pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
     procedure: P,
     args: Option<&[T]>,
@@ -273,7 +289,7 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
     fn common_execute_steps(
         &mut self,
         conn: &mut BorrowedSyncConnection,
-    ) -> FalkorResult<FalkorValue> {
+    ) -> FalkorResult<redis::Value> {
         let command = match self.readonly {
             true => "GRAPH.QUERY_RO",
             false => "GRAPH.QUERY",
@@ -295,32 +311,78 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
 impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<FalkorIndex>>> {
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`FalkorIndex`]s
     /// This functions consumes self
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute FalkorIndex Query", skip_all, level = "info")
+    )]
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
-        FalkorParsable::from_falkor_value(
-            self.common_execute_steps(
-                &mut self
-                    .graph
-                    .client
-                    .borrow_connection(self.graph.client.clone())?,
-            )?,
-            &mut self.graph.graph_schema,
+        self.common_execute_steps(
+            &mut self
+                .graph
+                .client
+                .borrow_connection(self.graph.client.clone())?,
         )
+        .and_then(|res| {
+            let [header, indices, stats]: [redis::Value; 3] =
+                redis_value_as_vec(res).and_then(|res_vec| {
+                    res_vec.try_into().map_err(|_| {
+                        FalkorDBError::ParsingArrayToStructElementCount(
+                            "Expected exactly 3 elements in query response",
+                        )
+                    })
+                })?;
+
+            FalkorResponse::from_response(
+                Some(header),
+                redis_value_as_vec(indices).map(|indices| {
+                    indices
+                        .into_iter()
+                        .flat_map(|index| FalkorIndex::parse(index, &mut self.graph.graph_schema))
+                        .collect()
+                })?,
+                stats,
+            )
+        })
     }
 }
 
 impl<'a> ProcedureQueryBuilder<'a, FalkorResponse<Vec<Constraint>>> {
     /// Executes the procedure call and return a [`FalkorResponse`] type containing a result set of [`Constraint`]s
     /// This functions consumes self
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute Constraint Procedure Call", skip_all, level = "info")
+    )]
     pub fn execute(mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
-        FalkorParsable::from_falkor_value(
-            self.common_execute_steps(
-                &mut self
-                    .graph
-                    .client
-                    .borrow_connection(self.graph.client.clone())?,
-            )?,
-            &mut self.graph.graph_schema,
+        self.common_execute_steps(
+            &mut self
+                .graph
+                .client
+                .borrow_connection(self.graph.client.clone())?,
         )
+        .and_then(|res| {
+            let [header, constraints, stats]: [redis::Value; 3] = redis_value_as_vec(res)
+                .and_then(|res_vec| {
+                    res_vec.try_into().map_err(|_| {
+                        FalkorDBError::ParsingArrayToStructElementCount(
+                            "Expected exactly 3 elements in query response",
+                        )
+                    })
+                })?;
+
+            FalkorResponse::from_response(
+                Some(header),
+                redis_value_as_vec(constraints).map(|constraints| {
+                    constraints
+                        .into_iter()
+                        .flat_map(|constraint| {
+                            Constraint::parse(constraint, &mut self.graph.graph_schema)
+                        })
+                        .collect()
+                })?,
+                stats,
+            )
+        })
     }
 }
 

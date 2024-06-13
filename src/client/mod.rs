@@ -12,7 +12,7 @@ pub(crate) mod builder;
 pub(crate) enum FalkorClientProvider {
     #[allow(unused)]
     None,
-    #[cfg(feature = "redis")]
+
     Redis {
         client: redis::Client,
         sentinel: Option<redis::sentinel::SentinelClient>,
@@ -22,7 +22,6 @@ pub(crate) enum FalkorClientProvider {
 impl FalkorClientProvider {
     pub(crate) fn get_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
         Ok(match self {
-            #[cfg(feature = "redis")]
             FalkorClientProvider::Redis {
                 sentinel: Some(sentinel),
                 ..
@@ -31,7 +30,7 @@ impl FalkorClientProvider {
                     .get_connection()
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
-            #[cfg(feature = "redis")]
+
             FalkorClientProvider::Redis { client, .. } => FalkorSyncConnection::Redis(
                 client
                     .get_connection()
@@ -41,7 +40,6 @@ impl FalkorClientProvider {
         })
     }
 
-    #[cfg(feature = "redis")]
     pub(crate) fn set_sentinel(
         &mut self,
         sentinel_client: redis::sentinel::SentinelClient,

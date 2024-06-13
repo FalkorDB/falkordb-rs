@@ -3,19 +3,19 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{value::utils::parse_type, FalkorValue, GraphSchema};
+use crate::{parser::parse_raw_redis_value, FalkorValue, GraphSchema};
 use std::collections::VecDeque;
 
 /// A wrapper around the returned raw data, allowing parsing on demand of each result
 /// This implements Iterator, so can simply be collect()'ed into any desired container
 pub struct LazyResultSet<'a> {
-    data: VecDeque<FalkorValue>,
+    data: VecDeque<redis::Value>,
     graph_schema: &'a mut GraphSchema,
 }
 
 impl<'a> LazyResultSet<'a> {
     pub(crate) fn new(
-        data: Vec<FalkorValue>,
+        data: Vec<redis::Value>,
         graph_schema: &'a mut GraphSchema,
     ) -> Self {
         Self {
@@ -38,10 +38,14 @@ impl<'a> LazyResultSet<'a> {
 impl<'a> Iterator for LazyResultSet<'a> {
     type Item = Vec<FalkorValue>;
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Next Result", skip_all)
+    )]
     fn next(&mut self) -> Option<Self::Item> {
         self.data.pop_front().map(|current_result| {
-            parse_type(6, current_result, self.graph_schema)
-                .and_then(|parsed_result| parsed_result.into_vec())
+            parse_raw_redis_value(current_result, self.graph_schema)
+                .and_then(FalkorValue::into_vec)
                 .unwrap_or(vec![FalkorValue::Unparseable])
         })
     }

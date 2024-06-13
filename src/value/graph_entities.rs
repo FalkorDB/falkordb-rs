@@ -3,8 +3,11 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{FalkorDBError, FalkorParsable, FalkorResult, FalkorValue, GraphSchema, SchemaType};
-use std::collections::{HashMap, HashSet};
+use crate::{
+    parser::{redis_value_as_int, redis_value_as_vec},
+    FalkorDBError, FalkorResult, FalkorValue, GraphSchema, SchemaType,
+};
+use std::collections::HashMap;
 
 /// Whether this element is a node or edge in the graph
 #[derive(Copy, Clone, Debug, Eq, PartialEq, strum::EnumString, strum::Display)]
@@ -28,30 +31,27 @@ pub struct Node {
     pub properties: HashMap<String, FalkorValue>,
 }
 
-impl FalkorParsable for Node {
-    fn from_falkor_value(
-        value: FalkorValue,
+impl Node {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Node", skip_all, level = "debug")
+    )]
+    pub(crate) fn parse(
+        value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [entity_id, labels, properties]: [FalkorValue; 3] =
-            value.into_vec()?.try_into().map_err(|_| {
-                FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 3 elements in node object".to_string(),
-                )
+        let [entity_id, labels, properties]: [redis::Value; 3] = redis_value_as_vec(value)
+            .and_then(|val_vec| {
+                TryInto::try_into(val_vec).map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "Expected exactly 3 elements in node object",
+                    )
+                })
             })?;
-        let labels = labels.into_vec()?;
 
-        let mut ids_hashset = HashSet::with_capacity(labels.len());
-        for label in labels.iter() {
-            ids_hashset.insert(
-                label
-                    .to_i64()
-                    .ok_or(FalkorDBError::ParsingCompactIdUnknown)?,
-            );
-        }
         Ok(Node {
-            entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-            labels: graph_schema.parse_id_vec(labels, SchemaType::Labels)?,
+            entity_id: redis_value_as_int(entity_id)?,
+            labels: graph_schema.parse_id_vec(redis_value_as_vec(labels)?, SchemaType::Labels)?,
             properties: graph_schema.parse_properties_map(properties)?,
         })
     }
@@ -72,29 +72,34 @@ pub struct Edge {
     pub properties: HashMap<String, FalkorValue>,
 }
 
-impl FalkorParsable for Edge {
-    fn from_falkor_value(
-        value: FalkorValue,
+impl Edge {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Edge", skip_all, level = "debug")
+    )]
+    pub(crate) fn parse(
+        value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [entity_id, relations, src_node_id, dst_node_id, properties]: [FalkorValue; 5] =
-            value.into_vec()?.try_into().map_err(|_| {
+        let [entity_id, relationship_id_raw, src_node_id, dst_node_id, properties]: [redis::Value;
+            5] = redis_value_as_vec(value).and_then(|val_vec| {
+            val_vec.try_into().map_err(|_| {
                 FalkorDBError::ParsingArrayToStructElementCount(
-                    "Expected exactly 5 elements in edge object".to_string(),
+                    "Expected exactly 5 elements in edge object",
                 )
-            })?;
+            })
+        })?;
 
-        let relation = relations.to_i64().ok_or(FalkorDBError::ParsingI64)?;
         let relationship = graph_schema
             .relationships()
-            .get(&relation)
+            .get(&redis_value_as_int(relationship_id_raw)?)
             .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Relationships))?;
 
         Ok(Edge {
-            entity_id: entity_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
+            entity_id: redis_value_as_int(entity_id)?,
             relationship_type: relationship.to_string(),
-            src_node_id: src_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
-            dst_node_id: dst_node_id.to_i64().ok_or(FalkorDBError::ParsingI64)?,
+            src_node_id: redis_value_as_int(src_node_id)?,
+            dst_node_id: redis_value_as_int(dst_node_id)?,
             properties: graph_schema.parse_properties_map(properties)?,
         })
     }

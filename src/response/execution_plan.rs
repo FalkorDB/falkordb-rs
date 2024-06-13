@@ -3,13 +3,18 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{FalkorDBError, FalkorResult, FalkorValue};
+use crate::{
+    parser::{redis_value_as_string, redis_value_as_vec},
+    FalkorDBError, FalkorResult,
+};
 use regex::Regex;
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
-use std::ops::Not;
-use std::rc::Rc;
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    collections::{HashMap, VecDeque},
+    ops::Not,
+    rc::Rc,
+};
 
 #[derive(Debug)]
 struct IntermediateOperation {
@@ -22,6 +27,10 @@ struct IntermediateOperation {
 }
 
 impl IntermediateOperation {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Create New Operation", skip_all, level = "trace")
+    )]
     fn new(
         depth: usize,
         operation_string: &str,
@@ -116,6 +125,10 @@ impl ExecutionPlan {
         self.string_representation.as_str()
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Create Node", skip_all, level = "debug")
+    )]
     fn create_node(
         depth: usize,
         operation_string: &str,
@@ -130,6 +143,10 @@ impl ExecutionPlan {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Finalize Operation", skip_all, level = "debug")
+    )]
     fn finalize_operation(
         current_refcell: Rc<RefCell<IntermediateOperation>>
     ) -> FalkorResult<Rc<Operation>> {
@@ -154,6 +171,10 @@ impl ExecutionPlan {
         }))
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Operation Tree To Map", skip_all, level = "trace")
+    )]
     fn operations_map_from_tree(
         current_branch: &Rc<Operation>,
         map: &mut HashMap<String, Vec<Rc<Operation>>>,
@@ -166,34 +187,28 @@ impl ExecutionPlan {
             Self::operations_map_from_tree(child, map);
         }
     }
-}
 
-impl TryFrom<FalkorValue> for ExecutionPlan {
-    type Error = FalkorDBError;
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Parse Execution Plan", skip_all, level = "info")
+    )]
+    pub(crate) fn parse(value: redis::Value) -> FalkorResult<Self> {
+        let redis_value_vec = redis_value_as_vec(value)?;
 
-    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
-        let execution_plan_operations: Vec<_> = value
-            .into_vec()?
-            .into_iter()
-            .flat_map(FalkorValue::into_string)
-            .collect();
-
-        let string_representation = ["".to_string()]
-            .into_iter()
-            .chain(execution_plan_operations.iter().cloned())
-            .collect::<Vec<_>>()
-            .join("\n");
-
+        let mut string_representation = Vec::with_capacity(redis_value_vec.len() + 1);
         let mut current_traversal_stack = vec![];
-        for node in execution_plan_operations.iter().map(String::as_str) {
-            let depth = node.matches("    ").count();
-            let node = node.trim();
+        for node in redis_value_vec {
+            let node_string = redis_value_as_string(node)?;
+
+            let depth = node_string.matches("    ").count();
+            let node = node_string.trim();
 
             let current_node = match current_traversal_stack.last().cloned() {
                 None => {
                     current_traversal_stack.push(Rc::new(RefCell::new(
                         IntermediateOperation::new(depth, node)?,
                     )));
+                    string_representation.push(node_string);
                     continue;
                 }
                 Some(current_node) => current_node,
@@ -231,6 +246,8 @@ impl TryFrom<FalkorValue> for ExecutionPlan {
                     current_node.borrow_mut().children.push(new_node);
                 }
             }
+
+            string_representation.push(node_string);
         }
 
         // Must drop traversal stack first
@@ -244,8 +261,8 @@ impl TryFrom<FalkorValue> for ExecutionPlan {
         Self::operations_map_from_tree(&operation_tree, &mut operations);
 
         Ok(ExecutionPlan {
-            string_representation,
-            plan: execution_plan_operations,
+            string_representation: format!("\n{}", string_representation.join("\n")),
+            plan: string_representation,
             operations,
             operation_tree,
         })

@@ -5,8 +5,8 @@
 
 use crate::{
     client::blocking::FalkorSyncClientInner, parser::redis_value_as_vec, Constraint,
-    ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResponse, FalkorResult,
-    GraphSchema, IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, SlowlogEntry,
+    ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema, IndexType,
+    LazyResultSet, ProcedureQueryBuilder, QueryBuilder, QueryResult, SlowlogEntry,
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
@@ -130,11 +130,11 @@ impl SyncGraph {
     /// * `query_string`: The query to run
     ///
     /// # Returns
-    /// A [`QueryBuilder`] object, which when performed will return a [`FalkorResponse<FalkorResultSet>`]
+    /// A [`QueryBuilder`] object, which when performed will return a [`QueryResult<FalkorResultSet>`]
     pub fn query<T: Display>(
         &mut self,
         query_string: T,
-    ) -> QueryBuilder<FalkorResponse<LazyResultSet>, T> {
+    ) -> QueryBuilder<QueryResult<LazyResultSet>, T> {
         QueryBuilder::new(self, "GRAPH.QUERY", query_string)
     }
 
@@ -150,7 +150,7 @@ impl SyncGraph {
     pub fn ro_query<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<FalkorResponse<LazyResultSet>, &str> {
+    ) -> QueryBuilder<QueryResult<LazyResultSet>, &str> {
         QueryBuilder::new(self, "GRAPH.QUERY_RO", query_string)
     }
 
@@ -194,8 +194,8 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "List Graph Indices", skip_all, level = "info")
     )]
-    pub fn list_indices(&mut self) -> FalkorResult<FalkorResponse<Vec<FalkorIndex>>> {
-        ProcedureQueryBuilder::<FalkorResponse<Vec<FalkorIndex>>>::new(self, "DB.INDEXES").execute()
+    pub fn list_indices(&mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
+        ProcedureQueryBuilder::<QueryResult<Vec<FalkorIndex>>>::new(self, "DB.INDEXES").execute()
     }
 
     /// Creates a new index in the graph, for the selected entity type(Node/Edge), selected label, and properties
@@ -220,7 +220,7 @@ impl SyncGraph {
         label: &str,
         properties: &[P],
         options: Option<&HashMap<String, String>>,
-    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
+    ) -> FalkorResult<QueryResult<LazyResultSet>> {
         // Create index from these properties
         let properties_string = properties
             .iter()
@@ -254,7 +254,7 @@ impl SyncGraph {
             "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
             properties_string, options_string
         );
-        QueryBuilder::<FalkorResponse<LazyResultSet>, String>::new(self, "GRAPH.QUERY", query_str)
+        QueryBuilder::<QueryResult<LazyResultSet>, String>::new(self, "GRAPH.QUERY", query_str)
             .execute()
     }
 
@@ -272,7 +272,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: L,
         properties: &[P],
-    ) -> FalkorResult<FalkorResponse<LazyResultSet>> {
+    ) -> FalkorResult<QueryResult<LazyResultSet>> {
         let properties_string = properties
             .iter()
             .map(|element| format!("e.{}", element.to_string()))
@@ -306,9 +306,8 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "List Graph Constraints", skip_all, level = "info")
     )]
-    pub fn list_constraints(&mut self) -> FalkorResult<FalkorResponse<Vec<Constraint>>> {
-        ProcedureQueryBuilder::<FalkorResponse<Vec<Constraint>>>::new(self, "DB.CONSTRAINTS")
-            .execute()
+    pub fn list_constraints(&mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
+        ProcedureQueryBuilder::<QueryResult<Vec<Constraint>>>::new(self, "DB.CONSTRAINTS").execute()
     }
 
     /// Creates a new constraint for this graph, making the provided properties mandatory
@@ -427,7 +426,7 @@ mod tests {
     #[test]
     fn test_create_drop_index() {
         let mut graph = open_test_graph("test_create_drop_index");
-        graph
+        let indices = graph
             .inner
             .create_index(
                 IndexType::Fulltext,
@@ -437,16 +436,16 @@ mod tests {
                 None,
             )
             .expect("Could not create index");
+        assert_eq!(indices.get_indices_created(), Some(1));
 
         let indices = graph.inner.list_indices().expect("Could not list indices");
-
         assert_eq!(indices.data.len(), 2);
         assert_eq!(
             indices.data[0].field_types["Hello"],
             vec![IndexType::Fulltext]
         );
 
-        graph
+        let indices = graph
             .inner
             .drop_index(
                 IndexType::Fulltext,
@@ -455,6 +454,7 @@ mod tests {
                 &["Hello"],
             )
             .expect("Could not drop index");
+        assert_eq!(indices.get_indices_deleted(), Some(1));
     }
 
     #[test]

@@ -11,16 +11,16 @@
 
 [![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 
-FalkorDB Rust client
+### FalkorDB Rust client
 
 ## Usage
 
 ### Installation
 
-Just add it to your `Cargo.toml`, like so
+Just add it to your `Cargo.toml`, like so:
 
 ```toml
-falkordb = { version = "0.1.0" }
+falkordb = { version = "*" }
 ```
 
 ### Run FalkorDB instance
@@ -55,3 +55,30 @@ for n in nodes.data {
     println!("{:?}", n[0]);
 }
 ```
+
+## Features
+
+### SSL/TLS Support
+
+This client is currently built upon the [`redis`](https://docs.rs/redis/latest/redis/) crate, and therefor supports TLS using
+its implementation, which uses either [`rustls`](https://docs.rs/rustls/latest/rustls/) or [`native_tls`](https://docs.rs/native-tls/latest/native_tls/).
+This is not enabled by default, and the user ust opt-in by enabling the respective features: `"rustls"`/`"native-tls"`.\
+
+For Rustls:
+```toml
+falkordb = { version = "*", features = ["rustls"] }
+```
+
+For NativeTLS:
+```toml
+falkordb = { version = "*", features = ["native-tls"] }
+```
+
+### Tracing
+
+This crate fully supports instrumentation using the [`tracing`](https://docs.rs/tracing/latest/tracing/) crate, to use it, simply, enable the `tracing` feature:
+```toml
+falkordb = { version = "*", features = ["tracing"] }
+```
+
+Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the correct level as you desire it.

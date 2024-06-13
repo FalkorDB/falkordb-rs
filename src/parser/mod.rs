@@ -3,7 +3,9 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point};
+use crate::{
+    ConfigValue, Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point,
+};
 use std::collections::HashMap;
 
 pub(crate) fn redis_value_as_string(value: redis::Value) -> FalkorResult<String> {
@@ -45,6 +47,61 @@ pub(crate) fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis:
 
 #[cfg_attr(
     feature = "tracing",
+    tracing::instrument(name = "Parse Redis Info", skip_all, level = "info")
+)]
+pub(crate) fn parse_redis_info(res: redis::Value) -> FalkorResult<HashMap<String, String>> {
+    redis_value_as_string(res)
+        .map(|info| {
+            info.split("\r\n")
+                .map(|info_item| info_item.split(':').collect::<Vec<_>>())
+                .flat_map(TryInto::<[&str; 2]>::try_into)
+                .map(|[key, val]| (key.to_string(), val.to_string()))
+                .collect()
+        })
+        .map_err(|_| FalkorDBError::ParsingString)
+}
+
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Parse Config Hashmap", skip_all, level = "info")
+)]
+pub(crate) fn parse_config_hashmap(
+    value: redis::Value
+) -> FalkorResult<HashMap<String, ConfigValue>> {
+    let config = redis_value_as_vec(value)?;
+
+    if config.len() == 2 {
+        let [key, val]: [redis::Value; 2] = config.try_into().map_err(|_| {
+            FalkorDBError::ParsingArrayToStructElementCount(
+                "Expected exactly 2 elements for configuration option",
+            )
+        })?;
+
+        return redis_value_as_string(key)
+            .and_then(|key| ConfigValue::try_from(val).map(|val| HashMap::from([(key, val)])));
+    }
+
+    Ok(config
+        .into_iter()
+        .flat_map(|config| {
+            redis_value_as_vec(config).and_then(|as_vec| {
+                let [key, val]: [redis::Value; 2] = as_vec.try_into().map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "Expected exactly 2 elements for configuration option",
+                    )
+                })?;
+
+                Result::<_, FalkorDBError>::Ok((
+                    redis_value_as_string(key)?,
+                    ConfigValue::try_from(val)?,
+                ))
+            })
+        })
+        .collect::<HashMap<String, ConfigValue>>())
+}
+
+#[cfg_attr(
+    feature = "tracing",
     tracing::instrument(name = "Parse Falkor Enum", skip_all, level = "trace")
 )]
 pub(crate) fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToString>>(
@@ -62,6 +119,24 @@ pub(crate) fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToStrin
             T::try_from(val_string.as_str())
                 .map_err(|err| FalkorDBError::InvalidEnumType(err.to_string()))
         })
+}
+
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(
+        name = "Falkor Typed String From Redis Value",
+        skip_all,
+        level = "trace"
+    )
+)]
+pub(crate) fn redis_value_as_typed_string(value: redis::Value) -> FalkorResult<String> {
+    type_val_from_value(value).and_then(|(type_marker, val)| {
+        if type_marker == 2 {
+            redis_value_as_string(val)
+        } else {
+            Err(FalkorDBError::ParsingString)
+        }
+    })
 }
 
 #[cfg_attr(
@@ -226,7 +301,7 @@ pub(crate) fn parse_type(
 mod tests {
     use super::*;
     use crate::{
-        client::blocking::create_empty_inner_client,
+        client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
         graph_schema::tests::open_readonly_graph_with_modified_schema, FalkorDBError,
     };
 
@@ -312,7 +387,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 
@@ -361,7 +436,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 
@@ -425,7 +500,7 @@ mod tests {
                     ]),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 
@@ -470,7 +545,7 @@ mod tests {
                     redis::Value::Status("true".to_string()),
                 ]),
             ]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 
@@ -498,7 +573,7 @@ mod tests {
                 redis::Value::Status("102.0".to_string()),
                 redis::Value::Status("15.2".to_string()),
             ]),
-            &mut graph.graph_schema,
+            graph.get_graph_schema_mut(),
         );
         assert!(res.is_ok());
 
@@ -512,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_map_not_a_vec() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res =
             parse_regular_falkor_map(redis::Value::Status("Hello".to_string()), &mut graph_schema);
@@ -522,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_map_vec_odd_element_count() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
             redis::Value::Bulk(vec![redis::Value::Nil; 7]),
@@ -534,7 +609,7 @@ mod tests {
 
     #[test]
     fn test_map_val_element_is_not_array() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
             redis::Value::Bulk(vec![
@@ -549,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_map_val_element_has_only_1_element() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
             redis::Value::Bulk(vec![
@@ -564,7 +639,7 @@ mod tests {
 
     #[test]
     fn test_map_val_element_has_ge_2_elements() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
             redis::Value::Bulk(vec![
@@ -579,7 +654,7 @@ mod tests {
 
     #[test]
     fn test_map_val_element_mismatch_type_marker() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
             redis::Value::Bulk(vec![
@@ -597,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_map_ok_values() {
-        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_client());
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
             redis::Value::Bulk(vec![

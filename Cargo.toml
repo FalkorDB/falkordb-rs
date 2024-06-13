@@ -13,12 +13,22 @@ redis = { version = "0.25.4", default-features = false, features = ["sentinel"] 
 regex = { version = "1.10.5", default-features = false, features = ["std", "perf", "unicode-bool", "unicode-perl"] }
 strum = { version = "0.26.2", default-features = false, features = ["std", "derive"] }
 thiserror = "1.0.61"
+tokio = { version = "1.38.0", default-features = false, features = ["macros", "sync", "rt-multi-thread"], optional = true }
 tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"], optional = true }
 
 [features]
-default = []
+default = ["tokio"]
 
 native-tls = ["redis/tls-native-tls"]
 rustls = ["redis/tls-rustls"]
 
+tokio = ["dep:tokio", "redis/tokio-comp"]
+tokio-native-tls = ["tokio", "redis/tokio-native-tls-comp"]
+tokio-rustls = ["tokio", "redis/tokio-rustls-comp"]
+
 tracing = ["dep:tracing"]
+
+
+[[example]]
+name = "async_api"
+required-features = ["tokio"]

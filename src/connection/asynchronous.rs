@@ -4,28 +4,24 @@
  */
 
 use crate::{
-    client::{blocking::FalkorSyncClientInner, ProvidesSyncConnections},
-    connection::map_redis_err,
-    parser::parse_redis_info,
-    FalkorDBError, FalkorResult,
+    client::asynchronous::FalkorAsyncClientInner, connection::map_redis_err,
+    parser::parse_redis_info, FalkorDBError, FalkorResult,
 };
-use std::{
-    collections::HashMap,
-    sync::{mpsc, Arc},
-};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::mpsc;
 
-pub(crate) enum FalkorSyncConnection {
+pub(crate) enum FalkorAsyncConnection {
     #[allow(unused)]
     None,
-    Redis(redis::Connection),
+    Redis(redis::aio::MultiplexedConnection),
 }
 
-impl FalkorSyncConnection {
+impl FalkorAsyncConnection {
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Connection Inner Execute Command", skip_all, level = "debug")
     )]
-    pub(crate) fn execute_command(
+    pub(crate) async fn execute_command(
         &mut self,
         graph_name: Option<&str>,
         command: &str,
@@ -33,8 +29,7 @@ impl FalkorSyncConnection {
         params: Option<&[&str]>,
     ) -> FalkorResult<redis::Value> {
         match self {
-            FalkorSyncConnection::Redis(redis_conn) => {
-                use redis::ConnectionLike as _;
+            FalkorAsyncConnection::Redis(redis_conn) => {
                 let mut cmd = redis::cmd(command);
                 cmd.arg(subcommand);
                 cmd.arg(graph_name);
@@ -43,9 +38,12 @@ impl FalkorSyncConnection {
                         cmd.arg(param.to_string());
                     }
                 }
-                redis_conn.req_command(&cmd).map_err(map_redis_err)
+                redis_conn
+                    .send_packed_command(&cmd)
+                    .await
+                    .map_err(map_redis_err)
             }
-            FalkorSyncConnection::None => Ok(redis::Value::Nil),
+            FalkorAsyncConnection::None => Ok(redis::Value::Nil),
         }
     }
 
@@ -53,16 +51,17 @@ impl FalkorSyncConnection {
         feature = "tracing",
         tracing::instrument(name = "Connection Get Redis Info", skip_all, level = "info")
     )]
-    pub(crate) fn get_redis_info(
+    pub(crate) async fn get_redis_info(
         &mut self,
         section: Option<&str>,
     ) -> FalkorResult<HashMap<String, String>> {
         self.execute_command(None, "INFO", section, None)
+            .await
             .and_then(parse_redis_info)
     }
 
-    pub(crate) fn check_is_redis_sentinel(&mut self) -> FalkorResult<bool> {
-        let info_map = self.get_redis_info(Some("server"))?;
+    pub(crate) async fn check_is_redis_sentinel(&mut self) -> FalkorResult<bool> {
+        let info_map = self.get_redis_info(Some("server")).await?;
         Ok(info_map
             .get("redis_mode")
             .map(|redis_mode| redis_mode == "sentinel")
@@ -74,17 +73,17 @@ impl FalkorSyncConnection {
 /// Upon going out of scope, it will return the connection to the pool.
 ///
 /// This is publicly exposed for user-implementations of [`FalkorParsable`](crate::FalkorParsable)
-pub struct BorrowedSyncConnection {
-    conn: Option<FalkorSyncConnection>,
-    return_tx: mpsc::SyncSender<FalkorSyncConnection>,
-    client: Arc<FalkorSyncClientInner>,
+pub struct BorrowedAsyncConnection {
+    conn: Option<FalkorAsyncConnection>,
+    return_tx: mpsc::Sender<FalkorAsyncConnection>,
+    client: Arc<FalkorAsyncClientInner>,
 }
 
-impl BorrowedSyncConnection {
+impl BorrowedAsyncConnection {
     pub(crate) fn new(
-        conn: FalkorSyncConnection,
-        return_tx: mpsc::SyncSender<FalkorSyncConnection>,
-        client: Arc<FalkorSyncClientInner>,
+        conn: FalkorAsyncConnection,
+        return_tx: mpsc::Sender<FalkorAsyncConnection>,
+        client: Arc<FalkorAsyncClientInner>,
     ) -> Self {
         Self {
             conn: Some(conn),
@@ -93,7 +92,7 @@ impl BorrowedSyncConnection {
         }
     }
 
-    pub(crate) fn as_inner(&mut self) -> FalkorResult<&mut FalkorSyncConnection> {
+    pub(crate) fn as_inner(&mut self) -> FalkorResult<&mut FalkorAsyncConnection> {
         self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)
     }
 
@@ -105,19 +104,20 @@ impl BorrowedSyncConnection {
             level = "trace"
         )
     )]
-    pub(crate) fn execute_command(
-        &mut self,
+    pub(crate) async fn execute_command(
+        mut self,
         graph_name: Option<&str>,
         command: &str,
         subcommand: Option<&str>,
         params: Option<&[&str]>,
-    ) -> Result<redis::Value, FalkorDBError> {
+    ) -> FalkorResult<redis::Value> {
         match self
             .as_inner()?
             .execute_command(graph_name, command, subcommand, params)
+            .await
         {
             Err(FalkorDBError::ConnectionDown) => {
-                if let Ok(new_conn) = self.client.get_connection() {
+                if let Ok(new_conn) = self.client.get_async_connection().await {
                     self.conn = Some(new_conn);
                     return Err(FalkorDBError::ConnectionDown);
                 }
@@ -126,12 +126,10 @@ impl BorrowedSyncConnection {
             res => res,
         }
     }
-}
 
-impl Drop for BorrowedSyncConnection {
-    fn drop(&mut self) {
-        if let Some(conn) = self.conn.take() {
-            self.return_tx.send(conn).ok();
+    pub(crate) async fn return_to_pool(self) {
+        if let Some(conn) = self.conn {
+            self.return_tx.send(conn).await.ok();
         }
     }
 }

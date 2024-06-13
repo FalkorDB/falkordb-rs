@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    connection::blocking::BorrowedSyncConnection, parser::redis_value_as_vec, Constraint,
-    ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet, QueryResult, SyncGraph,
+    graph::HasGraphSchema, parser::redis_value_as_vec, AsyncGraph, Constraint, ExecutionPlan,
+    FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet, QueryResult, SyncGraph,
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 
@@ -35,18 +35,18 @@ pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
 }
 
 /// A Builder-pattern struct that allows creating and executing queries on a graph
-pub struct QueryBuilder<'a, Output, T: Display> {
+pub struct QueryBuilder<'a, Output, T: Display, G: HasGraphSchema> {
     _unused: PhantomData<Output>,
-    graph: &'a mut SyncGraph,
+    graph: &'a mut G,
     command: &'a str,
     query_string: T,
     params: Option<&'a HashMap<String, String>>,
     timeout: Option<i64>,
 }
 
-impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
+impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
     pub(crate) fn new(
-        graph: &'a mut SyncGraph,
+        graph: &'a mut G,
         command: &'a str,
         query_string: T,
     ) -> Self {
@@ -88,38 +88,11 @@ impl<'a, Output, T: Display> QueryBuilder<'a, Output, T> {
         }
     }
 
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
-    )]
-    fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        let mut conn = self
-            .graph
-            .client
-            .borrow_connection(self.graph.client.clone())?;
-        let query = construct_query(&self.query_string, self.params);
-
-        let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
-        let mut params = vec![query.as_str(), "--compact"];
-        params.extend(timeout.as_deref());
-
-        conn.execute_command(
-            Some(self.graph.graph_name()),
-            self.command,
-            None,
-            Some(params.as_slice()),
-        )
-    }
-}
-
-impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T> {
-    /// Executes the query, retuning a [`QueryResult`], with a [`LazyResultSet`] as its `data` member
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
-    )]
-    pub fn execute(mut self) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
-        let res = self.common_execute_steps().and_then(redis_value_as_vec)?;
+    fn generate_query_result_set(
+        self,
+        value: redis::Value,
+    ) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
+        let res = redis_value_as_vec(value)?;
 
         match res.len() {
             1 => {
@@ -131,7 +104,7 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T> {
 
                 QueryResult::from_response(
                     None,
-                    LazyResultSet::new(Default::default(), &mut self.graph.graph_schema),
+                    LazyResultSet::new(Default::default(), self.graph.get_graph_schema_mut()),
                     stats,
                 )
             }
@@ -144,7 +117,7 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T> {
 
                 QueryResult::from_response(
                     Some(header),
-                    LazyResultSet::new(Default::default(), &mut self.graph.graph_schema),
+                    LazyResultSet::new(Default::default(), self.graph.get_graph_schema_mut()),
                     stats,
                 )
             }
@@ -157,7 +130,10 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T> {
 
                 QueryResult::from_response(
                     Some(header),
-                    LazyResultSet::new(redis_value_as_vec(data)?, &mut self.graph.graph_schema),
+                    LazyResultSet::new(
+                        redis_value_as_vec(data)?,
+                        self.graph.get_graph_schema_mut(),
+                    ),
                     stats,
                 )
             }
@@ -168,12 +144,99 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T> {
     }
 }
 
-impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T> {
+impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, SyncGraph> {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
+    )]
+    fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
+        let query = construct_query(&self.query_string, self.params);
+
+        let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
+        let mut params = vec![query.as_str(), "--compact"];
+        params.extend(timeout.as_deref());
+
+        self.graph
+            .get_client()
+            .borrow_connection(self.graph.get_client().clone())
+            .and_then(|mut conn| {
+                conn.execute_command(
+                    Some(self.graph.graph_name()),
+                    self.command,
+                    None,
+                    Some(params.as_slice()),
+                )
+            })
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
+    )]
+    async fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
+        let query = construct_query(&self.query_string, self.params);
+
+        let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
+        let mut params = vec![query.as_str(), "--compact"];
+        params.extend(timeout.as_deref());
+
+        self.graph
+            .get_client()
+            .borrow_connection(self.graph.get_client().clone())
+            .await?
+            .execute_command(
+                Some(self.graph.graph_name()),
+                self.command,
+                None,
+                Some(params.as_slice()),
+            )
+            .await
+    }
+}
+
+impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, SyncGraph> {
+    /// Executes the query, retuning a [`QueryResult`], with a [`LazyResultSet`] as its `data` member
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
+    )]
+    pub fn execute(mut self) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
+        self.common_execute_steps()
+            .and_then(|res| self.generate_query_result_set(res))
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, AsyncGraph> {
+    /// Executes the query, retuning a [`QueryResult`], with a [`LazyResultSet`] as its `data` member
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
+    )]
+    pub async fn execute(mut self) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
+        self.common_execute_steps()
+            .await
+            .and_then(|res| self.generate_query_result_set(res))
+    }
+}
+
+impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T, SyncGraph> {
     /// Executes the query, returning an [`ExecutionPlan`] from the data returned
     pub fn execute(mut self) -> FalkorResult<ExecutionPlan> {
-        let res = self.common_execute_steps()?;
+        self.common_execute_steps().and_then(ExecutionPlan::parse)
+    }
+}
 
-        ExecutionPlan::parse(res)
+#[cfg(feature = "tokio")]
+impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T, AsyncGraph> {
+    /// Executes the query, returning an [`ExecutionPlan`] from the data returned
+    pub async fn execute(mut self) -> FalkorResult<ExecutionPlan> {
+        self.common_execute_steps()
+            .await
+            .and_then(ExecutionPlan::parse)
     }
 }
 
@@ -219,22 +282,23 @@ pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
 }
 
 /// A Builder-pattern struct that allows creating and executing procedure call on a graph
-pub struct ProcedureQueryBuilder<'a, Output> {
+pub struct ProcedureQueryBuilder<'a, Output, G: HasGraphSchema> {
     _unused: PhantomData<Output>,
-    graph: &'a mut SyncGraph,
+    graph: &'a mut G,
     readonly: bool,
     procedure_name: &'a str,
     args: Option<&'a [&'a str]>,
     yields: Option<&'a [&'a str]>,
 }
 
-impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
+impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
     pub(crate) fn new(
-        graph: &'a mut SyncGraph,
+        graph: &'a mut G,
         procedure_name: &'a str,
     ) -> Self {
         Self {
             _unused: PhantomData,
+
             graph,
             readonly: false,
             procedure_name,
@@ -244,7 +308,7 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
     }
 
     pub(crate) fn new_readonly(
-        graph: &'a mut SyncGraph,
+        graph: &'a mut G,
         procedure_name: &'a str,
     ) -> Self {
         Self {
@@ -285,10 +349,37 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
         }
     }
 
-    fn common_execute_steps(
-        &mut self,
-        conn: &mut BorrowedSyncConnection,
-    ) -> FalkorResult<redis::Value> {
+    fn parse_query_result_of_type<T: TryFrom<redis::Value, Error = FalkorDBError>>(
+        res: redis::Value
+    ) -> FalkorResult<QueryResult<Vec<T>>> {
+        let [header, indices, stats]: [redis::Value; 3] =
+            redis_value_as_vec(res).and_then(|res_vec| {
+                res_vec.try_into().map_err(|_| {
+                    FalkorDBError::ParsingArrayToStructElementCount(
+                        "Expected exactly 3 elements in query response",
+                    )
+                })
+            })?;
+
+        QueryResult::from_response(
+            Some(header),
+            redis_value_as_vec(indices)
+                .map(|indices| indices.into_iter().flat_map(T::try_from).collect())?,
+            stats,
+        )
+    }
+}
+
+impl<'a, Out> ProcedureQueryBuilder<'a, Out, SyncGraph> {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "Common Procedure Call Execution Steps",
+            skip_all,
+            level = "trace"
+        )
+    )]
+    fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
         let command = match self.readonly {
             true => "GRAPH.QUERY_RO",
             false => "GRAPH.QUERY",
@@ -298,16 +389,55 @@ impl<'a, Output> ProcedureQueryBuilder<'a, Output> {
             generate_procedure_call(self.procedure_name, self.args, self.yields);
         let query = construct_query(query_string, params.as_ref());
 
-        conn.execute_command(
-            Some(self.graph.graph_name()),
-            command,
-            None,
-            Some(&[query.as_str(), "--compact"]),
-        )
+        self.graph
+            .get_client()
+            .borrow_connection(self.graph.get_client().clone())
+            .and_then(|mut conn| {
+                conn.execute_command(
+                    Some(self.graph.graph_name()),
+                    command,
+                    None,
+                    Some(&[query.as_str(), "--compact"]),
+                )
+            })
     }
 }
 
-impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>> {
+#[cfg(feature = "tokio")]
+impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "Common Procedure Call Execution Steps",
+            skip_all,
+            level = "trace"
+        )
+    )]
+    async fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
+        let command = match self.readonly {
+            true => "GRAPH.QUERY_RO",
+            false => "GRAPH.QUERY",
+        };
+
+        let (query_string, params) =
+            generate_procedure_call(self.procedure_name, self.args, self.yields);
+        let query = construct_query(query_string, params.as_ref());
+
+        self.graph
+            .get_client()
+            .borrow_connection(self.graph.get_client().clone())
+            .await?
+            .execute_command(
+                Some(self.graph.graph_name()),
+                command,
+                None,
+                Some(&[query.as_str(), "--compact"]),
+            )
+            .await
+    }
+}
+
+impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, SyncGraph> {
     /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`FalkorIndex`]s
     /// This functions consumes self
     #[cfg_attr(
@@ -315,37 +445,27 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>> {
         tracing::instrument(name = "Execute FalkorIndex Query", skip_all, level = "info")
     )]
     pub fn execute(mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
-        self.common_execute_steps(
-            &mut self
-                .graph
-                .client
-                .borrow_connection(self.graph.client.clone())?,
-        )
-        .and_then(|res| {
-            let [header, indices, stats]: [redis::Value; 3] =
-                redis_value_as_vec(res).and_then(|res_vec| {
-                    res_vec.try_into().map_err(|_| {
-                        FalkorDBError::ParsingArrayToStructElementCount(
-                            "Expected exactly 3 elements in query response",
-                        )
-                    })
-                })?;
-
-            QueryResult::from_response(
-                Some(header),
-                redis_value_as_vec(indices).map(|indices| {
-                    indices
-                        .into_iter()
-                        .flat_map(|index| FalkorIndex::parse(index, &mut self.graph.graph_schema))
-                        .collect()
-                })?,
-                stats,
-            )
-        })
+        self.common_execute_steps()
+            .and_then(Self::parse_query_result_of_type)
     }
 }
 
-impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>> {
+#[cfg(feature = "tokio")]
+impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, AsyncGraph> {
+    /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`FalkorIndex`]s
+    /// This functions consumes self
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute FalkorIndex Query", skip_all, level = "info")
+    )]
+    pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
+        self.common_execute_steps()
+            .await
+            .and_then(Self::parse_query_result_of_type)
+    }
+}
+
+impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, SyncGraph> {
     /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`Constraint`]s
     /// This functions consumes self
     #[cfg_attr(
@@ -353,35 +473,22 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>> {
         tracing::instrument(name = "Execute Constraint Procedure Call", skip_all, level = "info")
     )]
     pub fn execute(mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
-        self.common_execute_steps(
-            &mut self
-                .graph
-                .client
-                .borrow_connection(self.graph.client.clone())?,
-        )
-        .and_then(|res| {
-            let [header, constraints, stats]: [redis::Value; 3] = redis_value_as_vec(res)
-                .and_then(|res_vec| {
-                    res_vec.try_into().map_err(|_| {
-                        FalkorDBError::ParsingArrayToStructElementCount(
-                            "Expected exactly 3 elements in query response",
-                        )
-                    })
-                })?;
+        self.common_execute_steps()
+            .and_then(Self::parse_query_result_of_type)
+    }
+}
 
-            QueryResult::from_response(
-                Some(header),
-                redis_value_as_vec(constraints).map(|constraints| {
-                    constraints
-                        .into_iter()
-                        .flat_map(|constraint| {
-                            Constraint::parse(constraint, &mut self.graph.graph_schema)
-                        })
-                        .collect()
-                })?,
-                stats,
-            )
-        })
+impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, AsyncGraph> {
+    /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`Constraint`]s
+    /// This functions consumes self
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute Constraint Procedure Call", skip_all, level = "info")
+    )]
+    pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
+        self.common_execute_steps()
+            .await
+            .and_then(Self::parse_query_result_of_type)
     }
 }
 

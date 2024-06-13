@@ -5,10 +5,10 @@
 
 use crate::{
     parser::{
-        parse_falkor_enum, parse_raw_redis_value, redis_value_as_typed_string_vec,
-        redis_value_as_vec,
+        parse_falkor_enum, redis_value_as_string, redis_value_as_typed_string,
+        redis_value_as_typed_string_vec, redis_value_as_vec, type_val_from_value,
     },
-    EntityType, FalkorDBError, FalkorValue, GraphSchema,
+    EntityType, FalkorDBError, FalkorResult,
 };
 use std::collections::HashMap;
 
@@ -36,32 +36,57 @@ pub enum IndexType {
     Fulltext,
 }
 
-fn parse_types_map(
-    value: redis::Value,
-    graph_schema: &mut GraphSchema,
-) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
-    parse_raw_redis_value(value, graph_schema)
-        .and_then(|map_val| map_val.into_map())
-        .map(|map_val| {
-            map_val
-                .into_iter()
-                .flat_map(|(key, val)| {
-                    val.into_vec().map(|as_vec| {
-                        (
-                            key,
-                            as_vec
-                                .into_iter()
-                                .flat_map(|item| {
-                                    item.into_string().and_then(|as_str| {
-                                        IndexType::try_from(as_str.as_str()).map_err(Into::into)
-                                    })
-                                })
-                                .collect(),
-                        )
-                    })
-                })
-                .collect()
-        })
+fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
+    type_val_from_value(value).and_then(|(type_marker, val)| {
+        if type_marker != 10 {
+            return Err(FalkorDBError::ParsingMap);
+        }
+
+        let map_iter = val.into_map_iter().map_err(|_| FalkorDBError::ParsingMap)?;
+
+        let result = map_iter
+            .into_iter()
+            .map(|(key, val)| {
+                let key_str = redis_value_as_string(key)?;
+                let (val_type_marker, val) = type_val_from_value(val)?;
+
+                if val_type_marker != 6 {
+                    return Err(FalkorDBError::ParsingString);
+                }
+
+                let val_vec = redis_value_as_vec(val)?;
+                let parsed_values = val_vec
+                    .into_iter()
+                    .flat_map(parse_falkor_enum::<IndexType>)
+                    .collect::<Vec<_>>();
+
+                Ok((key_str, parsed_values))
+            })
+            .collect::<Result<HashMap<_, _>, FalkorDBError>>()?;
+
+        Ok(result)
+    })
+}
+
+fn parse_info_map(value: redis::Value) -> FalkorResult<HashMap<String, String>> {
+    type_val_from_value(value).and_then(|(type_marker, val)| {
+        if type_marker != 10 {
+            return Err(FalkorDBError::ParsingMap);
+        }
+
+        let map_iter = val.into_map_iter().map_err(|_| FalkorDBError::ParsingMap)?;
+
+        let result = map_iter
+            .into_iter()
+            .map(|(key, val)| {
+                let key_str = redis_value_as_typed_string(key)?;
+                let val_str = redis_value_as_typed_string(val)?;
+                Ok((key_str, val_str))
+            })
+            .collect::<Result<HashMap<_, _>, FalkorDBError>>()?;
+
+        Ok(result)
+    })
 }
 
 /// Contains all the info regarding an index on the database
@@ -85,15 +110,14 @@ pub struct FalkorIndex {
     pub info: HashMap<String, String>,
 }
 
-impl FalkorIndex {
+impl TryFrom<redis::Value> for FalkorIndex {
+    type Error = FalkorDBError;
+
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Parse Index", skip_all, level = "info")
     )]
-    pub(crate) fn parse(
-        value: redis::Value,
-        graph_schema: &mut GraphSchema,
-    ) -> Result<Self, FalkorDBError> {
+    fn try_from(value: redis::Value) -> Result<Self, FalkorDBError> {
         let [label, fields, field_types, language, stopwords, entity_type, status, info] =
             redis_value_as_vec(value).and_then(|as_vec| {
                 as_vec.try_into().map_err(|_| {
@@ -106,21 +130,12 @@ impl FalkorIndex {
         Ok(Self {
             entity_type: parse_falkor_enum(entity_type)?,
             status: parse_falkor_enum(status)?,
-            index_label: parse_raw_redis_value(label, graph_schema)
-                .and_then(FalkorValue::into_string)?,
+            index_label: redis_value_as_typed_string(label)?,
             fields: redis_value_as_typed_string_vec(fields)?,
-            field_types: parse_types_map(field_types, graph_schema)?,
-            language: parse_raw_redis_value(language, graph_schema)
-                .and_then(FalkorValue::into_string)?,
+            field_types: parse_types_map(field_types)?,
+            language: redis_value_as_typed_string(language)?,
             stopwords: redis_value_as_typed_string_vec(stopwords)?,
-            info: parse_raw_redis_value(info, graph_schema)
-                .and_then(FalkorValue::into_map)
-                .map(|as_map| {
-                    as_map
-                        .into_iter()
-                        .flat_map(|(key, val)| val.into_string().map(|val_str| (key, val_str)))
-                        .collect()
-                })?,
+            info: parse_info_map(info)?,
         })
     }
 }

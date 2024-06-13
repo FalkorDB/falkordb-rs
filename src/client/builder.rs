@@ -9,6 +9,9 @@ use crate::{
 };
 use std::num::NonZeroU8;
 
+#[cfg(feature = "tokio")]
+use crate::FalkorAsyncClient;
+
 /// A Builder-pattern implementation struct for creating a new Falkor client.
 pub struct FalkorClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
@@ -93,13 +96,45 @@ impl FalkorClientBuilder<'S'> {
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
-            if let Some(sentinel) =
-                super::blocking::get_sentinel_client(&mut client, redis_conn_info)?
-            {
+            if let Some(sentinel) = client.get_sentinel_client(redis_conn_info)? {
                 client.set_sentinel(sentinel);
             }
         }
         FalkorSyncClient::create(client, connection_info, self.num_connections.get())
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl FalkorClientBuilder<'A'> {
+    /// Creates a new [`FalkorClientBuilder`] for an asynchronous client.
+    ///
+    /// # Returns
+    /// The new [`FalkorClientBuilder`]
+    pub fn new_async() -> Self {
+        FalkorClientBuilder {
+            connection_info: None,
+            num_connections: NonZeroU8::new(8).expect("Error creating perfectly valid u8"),
+        }
+    }
+
+    /// Consume the builder, returning the newly constructed async client
+    ///
+    /// # Returns
+    /// a new [`FalkorAsyncClient`]
+    pub async fn build(self) -> FalkorResult<FalkorAsyncClient> {
+        let connection_info = self
+            .connection_info
+            .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
+
+        let mut client = Self::get_client(connection_info.clone())?;
+
+        #[allow(irrefutable_let_patterns)]
+        if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
+            if let Some(sentinel) = client.get_sentinel_client_async(redis_conn_info).await? {
+                client.set_sentinel(sentinel);
+            }
+        }
+        FalkorAsyncClient::create(client, connection_info, self.num_connections.get()).await
     }
 }
 
@@ -116,15 +151,6 @@ mod tests {
             .with_connection_info(connection_info.unwrap())
             .build()
             .is_ok());
-    }
-
-    #[test]
-    fn test_sync_builder_redis_fallback() {
-        let client = FalkorClientBuilder::new().build();
-        assert!(client.is_ok());
-
-        let FalkorConnectionInfo::Redis(redis_info) = client.unwrap()._connection_info;
-        assert_eq!(redis_info.addr.to_string().as_str(), "127.0.0.1:6379");
     }
 
     #[test]

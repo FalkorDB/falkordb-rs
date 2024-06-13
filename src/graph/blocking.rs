@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn test_create_drop_index() {
         let mut graph = open_test_graph("test_create_drop_index");
-        graph
+        let indices = graph
             .inner
             .create_index(
                 IndexType::Fulltext,
@@ -436,16 +436,16 @@ mod tests {
                 None,
             )
             .expect("Could not create index");
+        assert_eq!(indices.get_indices_created(), Some(1));
 
         let indices = graph.inner.list_indices().expect("Could not list indices");
-
         assert_eq!(indices.data.len(), 2);
         assert_eq!(
             indices.data[0].field_types["Hello"],
             vec![IndexType::Fulltext]
         );
 
-        graph
+        let indices = graph
             .inner
             .drop_index(
                 IndexType::Fulltext,
@@ -454,6 +454,7 @@ mod tests {
                 &["Hello"],
             )
             .expect("Could not drop index");
+        assert_eq!(indices.get_indices_deleted(), Some(1));
     }
 
     #[test]

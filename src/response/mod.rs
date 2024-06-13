@@ -5,7 +5,7 @@
 
 use crate::{
     parser::{parse_header, redis_value_as_untyped_string_vec},
-    FalkorDBError, FalkorResult,
+    FalkorResult,
 };
 use std::str::FromStr;
 
@@ -83,7 +83,7 @@ impl<T> QueryResult<T> {
     fn get_statistics<S>(
         &self,
         stat_type: StatisticType,
-    ) -> FalkorResult<S>
+    ) -> Option<S>
     where
         S: FromStr,
     {
@@ -93,72 +93,71 @@ impl<T> QueryResult<T> {
                     .split(": ")
                     .nth(1)
                     .and_then(|stat_value| stat_value.split(' ').next())
-                    .and_then(|res| res.parse().ok())
-                    .ok_or(FalkorDBError::StatisticNotFound);
+                    .and_then(|res| res.parse().ok());
             }
         }
 
-        Err(FalkorDBError::StatisticNotFound)
+        None
     }
 
     /// Returns the number of labels added in this query
-    pub fn get_labels_added(&self) -> FalkorResult<i64> {
+    pub fn get_labels_added(&self) -> Option<i64> {
         self.get_statistics(StatisticType::LabelsAdded)
     }
 
     /// Returns the number of labels removed in this query
-    pub fn get_labels_removed(&self) -> FalkorResult<i64> {
+    pub fn get_labels_removed(&self) -> Option<i64> {
         self.get_statistics(StatisticType::LabelsRemoved)
     }
 
     /// Returns the number of nodes created in this query
-    pub fn get_nodes_created(&self) -> FalkorResult<i64> {
+    pub fn get_nodes_created(&self) -> Option<i64> {
         self.get_statistics(StatisticType::NodesCreated)
     }
 
     /// Returns the number of nodes deleted in this query
-    pub fn get_nodes_deleted(&self) -> FalkorResult<i64> {
+    pub fn get_nodes_deleted(&self) -> Option<i64> {
         self.get_statistics(StatisticType::NodesDeleted)
     }
 
     /// Returns the number of properties set in this query
-    pub fn get_properties_set(&self) -> FalkorResult<i64> {
+    pub fn get_properties_set(&self) -> Option<i64> {
         self.get_statistics(StatisticType::PropertiesSet)
     }
 
     /// Returns the number of properties removed in this query
-    pub fn get_properties_removed(&self) -> FalkorResult<i64> {
+    pub fn get_properties_removed(&self) -> Option<i64> {
         self.get_statistics(StatisticType::PropertiesRemoved)
     }
 
     /// Returns the number of indices created in this query
-    pub fn get_indices_created(&self) -> FalkorResult<i64> {
+    pub fn get_indices_created(&self) -> Option<i64> {
         self.get_statistics(StatisticType::IndicesCreated)
     }
 
     /// Returns the number of indices deleted in this query
-    pub fn get_indices_deleted(&self) -> FalkorResult<i64> {
+    pub fn get_indices_deleted(&self) -> Option<i64> {
         self.get_statistics(StatisticType::IndicesDeleted)
     }
 
     /// Returns the number of relationships created in this query
-    pub fn get_relationship_created(&self) -> FalkorResult<i64> {
+    pub fn get_relationship_created(&self) -> Option<i64> {
         self.get_statistics(StatisticType::RelationshipsCreated)
     }
 
     /// Returns the number of relationships deleted in this query
-    pub fn get_relationship_deleted(&self) -> FalkorResult<i64> {
+    pub fn get_relationship_deleted(&self) -> Option<i64> {
         self.get_statistics(StatisticType::RelationshipsDeleted)
     }
 
     /// Returns whether this query was ran from cache
-    pub fn get_cached_execution(&self) -> FalkorResult<bool> {
+    pub fn get_cached_execution(&self) -> Option<bool> {
         self.get_statistics(StatisticType::CachedExecution)
             .map(|res: i64| res != 0)
     }
 
     /// Returns the internal execution time of this query
-    pub fn get_internal_execution_time(&self) -> FalkorResult<f64> {
+    pub fn get_internal_execution_time(&self) -> Option<f64> {
         self.get_statistics(StatisticType::InternalExecutionTime)
     }
 }
@@ -177,10 +176,10 @@ mod tests {
                 .execute()
                 .expect("Could not run query");
 
-            assert!(query_result.get_internal_execution_time().is_ok());
-            assert_eq!(query_result.get_nodes_created(), Ok(1));
-            assert_eq!(query_result.get_relationship_created(), Ok(1));
-            assert_eq!(query_result.get_properties_set(), Ok(1));
+            assert!(query_result.get_internal_execution_time().is_some());
+            assert_eq!(query_result.get_nodes_created(), Some(1));
+            assert_eq!(query_result.get_relationship_created(), Some(1));
+            assert_eq!(query_result.get_properties_set(), Some(1));
         }
         {
             let query_result = graph
@@ -190,8 +189,8 @@ mod tests {
                 )
                 .execute()
                 .expect("Could not run query");
-            assert_eq!(query_result.get_nodes_deleted(), Ok(1));
-            assert_eq!(query_result.get_relationship_deleted(), Ok(1));
+            assert_eq!(query_result.get_nodes_deleted(), Some(1));
+            assert_eq!(query_result.get_relationship_deleted(), Some(1));
         }
 
         {
@@ -200,7 +199,7 @@ mod tests {
                 .query("UNWIND range(0, 1000) AS x RETURN x")
                 .execute()
                 .expect("Could not run query");
-            assert_eq!(query_result.get_cached_execution(), Ok(false));
+            assert_eq!(query_result.get_cached_execution(), Some(false));
         }
 
         {
@@ -209,7 +208,7 @@ mod tests {
                 .query("UNWIND range(0, 1000) AS x RETURN x")
                 .execute()
                 .expect("Could not run query");
-            assert_eq!(query_result.get_cached_execution(), Ok(true));
+            assert_eq!(query_result.get_cached_execution(), Some(true));
         }
     }
 }

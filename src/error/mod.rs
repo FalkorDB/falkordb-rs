@@ -112,9 +112,6 @@ pub enum FalkorDBError {
     /// Invalid enum string variant was encountered when parsing
     #[error("Invalid enum string variant was encountered when parsing: {0}")]
     InvalidEnumType(String),
-    /// A specific statistic was requested, but was not found in the QueryResult
-    #[error("A specific statistic was requested, but was not found in the QueryResult")]
-    StatisticNotFound,
 }
 
 impl From<strum::ParseError> for FalkorDBError {

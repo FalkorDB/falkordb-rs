@@ -191,6 +191,29 @@ impl GraphSchema {
         Ok(())
     }
 
+    pub(crate) fn parse_single_id(
+        &mut self,
+        raw_id: i64,
+        schema_type: SchemaType,
+    ) -> FalkorResult<String> {
+        Ok(
+            match self
+                .get_id_map_by_schema_type(schema_type)
+                .get(&raw_id)
+                .cloned()
+            {
+                None => {
+                    self.refresh(schema_type)?;
+                    self.get_id_map_by_schema_type(schema_type)
+                        .get(&raw_id)
+                        .cloned()
+                        .ok_or(FalkorDBError::MissingSchemaId(schema_type))?
+                }
+                Some(exists) => exists,
+            },
+        )
+    }
+
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Parse ID Vec To String Vec", skip_all, level = "debug")
@@ -204,22 +227,10 @@ impl GraphSchema {
         raw_ids
             .into_iter()
             .try_fold(Vec::with_capacity(raw_ids_len), |mut acc, raw_id| {
-                let id = redis_value_as_int(raw_id)?;
-                let value = match self
-                    .get_id_map_by_schema_type(schema_type)
-                    .get(&id)
-                    .cloned()
-                {
-                    None => {
-                        self.refresh(schema_type)?;
-                        self.get_id_map_by_schema_type(schema_type)
-                            .get(&id)
-                            .cloned()
-                            .ok_or(FalkorDBError::MissingSchemaId(schema_type))?
-                    }
-                    Some(exists) => exists,
-                };
-                acc.push(value);
+                acc.push(
+                    redis_value_as_int(raw_id)
+                        .and_then(|raw_id| self.parse_single_id(raw_id, schema_type))?,
+                );
                 Ok(acc)
             })
     }

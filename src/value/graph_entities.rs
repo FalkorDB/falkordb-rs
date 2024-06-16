@@ -90,14 +90,10 @@ impl Edge {
             })
         })?;
 
-        let relationship = graph_schema
-            .relationships()
-            .get(&redis_value_as_int(relationship_id_raw)?)
-            .ok_or(FalkorDBError::MissingSchemaId(SchemaType::Relationships))?;
-
         Ok(Edge {
             entity_id: redis_value_as_int(entity_id)?,
-            relationship_type: relationship.to_string(),
+            relationship_type: redis_value_as_int(relationship_id_raw)
+                .and_then(|id| graph_schema.parse_single_id(id, SchemaType::Relationships))?,
             src_node_id: redis_value_as_int(src_node_id)?,
             dst_node_id: redis_value_as_int(dst_node_id)?,
             properties: graph_schema.parse_properties_map(properties)?,

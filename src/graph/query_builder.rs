@@ -4,8 +4,10 @@
  */
 
 use crate::{
-    graph::HasGraphSchema, parser::redis_value_as_vec, AsyncGraph, Constraint, ExecutionPlan,
-    FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet, QueryResult, SyncGraph,
+    graph::HasGraphSchema,
+    parser::{redis_value_as_vec, SchemaParsable},
+    AsyncGraph, Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet,
+    QueryResult, SyncGraph,
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 
@@ -349,8 +351,9 @@ impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
         }
     }
 
-    fn parse_query_result_of_type<T: TryFrom<redis::Value, Error = FalkorDBError>>(
-        res: redis::Value
+    fn parse_query_result_of_type<T: SchemaParsable>(
+        &mut self,
+        res: redis::Value,
     ) -> FalkorResult<QueryResult<Vec<T>>> {
         let [header, indices, stats]: [redis::Value; 3] =
             redis_value_as_vec(res).and_then(|res_vec| {
@@ -363,8 +366,12 @@ impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
 
         QueryResult::from_response(
             Some(header),
-            redis_value_as_vec(indices)
-                .map(|indices| indices.into_iter().flat_map(T::try_from).collect())?,
+            redis_value_as_vec(indices).map(|indices| {
+                indices
+                    .into_iter()
+                    .flat_map(|res| T::parse(res, self.graph.get_graph_schema_mut()))
+                    .collect()
+            })?,
             stats,
         )
     }
@@ -446,7 +453,7 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, SyncGraph> {
     )]
     pub fn execute(mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
         self.common_execute_steps()
-            .and_then(Self::parse_query_result_of_type)
+            .and_then(|res| self.parse_query_result_of_type(res))
     }
 }
 
@@ -461,7 +468,7 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, AsyncGraph> {
     pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
         self.common_execute_steps()
             .await
-            .and_then(Self::parse_query_result_of_type)
+            .and_then(|res| self.parse_query_result_of_type(res))
     }
 }
 
@@ -474,7 +481,7 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, SyncGraph> {
     )]
     pub fn execute(mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
         self.common_execute_steps()
-            .and_then(Self::parse_query_result_of_type)
+            .and_then(|res| self.parse_query_result_of_type(res))
     }
 }
 
@@ -488,7 +495,7 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, AsyncGraph> {
     pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
         self.common_execute_steps()
             .await
-            .and_then(Self::parse_query_result_of_type)
+            .and_then(|res| self.parse_query_result_of_type(res))
     }
 }
 

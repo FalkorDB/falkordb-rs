@@ -3,7 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
-use crate::{parser::parse_raw_redis_value, FalkorValue, GraphSchema};
+use crate::{parser::parse_type, FalkorValue, GraphSchema};
 use std::collections::VecDeque;
 
 /// A wrapper around the returned raw data, allowing parsing on demand of each result
@@ -44,9 +44,103 @@ impl<'a> Iterator for LazyResultSet<'a> {
     )]
     fn next(&mut self) -> Option<Self::Item> {
         self.data.pop_front().map(|current_result| {
-            parse_raw_redis_value(current_result, self.graph_schema)
+            parse_type(6, current_result, self.graph_schema)
                 .and_then(FalkorValue::into_vec)
                 .unwrap_or(vec![FalkorValue::Unparseable])
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::graph::HasGraphSchema;
+    use crate::test_utils::create_test_client;
+    use crate::{Edge, FalkorValue, LazyResultSet, Node};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_lazy_result_set() {
+        let client = create_test_client();
+        let mut graph = client.select_graph("imdb");
+
+        let mut result_set = LazyResultSet::new(
+            vec![
+                redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                    redis::Value::Int(8),
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(203),
+                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
+                        redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                            redis::Value::Int(1),
+                            redis::Value::Int(2),
+                            redis::Value::Data("FirstNode".to_string().into_bytes()),
+                        ])]),
+                    ]),
+                ])]),
+                redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                    redis::Value::Int(8),
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(203),
+                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
+                        redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                            redis::Value::Int(1),
+                            redis::Value::Int(2),
+                            redis::Value::Data("FirstNode".to_string().into_bytes()),
+                        ])]),
+                    ]),
+                ])]),
+                redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                    redis::Value::Int(7),
+                    redis::Value::Bulk(vec![
+                        redis::Value::Int(100),
+                        redis::Value::Int(0),
+                        redis::Value::Int(203),
+                        redis::Value::Int(204),
+                        redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                            redis::Value::Int(1),
+                            redis::Value::Int(2),
+                            redis::Value::Data("Edge".to_string().into_bytes()),
+                        ])]),
+                    ]),
+                ])]),
+            ],
+            graph.get_graph_schema_mut(),
+        );
+
+        assert_eq!(
+            result_set.next(),
+            Some(vec![FalkorValue::Node(Node {
+                entity_id: 203,
+                labels: vec!["actor".to_string()],
+                properties: HashMap::from([(
+                    "name".to_string(),
+                    FalkorValue::String("FirstNode".to_string())
+                )]),
+            })])
+        );
+
+        assert_eq!(
+            result_set.collect::<Vec<_>>(),
+            vec![
+                vec![FalkorValue::Node(Node {
+                    entity_id: 203,
+                    labels: vec!["actor".to_string()],
+                    properties: HashMap::from([(
+                        "name".to_string(),
+                        FalkorValue::String("FirstNode".to_string())
+                    )]),
+                })],
+                vec![FalkorValue::Edge(Edge {
+                    entity_id: 100,
+                    relationship_type: "act".to_string(),
+                    src_node_id: 203,
+                    dst_node_id: 204,
+                    properties: HashMap::from([(
+                        "name".to_string(),
+                        FalkorValue::String("Edge".to_string())
+                    )]),
+                })]
+            ],
+        );
     }
 }

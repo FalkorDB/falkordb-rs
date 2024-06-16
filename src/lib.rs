@@ -98,28 +98,20 @@ pub(crate) mod test_utils {
             .expect("Could not create client")
     }
 
-    pub(crate) fn open_test_graph(graph_name: &str) -> TestSyncGraphHandle {
+    pub(crate) fn open_empty_test_graph(graph_name: &str) -> TestSyncGraphHandle {
         let client = create_test_client();
 
-        client.select_graph(graph_name).delete().ok();
-
         TestSyncGraphHandle {
-            inner: client
-                .copy_graph("imdb", graph_name)
-                .expect("Could not copy graph for test"),
+            inner: client.select_graph(graph_name),
         }
     }
 
-    pub(crate) async fn open_async_test_graph(graph_name: &str) -> TestAsyncGraphHandle {
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn open_empty_async_test_graph(graph_name: &str) -> TestAsyncGraphHandle {
         let client = create_async_test_client().await;
 
-        client.select_graph(graph_name).delete().await.ok();
-
         TestAsyncGraphHandle {
-            inner: client
-                .copy_graph("imdb", graph_name)
-                .await
-                .expect("Could not copy graph for test"),
+            inner: client.select_graph(graph_name),
         }
     }
 }

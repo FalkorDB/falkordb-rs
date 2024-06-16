@@ -285,16 +285,22 @@ pub(crate) fn parse_type(
                     Ok(acc)
                 })
         })?),
-        // The following types are sent as an array and require specific parsing functions
         7 => FalkorValue::Edge(Edge::parse(val, graph_schema)?),
         8 => FalkorValue::Node(Node::parse(val, graph_schema)?),
         9 => FalkorValue::Path(Path::parse(val, graph_schema)?),
         10 => FalkorValue::Map(parse_regular_falkor_map(val, graph_schema)?),
         11 => FalkorValue::Point(Point::parse(val)?),
-        _ => Err(FalkorDBError::ParsingUnknownType)?,
+        _ => FalkorValue::Unparseable,
     };
 
     Ok(res)
+}
+
+pub(crate) trait SchemaParsable: Sized {
+    fn parse(
+        value: redis::Value,
+        graph_schema: &mut GraphSchema,
+    ) -> FalkorResult<Self>;
 }
 
 #[cfg(test)]

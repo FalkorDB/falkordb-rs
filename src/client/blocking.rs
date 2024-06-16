@@ -289,7 +289,7 @@ mod tests {
         assert!(res.is_ok());
 
         let graphs = res.unwrap();
-        assert_eq!(graphs[0], "imdb");
+        assert!(graphs.contains(&"imdb".to_string()));
     }
 
     #[test]

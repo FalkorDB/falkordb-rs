@@ -390,11 +390,15 @@ impl HasGraphSchema for SyncGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test_utils::open_test_graph, IndexType};
+    use crate::{
+        test_utils::{create_test_client, open_empty_test_graph},
+        IndexType,
+    };
 
     #[test]
     fn test_create_drop_index() {
-        let mut graph = open_test_graph("test_create_drop_index");
+        let mut graph = open_empty_test_graph("test_create_drop_index");
+
         let indices = graph
             .inner
             .create_index(
@@ -408,7 +412,7 @@ mod tests {
         assert_eq!(indices.get_indices_created(), Some(1));
 
         let indices = graph.inner.list_indices().expect("Could not list indices");
-        assert_eq!(indices.data.len(), 2);
+        assert_eq!(indices.data.len(), 1);
         assert_eq!(
             indices.data[0].field_types["Hello"],
             vec![IndexType::Fulltext]
@@ -423,8 +427,8 @@ mod tests {
 
     #[test]
     fn test_list_indices() {
-        let mut graph = open_test_graph("test_list_indices");
-        let indices = graph.inner.list_indices().expect("Could not list indices");
+        let mut graph = create_test_client().select_graph("imdb");
+        let indices = graph.list_indices().expect("Could not list indices");
 
         assert_eq!(indices.data.len(), 1);
         assert_eq!(indices.data[0].entity_type, EntityType::Node);
@@ -438,7 +442,7 @@ mod tests {
 
     #[test]
     fn test_create_drop_mandatory_constraint() {
-        let graph = open_test_graph("test_mandatory_constraint");
+        let graph = open_empty_test_graph("test_mandatory_constraint");
 
         graph
             .inner
@@ -458,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_create_drop_unique_constraint() {
-        let mut graph = open_test_graph("test_unique_constraint");
+        let mut graph = open_empty_test_graph("test_unique_constraint");
 
         graph
             .inner
@@ -482,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_list_constraints() {
-        let mut graph = open_test_graph("test_list_constraint");
+        let mut graph = open_empty_test_graph("test_list_constraints");
 
         graph
             .inner
@@ -502,7 +506,7 @@ mod tests {
 
     #[test]
     fn test_slowlog() {
-        let mut graph = open_test_graph("test_slowlog");
+        let mut graph = open_empty_test_graph("test_slowlog");
 
         graph
             .inner
@@ -543,9 +547,9 @@ mod tests {
 
     #[test]
     fn test_explain() {
-        let mut graph = open_test_graph("test_explain");
+        let mut graph = create_test_client().select_graph("imdb");
 
-        let execution_plan = graph.inner.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().expect("Could not create execution plan");
+        let execution_plan = graph.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().expect("Could not create execution plan");
         assert_eq!(execution_plan.plan().len(), 7);
         assert!(execution_plan.operations().get("Aggregate").is_some());
         assert_eq!(execution_plan.operations()["Aggregate"].len(), 1);
@@ -558,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_profile() {
-        let mut graph = open_test_graph("test_profile");
+        let mut graph = open_empty_test_graph("test_profile");
 
         let execution_plan = graph
             .inner

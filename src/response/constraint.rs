@@ -6,9 +6,9 @@
 use crate::{
     parser::{
         parse_falkor_enum, redis_value_as_typed_string, redis_value_as_typed_string_vec,
-        redis_value_as_vec,
+        redis_value_as_vec, SchemaParsable,
     },
-    EntityType, FalkorDBError, FalkorResult,
+    EntityType, FalkorDBError, FalkorResult, GraphSchema,
 };
 
 /// The type of restriction to apply for the property
@@ -50,14 +50,15 @@ pub struct Constraint {
     pub status: ConstraintStatus,
 }
 
-impl TryFrom<redis::Value> for Constraint {
-    type Error = FalkorDBError;
-
+impl SchemaParsable for Constraint {
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Parse Constraint", skip_all, level = "info")
     )]
-    fn try_from(value: redis::Value) -> FalkorResult<Self> {
+    fn parse(
+        value: redis::Value,
+        _: &mut GraphSchema,
+    ) -> FalkorResult<Self> {
         let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [redis::Value; 5] = redis_value_as_vec(value)
             .and_then(|res| res.try_into()
                 .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object")))?;

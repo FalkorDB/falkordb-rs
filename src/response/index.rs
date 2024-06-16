@@ -5,10 +5,11 @@
 
 use crate::{
     parser::{
-        parse_falkor_enum, redis_value_as_string, redis_value_as_typed_string,
-        redis_value_as_typed_string_vec, redis_value_as_vec, type_val_from_value,
+        parse_falkor_enum, parse_raw_redis_value, redis_value_as_string,
+        redis_value_as_typed_string, redis_value_as_typed_string_vec, redis_value_as_vec,
+        type_val_from_value, SchemaParsable,
     },
-    EntityType, FalkorDBError, FalkorResult,
+    EntityType, FalkorDBError, FalkorValue, GraphSchema,
 };
 use std::collections::HashMap;
 
@@ -51,7 +52,7 @@ fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>
                 let (val_type_marker, val) = type_val_from_value(val)?;
 
                 if val_type_marker != 6 {
-                    return Err(FalkorDBError::ParsingString);
+                    return Err(FalkorDBError::ParsingArray);
                 }
 
                 let val_vec = redis_value_as_vec(val)?;
@@ -61,27 +62,6 @@ fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>
                     .collect::<Vec<_>>();
 
                 Ok((key_str, parsed_values))
-            })
-            .collect::<Result<HashMap<_, _>, FalkorDBError>>()?;
-
-        Ok(result)
-    })
-}
-
-fn parse_info_map(value: redis::Value) -> FalkorResult<HashMap<String, String>> {
-    type_val_from_value(value).and_then(|(type_marker, val)| {
-        if type_marker != 10 {
-            return Err(FalkorDBError::ParsingMap);
-        }
-
-        let map_iter = val.into_map_iter().map_err(|_| FalkorDBError::ParsingMap)?;
-
-        let result = map_iter
-            .into_iter()
-            .map(|(key, val)| {
-                let key_str = redis_value_as_typed_string(key)?;
-                let val_str = redis_value_as_typed_string(val)?;
-                Ok((key_str, val_str))
             })
             .collect::<Result<HashMap<_, _>, FalkorDBError>>()?;
 
@@ -107,17 +87,18 @@ pub struct FalkorIndex {
     /// Words to avoid indexing as they are very common and will just be a waste of resources
     pub stopwords: Vec<String>,
     /// Various other information for querying by the user
-    pub info: HashMap<String, String>,
+    pub info: HashMap<String, FalkorValue>,
 }
 
-impl TryFrom<redis::Value> for FalkorIndex {
-    type Error = FalkorDBError;
-
+impl SchemaParsable for FalkorIndex {
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Parse Index", skip_all, level = "info")
     )]
-    fn try_from(value: redis::Value) -> Result<Self, FalkorDBError> {
+    fn parse(
+        value: redis::Value,
+        graph_schema: &mut GraphSchema,
+    ) -> Result<Self, FalkorDBError> {
         let [label, fields, field_types, language, stopwords, entity_type, status, info] =
             redis_value_as_vec(value).and_then(|as_vec| {
                 as_vec.try_into().map_err(|_| {
@@ -135,7 +116,7 @@ impl TryFrom<redis::Value> for FalkorIndex {
             field_types: parse_types_map(field_types)?,
             language: redis_value_as_typed_string(language)?,
             stopwords: redis_value_as_typed_string_vec(stopwords)?,
-            info: parse_info_map(info)?,
+            info: parse_raw_redis_value(info, graph_schema).and_then(|val| val.into_map())?,
         })
     }
 }

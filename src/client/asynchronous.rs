@@ -13,6 +13,7 @@ use crate::{
     AsyncGraph, ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult,
 };
 use std::{collections::HashMap, sync::Arc};
+use tokio::runtime::RuntimeFlavor;
 use tokio::{
     runtime::Handle,
     sync::{mpsc, Mutex, RwLock},
@@ -78,7 +79,11 @@ impl ProvidesSyncConnections for FalkorAsyncClientInner {
         )
     )]
     fn get_connection(&self) -> FalkorResult<FalkorSyncConnection> {
-        task::block_in_place(|| Handle::current().block_on(self._inner.lock())).get_connection()
+        let handle = Handle::try_current().map_err(|_| FalkorDBError::NoRuntime)?;
+        match handle.runtime_flavor() {
+            RuntimeFlavor::CurrentThread => Err(FalkorDBError::SingleThreadedRuntime),
+            _ => task::block_in_place(|| handle.block_on(self._inner.lock())).get_connection(),
+        }
     }
 }
 

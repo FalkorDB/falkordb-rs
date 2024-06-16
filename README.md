@@ -61,7 +61,7 @@ for n in nodes.data {
 ### `tokio` support
 
 This client supports nonblocking API using the [`tokio`](https://tokio.rs/) runtime.
-The `tokio` features is enabled by default.
+The `tokio` feature is enabled by default.
 Currently, this API requires running within a [`multi_threaded tokio scheduler`](https://docs.rs/tokio/latest/tokio/runtime/index.html#multi-thread-scheduler), and does not support the `current_thread` one, but this will probably be supported in the future.
 
 The API uses an almost identical API, but the various functions need to be awaited:
@@ -95,7 +95,7 @@ it must be wrapped in an Arc<Mutex<_>> or something similar.
 
 This client is currently built upon the [`redis`](https://docs.rs/redis/latest/redis/) crate, and therefore supports TLS using
 its implementation, which uses either [`rustls`](https://docs.rs/rustls/latest/rustls/) or [`native_tls`](https://docs.rs/native-tls/latest/native_tls/).
-This is not enabled by default, and the user ust opt-in by enabling the respective features: `"rustls"`/`"native-tls"`.\
+This is not enabled by default, and the user ust opt-in by enabling the respective features: `"rustls"`/`"native-tls"` (when using tokio: `"tokio-rustls"`/`"tokio-native-tls"`).
 
 For Rustls:
 
@@ -103,10 +103,18 @@ For Rustls:
 falkordb = { version = "0.1", features = ["rustls"] }
 ```
 
-For NativeTLS:
+```toml
+falkordb = { version = "0.1", features = ["tokio-rustls"] }
+```
+
+For Native TLS:
 
 ```toml
 falkordb = { version = "0.1", features = ["native-tls"] }
+```
+
+```toml
+falkordb = { version = "0.1", features = ["tokio-native-tls"] }
 ```
 
 ### Tracing

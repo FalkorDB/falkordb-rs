@@ -21,7 +21,7 @@ pub(crate) mod asynchronous;
 
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum FalkorClientProvider {
-    #[allow(unused)]
+    #[cfg(test)]
     None,
 
     Redis {

@@ -11,8 +11,9 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 
 pub(crate) enum FalkorAsyncConnection {
-    #[allow(unused)]
+    #[cfg(test)]
     None,
+
     Redis(redis::aio::MultiplexedConnection),
 }
 

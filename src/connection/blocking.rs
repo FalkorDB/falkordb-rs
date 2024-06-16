@@ -15,8 +15,9 @@ use std::{
 };
 
 pub(crate) enum FalkorSyncConnection {
-    #[allow(unused)]
+    #[cfg(test)]
     None,
+
     Redis(redis::Connection),
 }
 

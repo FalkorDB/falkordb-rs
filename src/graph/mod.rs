@@ -16,7 +16,7 @@ pub trait HasGraphSchema {
     fn get_graph_schema_mut(&mut self) -> &mut GraphSchema;
 }
 
-pub fn generate_create_index_query<P: Display>(
+pub(crate) fn generate_create_index_query<P: Display>(
     index_field_type: IndexType,
     entity_type: EntityType,
     label: &str,
@@ -57,7 +57,7 @@ pub fn generate_create_index_query<P: Display>(
     )
 }
 
-pub fn generate_drop_index_query<P: Display>(
+pub(crate) fn generate_drop_index_query<P: Display>(
     index_field_type: IndexType,
     entity_type: EntityType,
     label: &str,

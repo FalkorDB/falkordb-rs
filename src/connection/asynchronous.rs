@@ -11,9 +11,6 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 
 pub(crate) enum FalkorAsyncConnection {
-    #[cfg(test)]
-    None,
-
     Redis(redis::aio::MultiplexedConnection),
 }
 
@@ -44,8 +41,6 @@ impl FalkorAsyncConnection {
                     .await
                     .map_err(map_redis_err)
             }
-            #[cfg(test)]
-            FalkorAsyncConnection::None => Ok(redis::Value::Nil),
         }
     }
 

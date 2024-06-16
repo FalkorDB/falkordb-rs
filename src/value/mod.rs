@@ -40,7 +40,7 @@ pub enum FalkorValue {
     /// A NULL type
     None,
     /// Failed parsing this value
-    Unparseable,
+    Unparseable(String),
 }
 
 macro_rules! impl_to_falkordb_value {

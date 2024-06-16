@@ -290,7 +290,7 @@ pub(crate) fn parse_type(
         9 => FalkorValue::Path(Path::parse(val, graph_schema)?),
         10 => FalkorValue::Map(parse_regular_falkor_map(val, graph_schema)?),
         11 => FalkorValue::Point(Point::parse(val)?),
-        _ => FalkorValue::Unparseable,
+        _ => Err(FalkorDBError::ParsingUnknownType)?,
     };
 
     Ok(res)

@@ -46,7 +46,7 @@ impl<'a> Iterator for LazyResultSet<'a> {
         self.data.pop_front().map(|current_result| {
             parse_type(6, current_result, self.graph_schema)
                 .and_then(FalkorValue::into_vec)
-                .unwrap_or(vec![FalkorValue::Unparseable])
+                .unwrap_or_else(|err| vec![FalkorValue::Unparseable(err.to_string())])
         })
     }
 }

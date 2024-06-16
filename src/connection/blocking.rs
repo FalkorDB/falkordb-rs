@@ -46,6 +46,7 @@ impl FalkorSyncConnection {
                 }
                 redis_conn.req_command(&cmd).map_err(map_redis_err)
             }
+            #[cfg(test)]
             FalkorSyncConnection::None => Ok(redis::Value::Nil),
         }
     }

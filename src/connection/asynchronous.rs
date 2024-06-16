@@ -44,6 +44,7 @@ impl FalkorAsyncConnection {
                     .await
                     .map_err(map_redis_err)
             }
+            #[cfg(test)]
             FalkorAsyncConnection::None => Ok(redis::Value::Nil),
         }
     }

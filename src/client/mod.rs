@@ -47,6 +47,7 @@ impl FalkorClientProvider {
                     .get_connection()
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
+            #[cfg(test)]
             FalkorClientProvider::None => Err(FalkorDBError::UnavailableProvider)?,
         })
     }
@@ -69,6 +70,7 @@ impl FalkorClientProvider {
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
+            #[cfg(test)]
             FalkorClientProvider::None => Err(FalkorDBError::UnavailableProvider)?,
         })
     }
@@ -79,6 +81,7 @@ impl FalkorClientProvider {
     ) {
         match self {
             FalkorClientProvider::Redis { sentinel, .. } => *sentinel = Some(sentinel_client),
+            #[cfg(test)]
             FalkorClientProvider::None => {}
         }
     }

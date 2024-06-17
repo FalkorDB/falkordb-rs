@@ -123,7 +123,7 @@ impl BorrowedAsyncConnection {
             res => res,
         };
 
-        self.return_to_pool().await;
+        tokio::spawn(async { self.return_to_pool().await });
         res
     }
 

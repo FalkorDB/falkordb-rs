@@ -5,7 +5,9 @@
 
 use crate::{
     client::ProvidesSyncConnections,
-    parser::{parse_type, redis_value_as_int, redis_value_as_string, redis_value_as_vec},
+    parser::{
+        parse_type, redis_value_as_int, redis_value_as_string, redis_value_as_vec, ParserTypeMarker,
+    },
     FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{collections::HashMap, sync::Arc};
@@ -22,7 +24,7 @@ pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
 #[derive(Debug)]
 pub(crate) struct FKeyTypeVal {
     pub(crate) key: i64,
-    pub(crate) type_marker: i64,
+    pub(crate) type_marker: ParserTypeMarker,
     pub(crate) val: redis::Value,
 }
 
@@ -44,11 +46,13 @@ impl TryFrom<redis::Value> for FKeyTypeVal {
             })?;
 
         redis_value_as_int(key_raw).and_then(|key| {
-            redis_value_as_int(type_raw).map(|type_marker| FKeyTypeVal {
-                key,
-                type_marker,
-                val,
-            })
+            redis_value_as_int(type_raw)
+                .and_then(ParserTypeMarker::try_from)
+                .map(|type_marker| FKeyTypeVal {
+                    key,
+                    type_marker,
+                    val,
+                })
         })
     }
 }

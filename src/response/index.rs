@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::parser::ParserTypeMarker;
 use crate::{
     parser::{
         parse_falkor_enum, parse_raw_redis_value, redis_value_as_string,
@@ -39,7 +40,7 @@ pub enum IndexType {
 
 fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
     type_val_from_value(value).and_then(|(type_marker, val)| {
-        if type_marker != 10 {
+        if type_marker != ParserTypeMarker::Map {
             return Err(FalkorDBError::ParsingMap);
         }
 
@@ -51,7 +52,7 @@ fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>
                 let key_str = redis_value_as_string(key)?;
                 let (val_type_marker, val) = type_val_from_value(val)?;
 
-                if val_type_marker != 6 {
+                if val_type_marker != ParserTypeMarker::Array {
                     return Err(FalkorDBError::ParsingArray);
                 }
 

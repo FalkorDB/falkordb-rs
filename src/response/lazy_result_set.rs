@@ -3,6 +3,7 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::parser::ParserTypeMarker;
 use crate::{parser::parse_type, FalkorValue, GraphSchema};
 use std::collections::VecDeque;
 
@@ -44,7 +45,7 @@ impl<'a> Iterator for LazyResultSet<'a> {
     )]
     fn next(&mut self) -> Option<Self::Item> {
         self.data.pop_front().map(|current_result| {
-            parse_type(6, current_result, self.graph_schema)
+            parse_type(ParserTypeMarker::Array, current_result, self.graph_schema)
                 .and_then(FalkorValue::into_vec)
                 .unwrap_or_else(|err| vec![FalkorValue::Unparseable(err.to_string())])
         })

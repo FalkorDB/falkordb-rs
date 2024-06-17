@@ -6,10 +6,13 @@
 use crate::{
     graph::HasGraphSchema,
     parser::{redis_value_as_vec, SchemaParsable},
-    AsyncGraph, Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet,
+    Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet,
     QueryResult, SyncGraph,
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
+
+#[cfg(feature = "tokio")]
+use crate::AsyncGraph;
 
 #[cfg_attr(
     feature = "tracing",
@@ -485,6 +488,7 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, SyncGraph> {
     }
 }
 
+#[cfg(feature = "tokio")]
 impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, AsyncGraph> {
     /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`Constraint`]s
     /// This functions consumes self

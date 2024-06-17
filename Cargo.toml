@@ -16,7 +16,7 @@ tokio = { version = "1.38.0", default-features = false, features = ["macros", "s
 tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"], optional = true }
 
 [features]
-default = ["tokio"]
+default = []
 
 native-tls = ["redis/tls-native-tls"]
 rustls = ["redis/tls-rustls"]

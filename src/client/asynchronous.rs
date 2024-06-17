@@ -13,10 +13,9 @@ use crate::{
     AsyncGraph, ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult,
 };
 use std::{collections::HashMap, sync::Arc};
-use tokio::runtime::RuntimeFlavor;
 use tokio::{
-    runtime::Handle,
-    sync::{mpsc, Mutex, RwLock},
+    runtime::{Handle, RuntimeFlavor},
+    sync::{mpsc, Mutex},
     task,
 };
 
@@ -27,7 +26,7 @@ pub struct FalkorAsyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
 
     connection_pool_size: u8,
-    connection_pool_tx: RwLock<mpsc::Sender<FalkorAsyncConnection>>,
+    connection_pool_tx: mpsc::Sender<FalkorAsyncConnection>,
     connection_pool_rx: Mutex<mpsc::Receiver<FalkorAsyncConnection>>,
 }
 
@@ -51,7 +50,7 @@ impl FalkorAsyncClientInner {
                 .recv()
                 .await
                 .ok_or(FalkorDBError::EmptyConnection)?,
-            self.connection_pool_tx.read().await.clone(),
+            self.connection_pool_tx.clone(),
             pool_owner,
         ))
     }
@@ -125,7 +124,7 @@ impl FalkorAsyncClient {
                 _inner: client.into(),
 
                 connection_pool_size: num_connections,
-                connection_pool_tx: RwLock::new(connection_pool_tx),
+                connection_pool_tx,
                 connection_pool_rx: Mutex::new(connection_pool_rx),
             }),
             _connection_info: connection_info,

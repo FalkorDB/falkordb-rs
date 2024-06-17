@@ -3,8 +3,17 @@ name = "falkordb"
 version = "0.1.1"
 edition = "2021"
 description = "A FalkorDB Rust client"
+homepage = "https://www.falkordb.com/"
+readme = "README.md"
+repository = "https://github.com/FalkorDB/falkordb-rs"
 license = "SSPL-1.0"
+categories = ["database"]
+keywords = ["database", "graph-database", "database-driver", "falkordb"]
 
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
 
 [dependencies]
 parking_lot = { version = "0.12.3", default-features = false, features = ["deadlock_detection"] }

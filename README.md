@@ -65,6 +65,7 @@ The `tokio` feature is enabled by default.
 Currently, this API requires running within a [`multi_threaded tokio scheduler`](https://docs.rs/tokio/latest/tokio/runtime/index.html#multi-thread-scheduler), and does not support the `current_thread` one, but this will probably be supported in the future.
 
 The API uses an almost identical API, but the various functions need to be awaited:
+
 ```rust
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 

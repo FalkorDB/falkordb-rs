@@ -3,10 +3,12 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+use crate::parser::ParserTypeMarker;
 use crate::{
     parser::{
-        parse_falkor_enum, parse_raw_redis_value, redis_value_as_typed_string_vec,
-        redis_value_as_vec,
+        parse_falkor_enum, parse_raw_redis_value, redis_value_as_string,
+        redis_value_as_typed_string, redis_value_as_typed_string_vec, redis_value_as_vec,
+        type_val_from_value, SchemaParsable,
     },
     EntityType, FalkorDBError, FalkorValue, GraphSchema,
 };
@@ -36,32 +38,36 @@ pub enum IndexType {
     Fulltext,
 }
 
-fn parse_types_map(
-    value: redis::Value,
-    graph_schema: &mut GraphSchema,
-) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
-    parse_raw_redis_value(value, graph_schema)
-        .and_then(|map_val| map_val.into_map())
-        .map(|map_val| {
-            map_val
-                .into_iter()
-                .flat_map(|(key, val)| {
-                    val.into_vec().map(|as_vec| {
-                        (
-                            key,
-                            as_vec
-                                .into_iter()
-                                .flat_map(|item| {
-                                    item.into_string().and_then(|as_str| {
-                                        IndexType::try_from(as_str.as_str()).map_err(Into::into)
-                                    })
-                                })
-                                .collect(),
-                        )
-                    })
-                })
-                .collect()
-        })
+fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
+    type_val_from_value(value).and_then(|(type_marker, val)| {
+        if type_marker != ParserTypeMarker::Map {
+            return Err(FalkorDBError::ParsingMap);
+        }
+
+        let map_iter = val.into_map_iter().map_err(|_| FalkorDBError::ParsingMap)?;
+
+        let result = map_iter
+            .into_iter()
+            .map(|(key, val)| {
+                let key_str = redis_value_as_string(key)?;
+                let (val_type_marker, val) = type_val_from_value(val)?;
+
+                if val_type_marker != ParserTypeMarker::Array {
+                    return Err(FalkorDBError::ParsingArray);
+                }
+
+                let val_vec = redis_value_as_vec(val)?;
+                let parsed_values = val_vec
+                    .into_iter()
+                    .flat_map(parse_falkor_enum::<IndexType>)
+                    .collect::<Vec<_>>();
+
+                Ok((key_str, parsed_values))
+            })
+            .collect::<Result<HashMap<_, _>, FalkorDBError>>()?;
+
+        Ok(result)
+    })
 }
 
 /// Contains all the info regarding an index on the database
@@ -82,15 +88,15 @@ pub struct FalkorIndex {
     /// Words to avoid indexing as they are very common and will just be a waste of resources
     pub stopwords: Vec<String>,
     /// Various other information for querying by the user
-    pub info: HashMap<String, String>,
+    pub info: HashMap<String, FalkorValue>,
 }
 
-impl FalkorIndex {
+impl SchemaParsable for FalkorIndex {
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Parse Index", skip_all, level = "info")
     )]
-    pub(crate) fn parse(
+    fn parse(
         value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> Result<Self, FalkorDBError> {
@@ -106,21 +112,12 @@ impl FalkorIndex {
         Ok(Self {
             entity_type: parse_falkor_enum(entity_type)?,
             status: parse_falkor_enum(status)?,
-            index_label: parse_raw_redis_value(label, graph_schema)
-                .and_then(FalkorValue::into_string)?,
+            index_label: redis_value_as_typed_string(label)?,
             fields: redis_value_as_typed_string_vec(fields)?,
-            field_types: parse_types_map(field_types, graph_schema)?,
-            language: parse_raw_redis_value(language, graph_schema)
-                .and_then(FalkorValue::into_string)?,
+            field_types: parse_types_map(field_types)?,
+            language: redis_value_as_typed_string(language)?,
             stopwords: redis_value_as_typed_string_vec(stopwords)?,
-            info: parse_raw_redis_value(info, graph_schema)
-                .and_then(FalkorValue::into_map)
-                .map(|as_map| {
-                    as_map
-                        .into_iter()
-                        .flat_map(|(key, val)| val.into_string().map(|val_str| (key, val_str)))
-                        .collect()
-                })?,
+            info: parse_raw_redis_value(info, graph_schema).and_then(|val| val.into_map())?,
         })
     }
 }

@@ -4,8 +4,9 @@
  */
 
 use crate::{
-    client::blocking::FalkorSyncClientInner,
-    graph::{generate_create_index_query, generate_drop_index_query, HasGraphSchema},
+    client::asynchronous::FalkorAsyncClientInner,
+    graph::HasGraphSchema,
+    graph::{generate_create_index_query, generate_drop_index_query},
     parser::redis_value_as_vec,
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
     IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, QueryResult, SlowlogEntry,
@@ -15,17 +16,18 @@ use std::{collections::HashMap, fmt::Display, sync::Arc};
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
 /// # Thread Safety
 /// This struct is NOT thread safe, and synchronization is up to the user.
-/// Graph schema is not shared between instances of SyncGraph, even with the same name, but cloning will maintain the current schema
+/// It does, however, allow the user to perform nonblocking operations
+/// Graph schema is not shared between instances of AsyncGraph, even with the same name, but cloning will maintain the current schema
 #[derive(Clone)]
-pub struct SyncGraph {
-    client: Arc<FalkorSyncClientInner>,
+pub struct AsyncGraph {
+    client: Arc<FalkorAsyncClientInner>,
     graph_name: String,
     graph_schema: GraphSchema,
 }
 
-impl SyncGraph {
+impl AsyncGraph {
     pub(crate) fn new<T: ToString>(
-        client: Arc<FalkorSyncClientInner>,
+        client: Arc<FalkorAsyncClientInner>,
         graph_name: T,
     ) -> Self {
         Self {
@@ -43,7 +45,7 @@ impl SyncGraph {
         self.graph_name.as_str()
     }
 
-    pub(crate) fn get_client(&self) -> &Arc<FalkorSyncClientInner> {
+    pub(crate) fn get_client(&self) -> &Arc<FalkorAsyncClientInner> {
         &self.client
     }
 
@@ -51,15 +53,17 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Graph Execute Command", skip_all, level = "info")
     )]
-    fn execute_command(
+    async fn execute_command(
         &self,
         command: &str,
         subcommand: Option<&str>,
         params: Option<&[&str]>,
     ) -> FalkorResult<redis::Value> {
         self.client
-            .borrow_connection(self.client.clone())?
+            .borrow_connection(self.client.clone())
+            .await?
             .execute_command(Some(self.graph_name.as_str()), command, subcommand, params)
+            .await
     }
 
     /// Deletes the graph stored in the database, and drop all the schema caches.
@@ -68,8 +72,8 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Delete Graph", skip_all, level = "info")
     )]
-    pub fn delete(&mut self) -> FalkorResult<()> {
-        self.execute_command("GRAPH.DELETE", None, None)?;
+    pub async fn delete(&mut self) -> FalkorResult<()> {
+        self.execute_command("GRAPH.DELETE", None, None).await?;
         self.graph_schema.clear();
         Ok(())
     }
@@ -82,8 +86,9 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Get Graph Slowlog", skip_all, level = "info")
     )]
-    pub fn slowlog(&self) -> FalkorResult<Vec<SlowlogEntry>> {
+    pub async fn slowlog(&self) -> FalkorResult<Vec<SlowlogEntry>> {
         self.execute_command("GRAPH.SLOWLOG", None, None)
+            .await
             .and_then(|res| {
                 redis_value_as_vec(res)
                     .map(|as_vec| as_vec.into_iter().flat_map(SlowlogEntry::parse).collect())
@@ -95,8 +100,9 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Reset Graph Slowlog", skip_all, level = "info")
     )]
-    pub fn slowlog_reset(&self) -> FalkorResult<redis::Value> {
+    pub async fn slowlog_reset(&self) -> FalkorResult<redis::Value> {
         self.execute_command("GRAPH.SLOWLOG", None, Some(&["RESET"]))
+            .await
     }
 
     /// Creates a [`QueryBuilder`] for this graph, in an attempt to profile a specific query
@@ -200,9 +206,10 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "List Graph Indices", skip_all, level = "info")
     )]
-    pub fn list_indices(&mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
+    pub async fn list_indices(&mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
         ProcedureQueryBuilder::<QueryResult<Vec<FalkorIndex>>, Self>::new(self, "DB.INDEXES")
             .execute()
+            .await
     }
 
     /// Creates a new index in the graph, for the selected entity type(Node/Edge), selected label, and properties
@@ -220,7 +227,7 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Graph Create Index", skip_all, level = "info")
     )]
-    pub fn create_index<P: Display>(
+    pub async fn create_index<P: Display>(
         &mut self,
         index_field_type: IndexType,
         entity_type: EntityType,
@@ -229,7 +236,6 @@ impl SyncGraph {
         options: Option<&HashMap<String, String>>,
     ) -> FalkorResult<QueryResult<LazyResultSet>> {
         // Create index from these properties
-
         let query_str =
             generate_create_index_query(index_field_type, entity_type, label, properties, options);
 
@@ -239,6 +245,7 @@ impl SyncGraph {
             query_str,
         )
         .execute()
+        .await
     }
 
     /// Drop an existing index, by specifying its type, entity, label and specific properties
@@ -249,7 +256,7 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Graph Drop Index", skip_all, level = "info")
     )]
-    pub fn drop_index<P: Display>(
+    pub async fn drop_index<P: Display>(
         &mut self,
         index_field_type: IndexType,
         entity_type: EntityType,
@@ -257,7 +264,7 @@ impl SyncGraph {
         properties: &[P],
     ) -> FalkorResult<QueryResult<LazyResultSet>> {
         let query_str = generate_drop_index_query(index_field_type, entity_type, label, properties);
-        self.query(query_str).execute()
+        self.query(query_str).execute().await
     }
 
     /// Calls the DB.CONSTRAINTS procedure on the graph, returning an array of the graph's constraints
@@ -268,9 +275,10 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "List Graph Constraints", skip_all, level = "info")
     )]
-    pub fn list_constraints(&mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
+    pub async fn list_constraints(&mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
         ProcedureQueryBuilder::<QueryResult<Vec<Constraint>>, Self>::new(self, "DB.CONSTRAINTS")
             .execute()
+            .await
     }
 
     /// Creates a new constraint for this graph, making the provided properties mandatory
@@ -283,7 +291,7 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Create Graph Mandatory Constraint", skip_all, level = "info")
     )]
-    pub fn create_mandatory_constraint(
+    pub async fn create_mandatory_constraint(
         &self,
         entity_type: EntityType,
         label: &str,
@@ -303,6 +311,7 @@ impl SyncGraph {
         params.extend(properties);
 
         self.execute_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))
+            .await
     }
 
     /// Creates a new constraint for this graph, making the provided properties unique
@@ -315,7 +324,7 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Create Graph Unique Constraint", skip_all, level = "info")
     )]
-    pub fn create_unique_constraint(
+    pub async fn create_unique_constraint(
         &mut self,
         entity_type: EntityType,
         label: String,
@@ -327,7 +336,8 @@ impl SyncGraph {
             label.as_str(),
             properties,
             None,
-        )?;
+        )
+        .await?;
 
         let entity_type = entity_type.to_string();
         let properties_count = properties.len().to_string();
@@ -343,6 +353,7 @@ impl SyncGraph {
 
         // create constraint using index
         self.execute_command("GRAPH.CONSTRAINT", Some("CREATE"), Some(params.as_slice()))
+            .await
     }
 
     /// Drop an existing constraint from the graph
@@ -356,7 +367,7 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Drop Graph Constraint", skip_all, level = "info")
     )]
-    pub fn drop_constraint(
+    pub async fn drop_constraint(
         &self,
         constraint_type: ConstraintType,
         entity_type: EntityType,
@@ -378,10 +389,11 @@ impl SyncGraph {
         params.extend(properties);
 
         self.execute_command("GRAPH.CONSTRAINT", Some("DROP"), Some(params.as_slice()))
+            .await
     }
 }
 
-impl HasGraphSchema for SyncGraph {
+impl HasGraphSchema for AsyncGraph {
     fn get_graph_schema_mut(&mut self) -> &mut GraphSchema {
         &mut self.graph_schema
     }
@@ -391,15 +403,15 @@ impl HasGraphSchema for SyncGraph {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_test_client, open_empty_test_graph},
+        test_utils::{create_async_test_client, open_empty_async_test_graph},
         IndexType,
     };
 
-    #[test]
-    fn test_create_drop_index() {
-        let mut graph = open_empty_test_graph("test_create_drop_index");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_drop_index() {
+        let mut graph = open_empty_async_test_graph("test_create_drop_index_async").await;
 
-        let indices = graph
+        graph
             .inner
             .create_index(
                 IndexType::Fulltext,
@@ -408,27 +420,32 @@ mod tests {
                 &["Hello"],
                 None,
             )
+            .await
             .expect("Could not create index");
-        assert_eq!(indices.get_indices_created(), Some(1));
 
-        let indices = graph.inner.list_indices().expect("Could not list indices");
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices");
+
         assert_eq!(indices.data.len(), 1);
         assert_eq!(
             indices.data[0].field_types["Hello"],
             vec![IndexType::Fulltext]
         );
 
-        let indices = graph
+        graph
             .inner
             .drop_index(IndexType::Fulltext, EntityType::Node, "actor", &["Hello"])
+            .await
             .expect("Could not drop index");
-        assert_eq!(indices.get_indices_deleted(), Some(1));
     }
 
-    #[test]
-    fn test_list_indices() {
-        let mut graph = create_test_client().select_graph("imdb");
-        let indices = graph.list_indices().expect("Could not list indices");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_indices() {
+        let mut graph = create_async_test_client().await.select_graph("imdb");
+        let indices = graph.list_indices().await.expect("Could not list indices");
 
         assert_eq!(indices.data.len(), 1);
         assert_eq!(indices.data[0].entity_type, EntityType::Node);
@@ -440,13 +457,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_create_drop_mandatory_constraint() {
-        let graph = open_empty_test_graph("test_mandatory_constraint");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_drop_mandatory_constraint() {
+        let graph = open_empty_async_test_graph("test_mandatory_constraint_async").await;
 
         graph
             .inner
             .create_mandatory_constraint(EntityType::Edge, "act", &["hello", "goodbye"])
+            .await
             .expect("Could not create constraint");
 
         graph
@@ -457,12 +475,13 @@ mod tests {
                 "act",
                 &["hello", "goodbye"],
             )
+            .await
             .expect("Could not drop constraint");
     }
 
-    #[test]
-    fn test_create_drop_unique_constraint() {
-        let mut graph = open_empty_test_graph("test_unique_constraint");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_drop_unique_constraint() {
+        let mut graph = open_empty_async_test_graph("test_unique_constraint_async").await;
 
         graph
             .inner
@@ -471,6 +490,7 @@ mod tests {
                 "actor".to_string(),
                 &["first_name", "last_name"],
             )
+            .await
             .expect("Could not create constraint");
 
         graph
@@ -481,12 +501,13 @@ mod tests {
                 "actor",
                 &["first_name", "last_name"],
             )
+            .await
             .expect("Could not drop constraint");
     }
 
-    #[test]
-    fn test_list_constraints() {
-        let mut graph = open_empty_test_graph("test_list_constraints");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_list_constraints() {
+        let mut graph = open_empty_async_test_graph("test_list_constraint_async").await;
 
         graph
             .inner
@@ -495,33 +516,38 @@ mod tests {
                 "actor".to_string(),
                 &["first_name", "last_name"],
             )
+            .await
             .expect("Could not create constraint");
 
         let res = graph
             .inner
             .list_constraints()
+            .await
             .expect("Could not list constraints");
         assert_eq!(res.data.len(), 1);
     }
 
-    #[test]
-    fn test_slowlog() {
-        let mut graph = open_empty_test_graph("test_slowlog");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_slowlog() {
+        let mut graph = open_empty_async_test_graph("test_slowlog_async").await;
 
         graph
             .inner
             .query("UNWIND range(0, 500) AS x RETURN x")
             .execute()
+            .await
             .expect("Could not generate the fast query");
         graph
             .inner
             .query("UNWIND range(0, 100000) AS x RETURN x")
             .execute()
+            .await
             .expect("Could not generate the slow query");
 
         let slowlog = graph
             .inner
             .slowlog()
+            .await
             .expect("Could not get slowlog entries");
 
         assert_eq!(slowlog.len(), 2);
@@ -537,19 +563,21 @@ mod tests {
         graph
             .inner
             .slowlog_reset()
+            .await
             .expect("Could not reset slowlog memory");
         let slowlog_after_reset = graph
             .inner
             .slowlog()
+            .await
             .expect("Could not get slowlog entries after reset");
         assert!(slowlog_after_reset.is_empty());
     }
 
-    #[test]
-    fn test_explain() {
-        let mut graph = create_test_client().select_graph("imdb");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_explain() {
+        let mut graph = create_async_test_client().await.select_graph("imdb");
 
-        let execution_plan = graph.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().expect("Could not create execution plan");
+        let execution_plan = graph.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().await.expect("Could not create execution plan");
         assert_eq!(execution_plan.plan().len(), 7);
         assert!(execution_plan.operations().get("Aggregate").is_some());
         assert_eq!(execution_plan.operations()["Aggregate"].len(), 1);
@@ -560,14 +588,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_profile() {
-        let mut graph = open_empty_test_graph("test_profile");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_profile() {
+        let mut graph = open_empty_async_test_graph("test_profile_async").await;
 
         let execution_plan = graph
             .inner
             .profile("UNWIND range(0, 1000) AS x RETURN x")
             .execute()
+            .await
             .expect("Could not generate the query");
 
         assert_eq!(execution_plan.plan().len(), 3);

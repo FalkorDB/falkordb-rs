@@ -3,6 +3,8 @@
  * Licensed under the Server Side Public License v1 (SSPLv1).
  */
 
+#![allow(private_interfaces)]
+#![allow(private_bounds)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!("../README.md")]
@@ -44,6 +46,11 @@ pub use value::{
     FalkorValue,
 };
 
+#[cfg(feature = "tokio")]
+pub use client::asynchronous::FalkorAsyncClient;
+#[cfg(feature = "tokio")]
+pub use graph::asynchronous::AsyncGraph;
+
 #[cfg(test)]
 pub(crate) mod test_utils {
     use super::*;
@@ -58,21 +65,53 @@ pub(crate) mod test_utils {
         }
     }
 
+    #[cfg(feature = "tokio")]
+    pub(crate) struct TestAsyncGraphHandle {
+        pub(crate) inner: AsyncGraph,
+    }
+
+    #[cfg(feature = "tokio")]
+    impl Drop for TestAsyncGraphHandle {
+        fn drop(&mut self) {
+            tokio::task::block_in_place(|| {
+                // Avoid copying the schema each time
+                let mut graph_handle =
+                    AsyncGraph::new(self.inner.get_client().clone(), self.inner.graph_name());
+                tokio::runtime::Handle::current().block_on(async move {
+                    graph_handle.delete().await.ok();
+                })
+            })
+        }
+    }
+
     pub(crate) fn create_test_client() -> FalkorSyncClient {
         FalkorClientBuilder::new()
             .build()
             .expect("Could not create client")
     }
 
-    pub(crate) fn open_test_graph(graph_name: &str) -> TestSyncGraphHandle {
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn create_async_test_client() -> FalkorAsyncClient {
+        FalkorClientBuilder::new_async()
+            .build()
+            .await
+            .expect("Could not create client")
+    }
+
+    pub(crate) fn open_empty_test_graph(graph_name: &str) -> TestSyncGraphHandle {
         let client = create_test_client();
 
-        client.select_graph(graph_name).delete().ok();
-
         TestSyncGraphHandle {
-            inner: client
-                .copy_graph("imdb", graph_name)
-                .expect("Could not copy graph for test"),
+            inner: client.select_graph(graph_name),
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn open_empty_async_test_graph(graph_name: &str) -> TestAsyncGraphHandle {
+        let client = create_async_test_client().await;
+
+        TestAsyncGraphHandle {
+            inner: client.select_graph(graph_name),
         }
     }
 }

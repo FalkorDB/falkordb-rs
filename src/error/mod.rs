@@ -112,6 +112,12 @@ pub enum FalkorDBError {
     /// Invalid enum string variant was encountered when parsing
     #[error("Invalid enum string variant was encountered when parsing: {0}")]
     InvalidEnumType(String),
+    /// Running in a single-threaded tokio runtime! Running async operations in a blocking context will cause a panic, aborting operation
+    #[error("Running in a single-threaded tokio runtime! Running async operations in a blocking context will cause a panic, aborting operation")]
+    SingleThreadedRuntime,
+    /// No runtime detected, you are trying to run an async operation from a sync context
+    #[error("No runtime detected, you are trying to run an async operation from a sync context")]
+    NoRuntime,
 }
 
 impl From<strum::ParseError> for FalkorDBError {

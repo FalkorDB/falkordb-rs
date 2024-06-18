@@ -52,7 +52,7 @@ jobs:
       - name: Populate test graph
         run: pip install falkordb && ./resources/populate_graph.py
       - name: Test
-        run: cargo nextest run --all
+        run: cargo nextest run --all --features tokio
     services:
       falkordb:
         image: falkordb/falkordb:edge

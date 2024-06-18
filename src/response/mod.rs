@@ -165,11 +165,11 @@ impl<T> QueryResult<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::open_test_graph;
+    use crate::test_utils::open_empty_test_graph;
 
     #[test]
     fn test_get_statistics() {
-        let mut graph = open_test_graph("imdb_stats_test");
+        let mut graph = open_empty_test_graph("imdb_stats_test");
         {
             let query_result = graph
                 .inner

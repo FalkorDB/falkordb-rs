@@ -4,8 +4,10 @@
  */
 
 use crate::{
-    client::blocking::FalkorSyncClientInner,
-    parser::{parse_type, redis_value_as_int, redis_value_as_string, redis_value_as_vec},
+    client::ProvidesSyncConnections,
+    parser::{
+        parse_type, redis_value_as_int, redis_value_as_string, redis_value_as_vec, ParserTypeMarker,
+    },
     FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{collections::HashMap, sync::Arc};
@@ -22,7 +24,7 @@ pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
 #[derive(Debug)]
 pub(crate) struct FKeyTypeVal {
     pub(crate) key: i64,
-    pub(crate) type_marker: i64,
+    pub(crate) type_marker: ParserTypeMarker,
     pub(crate) val: redis::Value,
 }
 
@@ -44,11 +46,13 @@ impl TryFrom<redis::Value> for FKeyTypeVal {
             })?;
 
         redis_value_as_int(key_raw).and_then(|key| {
-            redis_value_as_int(type_raw).map(|type_marker| FKeyTypeVal {
-                key,
-                type_marker,
-                val,
-            })
+            redis_value_as_int(type_raw)
+                .and_then(ParserTypeMarker::try_from)
+                .map(|type_marker| FKeyTypeVal {
+                    key,
+                    type_marker,
+                    val,
+                })
         })
     }
 }
@@ -71,7 +75,7 @@ pub(crate) type IdMap = HashMap<i64, String>;
 /// A struct containing the various schema maps, allowing conversions between ids and their string representations.
 #[derive(Clone)]
 pub struct GraphSchema {
-    client: Arc<FalkorSyncClientInner>,
+    client: Arc<dyn ProvidesSyncConnections>,
     graph_name: String,
     version: i64,
     labels: IdMap,
@@ -82,7 +86,7 @@ pub struct GraphSchema {
 impl GraphSchema {
     pub(crate) fn new<T: ToString>(
         graph_name: T,
-        client: Arc<FalkorSyncClientInner>,
+        client: Arc<dyn ProvidesSyncConnections>,
     ) -> Self {
         Self {
             client,
@@ -149,7 +153,7 @@ impl GraphSchema {
         // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
         let keys = self
             .client
-            .borrow_connection(self.client.clone())
+            .get_connection()
             .and_then(|mut conn| {
                 conn.execute_command(
                     Some(self.graph_name.as_str()),
@@ -191,6 +195,29 @@ impl GraphSchema {
         Ok(())
     }
 
+    pub(crate) fn parse_single_id(
+        &mut self,
+        raw_id: i64,
+        schema_type: SchemaType,
+    ) -> FalkorResult<String> {
+        Ok(
+            match self
+                .get_id_map_by_schema_type(schema_type)
+                .get(&raw_id)
+                .cloned()
+            {
+                None => {
+                    self.refresh(schema_type)?;
+                    self.get_id_map_by_schema_type(schema_type)
+                        .get(&raw_id)
+                        .cloned()
+                        .ok_or(FalkorDBError::MissingSchemaId(schema_type))?
+                }
+                Some(exists) => exists,
+            },
+        )
+    }
+
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Parse ID Vec To String Vec", skip_all, level = "debug")
@@ -204,22 +231,10 @@ impl GraphSchema {
         raw_ids
             .into_iter()
             .try_fold(Vec::with_capacity(raw_ids_len), |mut acc, raw_id| {
-                let id = redis_value_as_int(raw_id)?;
-                let value = match self
-                    .get_id_map_by_schema_type(schema_type)
-                    .get(&id)
-                    .cloned()
-                {
-                    None => {
-                        self.refresh(schema_type)?;
-                        self.get_id_map_by_schema_type(schema_type)
-                            .get(&id)
-                            .cloned()
-                            .ok_or(FalkorDBError::MissingSchemaId(schema_type))?
-                    }
-                    Some(exists) => exists,
-                };
-                acc.push(value);
+                acc.push(
+                    redis_value_as_int(raw_id)
+                        .and_then(|raw_id| self.parse_single_id(raw_id, schema_type))?,
+                );
                 Ok(acc)
             })
     }
@@ -261,7 +276,8 @@ impl GraphSchema {
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        client::blocking::create_empty_inner_client, test_utils::create_test_client, SyncGraph,
+        client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
+        test_utils::create_test_client, SyncGraph,
     };
     use std::collections::HashMap;
 
@@ -269,25 +285,27 @@ pub(crate) mod tests {
         let client = create_test_client();
         let mut graph = client.select_graph("imdb");
 
-        graph.graph_schema.properties = HashMap::from([
-            (0, "age".to_string()),
-            (1, "is_boring".to_string()),
-            (2, "something_else".to_string()),
-            (3, "secs_since_login".to_string()),
-        ]);
+        {
+            let schema = graph.get_graph_schema_mut();
+            schema.properties = HashMap::from([
+                (0, "age".to_string()),
+                (1, "is_boring".to_string()),
+                (2, "something_else".to_string()),
+                (3, "secs_since_login".to_string()),
+            ]);
 
-        graph.graph_schema.labels =
-            HashMap::from([(0, "much".to_string()), (1, "actor".to_string())]);
+            schema.labels = HashMap::from([(0, "much".to_string()), (1, "actor".to_string())]);
 
-        graph.graph_schema.relationships =
-            HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
+            schema.relationships = HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
+        }
 
         graph
     }
 
     #[test]
     fn test_label_not_exists() {
-        let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
+        let mut parser =
+            GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());
         let input_value = redis::Value::Bulk(vec![redis::Value::Bulk(vec![
             redis::Value::Int(1),
             redis::Value::Int(2),
@@ -300,7 +318,8 @@ pub(crate) mod tests {
 
     #[test]
     fn test_parse_properties_map() {
-        let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
+        let mut parser =
+            GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());
         parser.properties = HashMap::from([
             (1, "property1".to_string()),
             (2, "property2".to_string()),
@@ -341,7 +360,8 @@ pub(crate) mod tests {
 
     #[test]
     fn test_parse_id_vec() {
-        let mut parser = GraphSchema::new("graph_name".to_string(), create_empty_inner_client());
+        let mut parser =
+            GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());
 
         parser.labels = HashMap::from([
             (1, "property1".to_string()),

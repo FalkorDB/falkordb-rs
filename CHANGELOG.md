@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.1...v0.1.2) - 2024-06-18
+
+### Added
+- Implemenet Async Graph API ([#23](https://github.com/FalkorDB/falkordb-rs/pull/23))
+- implement QueryResult properly ([#19](https://github.com/FalkorDB/falkordb-rs/pull/19))
+
+### Fixed
+- Avert Parsing Latency By Rewriting Parser ([#22](https://github.com/FalkorDB/falkordb-rs/pull/22))
+
+### Other
+- *(deps)* bump regex from 1.10.4 to 1.10.5 ([#17](https://github.com/FalkorDB/falkordb-rs/pull/17))
+
 ## [0.1.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.0...v0.1.1) - 2024-06-09
 
 ### Added

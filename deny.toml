@@ -19,15 +19,11 @@ exceptions = [
 unused-allowed-license = "allow"
 confidence-threshold = 0.93
 allow = [
-    "SSPL-1.0",
     "Apache-2.0 WITH LLVM-exception",
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "MIT",
-    "GPL-3.0",
-    "LGPL-3.0",
-    "AGPL-3.0",
     "ISC"
 ]
 

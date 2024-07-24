@@ -51,8 +51,9 @@ let mut graph = client.select_graph("social");
 let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
     .with_timeout(5000).execute().expect("Failed executing query");
 
-for n in nodes.data {
-    println!("{:?}", n[0]);
+// Can also be collected, like any other iterator
+while let Some(node) = nodes.next() {
+    println!("{:?}", node);
 }
 ```
 
@@ -89,8 +90,9 @@ let mut graph = client.select_graph("social");
 let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
     .with_timeout(5000).execute().await.expect("Failed executing query");
 
-for n in nodes.data {
-    println!("{:?}", n[0]);
+// Graph operations are asynchronous, but parsing is still concurrent:
+while let Some(node) = nodes.next() {
+    println!("{:?}", node);
 }
 ```
 

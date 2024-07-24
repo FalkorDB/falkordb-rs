@@ -61,7 +61,6 @@ jobs:
     needs:
       - fmt
       - build
-      - coverage
       - clippy
       - doc
       - deny

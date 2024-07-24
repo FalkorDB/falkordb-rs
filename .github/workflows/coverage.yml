@@ -18,8 +18,6 @@ env:
 # Generate code coverage using llvm cov
 jobs:
   coverage:
-    needs:
-      - build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

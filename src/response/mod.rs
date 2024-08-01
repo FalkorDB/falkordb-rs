@@ -58,9 +58,9 @@ impl<T> QueryResult<T> {
     /// Creates a [`QueryResult`] from the specified data, and raw stats, where raw headers are optional
     ///
     /// # Arguments
-    /// * `headers`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Bulk`], where each element is expected to be of variant [`redis::Value::Data`] or [`redis::Value::Status`]
+    /// * `headers`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Array`], where each element is expected to be of variant [`redis::Value::BulkString`], [`redis::Value::VerbatimString`] or [`redis::Value::SimpleString`]
     /// * `data`: The actual data
-    /// * `stats`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Bulk`], where each element is expected to be of variant [`redis::Value::Data`] or [`redis::Value::Status`]
+    /// * `stats`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Array`], where each element is expected to be of variant [`redis::Value::BulkString`], [`redis::Value::VerbatimString`] or [`redis::Value::SimpleString`]
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "New Falkor Response", skip_all, level = "trace")

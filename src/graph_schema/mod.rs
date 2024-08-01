@@ -306,10 +306,10 @@ pub(crate) mod tests {
     fn test_label_not_exists() {
         let mut parser =
             GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());
-        let input_value = redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+        let input_value = redis::Value::Array(vec![redis::Value::Array(vec![
             redis::Value::Int(1),
             redis::Value::Int(2),
-            redis::Value::Status("test".to_string()),
+            redis::Value::SimpleString("test".to_string()),
         ])]);
 
         let result = parser.parse_properties_map(input_value);
@@ -327,21 +327,21 @@ pub(crate) mod tests {
         ]);
 
         // Create a FalkorValue to test
-        let input_value = redis::Value::Bulk(vec![
-            redis::Value::Bulk(vec![
+        let input_value = redis::Value::Array(vec![
+            redis::Value::Array(vec![
                 redis::Value::Int(1),
                 redis::Value::Int(2),
-                redis::Value::Status("test".to_string()),
+                redis::Value::SimpleString("test".to_string()),
             ]),
-            redis::Value::Bulk(vec![
+            redis::Value::Array(vec![
                 redis::Value::Int(2),
                 redis::Value::Int(3),
                 redis::Value::Int(42),
             ]),
-            redis::Value::Bulk(vec![
+            redis::Value::Array(vec![
                 redis::Value::Int(3),
                 redis::Value::Int(4),
-                redis::Value::Status("true".to_string()),
+                redis::Value::SimpleString("true".to_string()),
             ]),
         ]);
 

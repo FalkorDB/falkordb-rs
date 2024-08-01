@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#! /usr/bin/env python
 
 from falkordb import FalkorDB, Node, Edge
 import os

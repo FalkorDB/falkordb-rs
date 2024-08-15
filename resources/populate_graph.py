@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#! /usr/bin/env python
 
 from falkordb import FalkorDB, Node, Edge
 import os
@@ -57,3 +57,4 @@ nodes_str = [str(n) for n in actors.values()] + [str(n) for n in movies.values()
 graph.query(f"CREATE {','.join(nodes_str + edges_str)}")
 
 graph.create_node_fulltext_index("actor", "name")
+graph.create_node_range_index("actor", "age")

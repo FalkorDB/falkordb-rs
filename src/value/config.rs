@@ -87,9 +87,10 @@ impl TryFrom<&redis::Value> for ConfigValue {
     fn try_from(value: &redis::Value) -> Result<ConfigValue, Self::Error> {
         Ok(match value {
             redis::Value::Int(int_val) => ConfigValue::Int64(*int_val),
-            redis::Value::Data(str_data) => {
+            redis::Value::BulkString(str_data) => {
                 ConfigValue::String(String::from_utf8_lossy(str_data.as_slice()).to_string())
             }
+            redis::Value::SimpleString(data) => ConfigValue::String(data.to_string()),
             _ => return Err(FalkorDBError::InvalidDataReceived),
         })
     }
@@ -101,9 +102,10 @@ impl TryFrom<redis::Value> for ConfigValue {
     fn try_from(value: redis::Value) -> Result<Self, Self::Error> {
         Ok(match value {
             redis::Value::Int(int_val) => ConfigValue::Int64(int_val),
-            redis::Value::Data(str_data) => ConfigValue::String(
+            redis::Value::BulkString(str_data) => ConfigValue::String(
                 String::from_utf8(str_data).map_err(|_| FalkorDBError::ParsingString)?,
             ),
+            redis::Value::SimpleString(data) => ConfigValue::String(data),
             _ => return Err(FalkorDBError::InvalidDataReceived),
         })
     }

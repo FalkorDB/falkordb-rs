@@ -47,10 +47,11 @@ impl TryFrom<i64> for ParserTypeMarker {
 
 pub(crate) fn redis_value_as_string(value: redis::Value) -> FalkorResult<String> {
     match value {
-        redis::Value::Data(data) => {
+        redis::Value::BulkString(data) => {
             String::from_utf8(data).map_err(|_| FalkorDBError::ParsingString)
         }
-        redis::Value::Status(status) => Ok(status),
+        redis::Value::SimpleString(data) => Ok(data),
+        redis::Value::VerbatimString { format: _, text } => Ok(text),
         _ => Err(FalkorDBError::ParsingString),
     }
 }
@@ -77,7 +78,7 @@ pub(crate) fn redis_value_as_double(value: redis::Value) -> FalkorResult<f64> {
 
 pub(crate) fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
     match value {
-        redis::Value::Bulk(bulk_val) => Ok(bulk_val),
+        redis::Value::Array(bulk_val) => Ok(bulk_val),
         _ => Err(FalkorDBError::ParsingArray),
     }
 }
@@ -353,9 +354,10 @@ mod tests {
 
     #[test]
     fn test_parse_header_valid_single_key() {
-        let header = redis::Value::Bulk(vec![redis::Value::Bulk(vec![redis::Value::Data(
-            "key1".as_bytes().to_vec(),
-        )])]);
+        let header =
+            redis::Value::Array(vec![redis::Value::Array(vec![redis::Value::BulkString(
+                "key1".as_bytes().to_vec(),
+            )])]);
         let result = parse_header(header);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec!["key1".to_string()]);
@@ -363,12 +365,12 @@ mod tests {
 
     #[test]
     fn test_parse_header_valid_multiple_keys() {
-        let header = redis::Value::Bulk(vec![
-            redis::Value::Bulk(vec![
-                redis::Value::Data("type".as_bytes().to_vec()),
-                redis::Value::Data("header1".as_bytes().to_vec()),
+        let header = redis::Value::Array(vec![
+            redis::Value::Array(vec![
+                redis::Value::BulkString("type".as_bytes().to_vec()),
+                redis::Value::BulkString("header1".as_bytes().to_vec()),
             ]),
-            redis::Value::Bulk(vec![redis::Value::Data("key2".as_bytes().to_vec())]),
+            redis::Value::Array(vec![redis::Value::BulkString("key2".as_bytes().to_vec())]),
         ]);
         let result = parse_header(header);
         assert!(result.is_ok());
@@ -380,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_parse_header_empty_header() {
-        let header = redis::Value::Bulk(vec![]);
+        let header = redis::Value::Array(vec![]);
         let result = parse_header(header);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Vec::<String>::new());
@@ -388,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_parse_header_empty_vec() {
-        let header = redis::Value::Bulk(vec![redis::Value::Bulk(vec![])]);
+        let header = redis::Value::Array(vec![redis::Value::Array(vec![])]);
         let result = parse_header(header);
         assert!(result.is_err());
         assert_eq!(
@@ -399,10 +401,10 @@ mod tests {
 
     #[test]
     fn test_parse_header_many_elements() {
-        let header = redis::Value::Bulk(vec![redis::Value::Bulk(vec![
-            redis::Value::Data("just_some_header".as_bytes().to_vec()),
-            redis::Value::Data("header1".as_bytes().to_vec()),
-            redis::Value::Data("extra".as_bytes().to_vec()),
+        let header = redis::Value::Array(vec![redis::Value::Array(vec![
+            redis::Value::BulkString("just_some_header".as_bytes().to_vec()),
+            redis::Value::BulkString("header1".as_bytes().to_vec()),
+            redis::Value::BulkString("extra".as_bytes().to_vec()),
         ])]);
         let result = parse_header(header);
         assert!(result.is_ok());
@@ -415,21 +417,21 @@ mod tests {
 
         let res = parse_type(
             ParserTypeMarker::Edge,
-            redis::Value::Bulk(vec![
+            redis::Value::Array(vec![
                 redis::Value::Int(100), // edge id
                 redis::Value::Int(0),   // edge type
                 redis::Value::Int(51),  // src node
                 redis::Value::Int(52),  // dst node
-                redis::Value::Bulk(vec![
-                    redis::Value::Bulk(vec![
+                redis::Value::Array(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(0),
                         redis::Value::Int(3),
                         redis::Value::Int(20),
                     ]),
-                    redis::Value::Bulk(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(1),
                         redis::Value::Int(4),
-                        redis::Value::Status("false".to_string()),
+                        redis::Value::SimpleString("false".to_string()),
                     ]),
                 ]),
             ]),
@@ -461,24 +463,24 @@ mod tests {
 
         let res = parse_type(
             ParserTypeMarker::Node,
-            redis::Value::Bulk(vec![
-                redis::Value::Int(51),                                                // node id
-                redis::Value::Bulk(vec![redis::Value::Int(0), redis::Value::Int(1)]), // node type
-                redis::Value::Bulk(vec![
-                    redis::Value::Bulk(vec![
+            redis::Value::Array(vec![
+                redis::Value::Int(51), // node id
+                redis::Value::Array(vec![redis::Value::Int(0), redis::Value::Int(1)]), // node type
+                redis::Value::Array(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(0),
                         redis::Value::Int(3),
                         redis::Value::Int(15),
                     ]),
-                    redis::Value::Bulk(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(2),
                         redis::Value::Int(2),
-                        redis::Value::Status("the something".to_string()),
+                        redis::Value::SimpleString("the something".to_string()),
                     ]),
-                    redis::Value::Bulk(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(3),
                         redis::Value::Int(5),
-                        redis::Value::Status("105.5".to_string()),
+                        redis::Value::SimpleString("105.5".to_string()),
                     ]),
                 ]),
             ]),
@@ -511,38 +513,38 @@ mod tests {
 
         let res = parse_type(
             ParserTypeMarker::Path,
-            redis::Value::Bulk(vec![
-                redis::Value::Bulk(vec![
-                    redis::Value::Bulk(vec![
+            redis::Value::Array(vec![
+                redis::Value::Array(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(51),
-                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
-                        redis::Value::Bulk(vec![]),
+                        redis::Value::Array(vec![redis::Value::Int(0)]),
+                        redis::Value::Array(vec![]),
                     ]),
-                    redis::Value::Bulk(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(52),
-                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
-                        redis::Value::Bulk(vec![]),
+                        redis::Value::Array(vec![redis::Value::Int(0)]),
+                        redis::Value::Array(vec![]),
                     ]),
-                    redis::Value::Bulk(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(53),
-                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
-                        redis::Value::Bulk(vec![]),
+                        redis::Value::Array(vec![redis::Value::Int(0)]),
+                        redis::Value::Array(vec![]),
                     ]),
                 ]),
-                redis::Value::Bulk(vec![
-                    redis::Value::Bulk(vec![
+                redis::Value::Array(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(100),
                         redis::Value::Int(0),
                         redis::Value::Int(51),
                         redis::Value::Int(52),
-                        redis::Value::Bulk(vec![]),
+                        redis::Value::Array(vec![]),
                     ]),
-                    redis::Value::Bulk(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(101),
                         redis::Value::Int(1),
                         redis::Value::Int(52),
                         redis::Value::Int(53),
-                        redis::Value::Bulk(vec![]),
+                        redis::Value::Array(vec![]),
                     ]),
                 ]),
             ]),
@@ -577,18 +579,18 @@ mod tests {
 
         let res = parse_type(
             ParserTypeMarker::Map,
-            redis::Value::Bulk(vec![
-                redis::Value::Status("key0".to_string()),
-                redis::Value::Bulk(vec![
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("key0".to_string()),
+                redis::Value::Array(vec![
                     redis::Value::Int(2),
-                    redis::Value::Status("val0".to_string()),
+                    redis::Value::SimpleString("val0".to_string()),
                 ]),
-                redis::Value::Status("key1".to_string()),
-                redis::Value::Bulk(vec![redis::Value::Int(3), redis::Value::Int(1)]),
-                redis::Value::Status("key2".to_string()),
-                redis::Value::Bulk(vec![
+                redis::Value::SimpleString("key1".to_string()),
+                redis::Value::Array(vec![redis::Value::Int(3), redis::Value::Int(1)]),
+                redis::Value::SimpleString("key2".to_string()),
+                redis::Value::Array(vec![
                     redis::Value::Int(4),
-                    redis::Value::Status("true".to_string()),
+                    redis::Value::SimpleString("true".to_string()),
                 ]),
             ]),
             graph.get_graph_schema_mut(),
@@ -615,9 +617,9 @@ mod tests {
 
         let res = parse_type(
             ParserTypeMarker::Point,
-            redis::Value::Bulk(vec![
-                redis::Value::Status("102.0".to_string()),
-                redis::Value::Status("15.2".to_string()),
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("102.0".to_string()),
+                redis::Value::SimpleString("15.2".to_string()),
             ]),
             graph.get_graph_schema_mut(),
         );
@@ -635,8 +637,10 @@ mod tests {
     fn test_map_not_a_vec() {
         let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
-        let res =
-            parse_regular_falkor_map(redis::Value::Status("Hello".to_string()), &mut graph_schema);
+        let res = parse_regular_falkor_map(
+            redis::Value::SimpleString("Hello".to_string()),
+            &mut graph_schema,
+        );
 
         assert!(res.is_err())
     }
@@ -646,7 +650,7 @@ mod tests {
         let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
-            redis::Value::Bulk(vec![redis::Value::Nil; 7]),
+            redis::Value::Array(vec![redis::Value::Nil; 7]),
             &mut graph_schema,
         );
 
@@ -658,9 +662,9 @@ mod tests {
         let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
-            redis::Value::Bulk(vec![
-                redis::Value::Status("Key".to_string()),
-                redis::Value::Status("false".to_string()),
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("Key".to_string()),
+                redis::Value::SimpleString("false".to_string()),
             ]),
             &mut graph_schema,
         );
@@ -673,9 +677,9 @@ mod tests {
         let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
-            redis::Value::Bulk(vec![
-                redis::Value::Status("Key".to_string()),
-                redis::Value::Bulk(vec![redis::Value::Int(7)]),
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("Key".to_string()),
+                redis::Value::Array(vec![redis::Value::Int(7)]),
             ]),
             &mut graph_schema,
         );
@@ -688,9 +692,9 @@ mod tests {
         let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
-            redis::Value::Bulk(vec![
-                redis::Value::Status("Key".to_string()),
-                redis::Value::Bulk(vec![redis::Value::Int(3); 3]),
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("Key".to_string()),
+                redis::Value::Array(vec![redis::Value::Int(3); 3]),
             ]),
             &mut graph_schema,
         );
@@ -703,11 +707,11 @@ mod tests {
         let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
-            redis::Value::Bulk(vec![
-                redis::Value::Status("Key".to_string()),
-                redis::Value::Bulk(vec![
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("Key".to_string()),
+                redis::Value::Array(vec![
                     redis::Value::Int(3),
-                    redis::Value::Status("true".to_string()),
+                    redis::Value::SimpleString("true".to_string()),
                 ]),
             ]),
             &mut graph_schema,
@@ -721,13 +725,13 @@ mod tests {
         let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
 
         let res = parse_regular_falkor_map(
-            redis::Value::Bulk(vec![
-                redis::Value::Status("IntKey".to_string()),
-                redis::Value::Bulk(vec![redis::Value::Int(3), redis::Value::Int(1)]),
-                redis::Value::Status("BoolKey".to_string()),
-                redis::Value::Bulk(vec![
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("IntKey".to_string()),
+                redis::Value::Array(vec![redis::Value::Int(3), redis::Value::Int(1)]),
+                redis::Value::SimpleString("BoolKey".to_string()),
+                redis::Value::Array(vec![
                     redis::Value::Int(4),
-                    redis::Value::Status("true".to_string()),
+                    redis::Value::SimpleString("true".to_string()),
                 ]),
             ]),
             &mut graph_schema,

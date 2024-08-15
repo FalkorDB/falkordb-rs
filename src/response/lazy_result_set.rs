@@ -66,41 +66,41 @@ mod tests {
 
         let mut result_set = LazyResultSet::new(
             vec![
-                redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                redis::Value::Array(vec![redis::Value::Array(vec![
                     redis::Value::Int(8),
-                    redis::Value::Bulk(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(203),
-                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
-                        redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                        redis::Value::Array(vec![redis::Value::Int(0)]),
+                        redis::Value::Array(vec![redis::Value::Array(vec![
                             redis::Value::Int(1),
                             redis::Value::Int(2),
-                            redis::Value::Data("FirstNode".to_string().into_bytes()),
+                            redis::Value::BulkString("FirstNode".to_string().into_bytes()),
                         ])]),
                     ]),
                 ])]),
-                redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                redis::Value::Array(vec![redis::Value::Array(vec![
                     redis::Value::Int(8),
-                    redis::Value::Bulk(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(203),
-                        redis::Value::Bulk(vec![redis::Value::Int(0)]),
-                        redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                        redis::Value::Array(vec![redis::Value::Int(0)]),
+                        redis::Value::Array(vec![redis::Value::Array(vec![
                             redis::Value::Int(1),
                             redis::Value::Int(2),
-                            redis::Value::Data("FirstNode".to_string().into_bytes()),
+                            redis::Value::BulkString("FirstNode".to_string().into_bytes()),
                         ])]),
                     ]),
                 ])]),
-                redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                redis::Value::Array(vec![redis::Value::Array(vec![
                     redis::Value::Int(7),
-                    redis::Value::Bulk(vec![
+                    redis::Value::Array(vec![
                         redis::Value::Int(100),
                         redis::Value::Int(0),
                         redis::Value::Int(203),
                         redis::Value::Int(204),
-                        redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                        redis::Value::Array(vec![redis::Value::Array(vec![
                             redis::Value::Int(1),
                             redis::Value::Int(2),
-                            redis::Value::Data("Edge".to_string().into_bytes()),
+                            redis::Value::BulkString("Edge".to_string().into_bytes()),
                         ])]),
                     ]),
                 ])]),

@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check Clippy
-        run: cargo clippy --all
+        run: cargo clippy
 
   # Make sure the release's docs are full
   doc:
@@ -47,14 +47,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Doc
-        run: cargo doc --all
+        run: cargo doc
 
   # Make sure no unwanted licenses or yanked crates have slipped in
   deny:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v1
+      - uses: EmbarkStudios/cargo-deny-action@v2
 
   # Actually publish to crates.io
   crates-io:

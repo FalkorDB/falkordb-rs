@@ -4,3 +4,4 @@
 .vs/
 /codecov.json
 /dump.rdb
+venv/

@@ -433,10 +433,13 @@ mod tests {
         assert_eq!(indices.data.len(), 1);
         assert_eq!(indices.data[0].entity_type, EntityType::Node);
         assert_eq!(indices.data[0].index_label, "actor".to_string());
-        assert_eq!(indices.data[0].field_types.len(), 1);
+        assert_eq!(indices.data[0].field_types.len(), 2);
         assert_eq!(
             indices.data[0].field_types,
-            HashMap::from([("name".to_string(), vec![IndexType::Fulltext])])
+            HashMap::from([
+                ("name".to_string(), vec![IndexType::Fulltext]),
+                ("age".to_string(), vec![IndexType::Range])
+            ])
         );
     }
 
@@ -556,7 +559,7 @@ mod tests {
 
         assert_eq!(
             execution_plan.string_representation(),
-            "\nResults\n    Limit\n        Aggregate\n            Filter\n                Node By Label Scan | (b:actor)\n                    Project\n                        Node By Label Scan | (a:actor)"
+            "\nResults\n    Limit\n        Aggregate\n            Filter\n                Node By Index Scan | (b:actor)\n                    Project\n                        Node By Label Scan | (a:actor)"
         );
     }
 

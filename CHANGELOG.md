@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.4...v0.1.5) - 2024-08-15
+
+### Fixed
+- Update crates to avoid CVEs ([#35](https://github.com/FalkorDB/falkordb-rs/pull/35))
+
+### Other
+- crates io bug
+- Update deny action
+- Update redis and tokio version, and fix compatiblity issues
+- Update redis and tokio version, and fix compatiblity issues
+- Update README
+- Remove deny from needs
+- *(deps)* bump thiserror from 1.0.61 to 1.0.62 ([#30](https://github.com/FalkorDB/falkordb-rs/pull/30))
+- *(deps)* bump strum from 0.26.2 to 0.26.3 ([#28](https://github.com/FalkorDB/falkordb-rs/pull/28))
+
 ## [0.1.4](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.3...v0.1.4) - 2024-06-20
 
 ### Fixed

@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "falkordb"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "parking_lot",
  "redis",

@@ -53,7 +53,7 @@ let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n L
 .with_timeout(5000).execute().expect("Failed executing query");
 
 // Can also be collected, like any other iterator
-while let Some(node) = nodes.next() {
+while let Some(node) = nodes.data.next() {
 println ! ("{:?}", node);
 }
 ```
@@ -94,7 +94,7 @@ let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n L
 .with_timeout(5000).execute().await.expect("Failed executing query");
 
 // Graph operations are asynchronous, but parsing is still concurrent:
-while let Some(node) = nodes.next() {
+while let Some(node) = nodes.data.next() {
 println ! ("{:?}", node);
 }
 ```

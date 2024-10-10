@@ -252,10 +252,12 @@ pub(crate) fn create_empty_inner_sync_client() -> Arc<FalkorSyncClientInner> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FalkorValue::Node;
     use crate::{
         test_utils::{create_test_client, TestSyncGraphHandle},
-        FalkorClientBuilder,
+        FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
     };
+    use approx::assert_relative_eq;
     use std::{mem, num::NonZeroU8, sync::mpsc::TryRecvError, thread};
 
     #[test]
@@ -290,6 +292,39 @@ mod tests {
 
         let graphs = res.unwrap();
         assert!(graphs.contains(&"imdb".to_string()));
+    }
+    #[test]
+    fn test_read_vec32() {
+        let client = create_test_client();
+        let mut graph = client.select_graph("test_read_vec32");
+        graph
+            .query("CREATE (p:Document {embedding: vecf32([2.1, 0.82, 1.3]), id: '1'})")
+            .execute()
+            .expect("Could create document with embedding");
+        let mut res: QueryResult<LazyResultSet> = graph
+            .query("MATCH (p:Document) RETURN p")
+            .execute()
+            .expect("Could not get document");
+        while let Some(falkor_value) = res.data.next() {
+            // iterate on value that is a node
+            for value in falkor_value {
+                if let Node(node) = value {
+                    if let FalkorValue::Vec32(embedding) = &node.properties["embedding"] {
+                        assert_eq!(embedding.values.len(), 3);
+                        // compare each embedding value with expected value
+                        for (actual, expected) in
+                            embedding.values.iter().zip([2.1, 0.82, 1.3].iter())
+                        {
+                            assert_relative_eq!(actual, expected, epsilon = 1e-6);
+                        }
+                    } else {
+                        panic!("Could not get embedding");
+                    }
+                } else {
+                    panic!("MATCH should return a node");
+                }
+            }
+        }
     }
 
     #[test]

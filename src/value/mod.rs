@@ -8,11 +8,13 @@ use graph_entities::{Edge, Node};
 use path::Path;
 use point::Point;
 use std::{collections::HashMap, fmt::Debug};
+use vec32::Vec32;
 
 pub(crate) mod config;
 pub(crate) mod graph_entities;
 pub(crate) mod path;
 pub(crate) mod point;
+pub(crate) mod vec32;
 
 /// An enum of all the supported Falkor types
 #[derive(Clone, Debug, PartialEq)]
@@ -25,6 +27,8 @@ pub enum FalkorValue {
     Array(Vec<FalkorValue>),
     /// A [`HashMap`] of [`String`] as keys, and other [`FalkorValue`] as values
     Map(HashMap<String, FalkorValue>),
+    /// A vector of float values used for vector search see [`Vec32`]
+    Vec32(Vec32),
     /// Plain old string
     String(String),
     /// A boolean value

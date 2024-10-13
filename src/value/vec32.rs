@@ -77,4 +77,12 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), FalkorDBError::ParsingF32);
     }
+
+    #[test]
+    fn test_parse_empty_vec32() {
+        let value = redis::Value::Array(vec![]);
+        let result = Vec32::parse(value);
+        assert!(result.is_ok());
+        assert!(result.unwrap().values.is_empty());
+    }
 }

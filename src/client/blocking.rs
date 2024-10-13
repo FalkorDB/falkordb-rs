@@ -300,13 +300,13 @@ mod tests {
         graph
             .query("CREATE (p:Document {embedding: vecf32([2.1, 0.82, 1.3]), id: '1'})")
             .execute()
-            .expect("Could create document with embedding");
+            .expect("Could not create document with embedding");
         let mut res: QueryResult<LazyResultSet> = graph
             .query("MATCH (p:Document) RETURN p")
             .execute()
             .expect("Could not get document");
         while let Some(falkor_value) = res.data.next() {
-            // iterate on value that is a node
+            // iterate on a node value
             for value in falkor_value {
                 if let Node(node) = value {
                     if let FalkorValue::Vec32(embedding) = &node.properties["embedding"] {

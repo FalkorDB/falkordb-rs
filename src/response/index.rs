@@ -96,6 +96,8 @@ pub struct FalkorIndex {
     pub status: IndexStatus,
     /// What is this index's label
     pub index_label: String,
+    /// What fields to index by
+    pub fields: Vec<String>,
     /// Whether each field is a text field, range, etc.
     pub field_types: HashMap<String, Vec<IndexType>>,
     /// Which language is the text used to index in
@@ -117,9 +119,7 @@ impl SchemaParsable for FalkorIndex {
         value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> Result<Self, FalkorDBError> {
-        // properties are ignored because we deliver then in field_types and the keys of the map
-        // where the value is the index type
-        let [label, _properties, field_types, options, language, stopwords, entity_type, status, info] =
+        let [label, fields, field_types, options, language, stopwords, entity_type, status, info] =
             redis_value_as_vec(value).and_then(|as_vec| {
                 as_vec.try_into().map_err(|_| {
                     FalkorDBError::ParsingArrayToStructElementCount(
@@ -132,6 +132,7 @@ impl SchemaParsable for FalkorIndex {
             entity_type: parse_falkor_enum(entity_type)?,
             status: parse_falkor_enum(status)?,
             index_label: redis_value_as_typed_string(label)?,
+            fields: parse_string_array(fields, graph_schema)?,
             field_types: parse_types_map(field_types)?,
             language: redis_value_as_typed_string(language)?,
             stopwords: parse_string_array(stopwords, graph_schema)?,

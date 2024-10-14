@@ -123,7 +123,7 @@ impl SchemaParsable for FalkorIndex {
             redis_value_as_vec(value).and_then(|as_vec| {
                 as_vec.try_into().map_err(|_| {
                     FalkorDBError::ParsingArrayToStructElementCount(
-                        "Expected exactly 8 elements in index object",
+                        "Expected exactly 9 elements in index object",
                     )
                 })
             })?;

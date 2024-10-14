@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.5...v0.1.6) - 2024-10-14
+
+### Other
+
+- Prepare for release v0.1.6
+- Re add fields to FalkorIndex, test.
+- Fix error message of ParsingArrayToStructElementCount
+- Improve Vec32 parsing and add comprehensive tests
+- Fix failing unit tests, add more vec32 test
+- add support with the new vec32
+
 ## [0.1.5](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.4...v0.1.5) - 2024-08-15
 
 ### Fixed

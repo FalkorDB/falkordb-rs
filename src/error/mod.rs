@@ -80,8 +80,8 @@ pub enum FalkorDBError {
     #[error("Element was not of type F32")]
     ParsingF32,
     /// Element was not of type Vec32.
-    #[error("Element was not of type Vec32")]
-    ParsingVec32,
+    #[error("Element was not of type Vec32: {0}")]
+    ParsingVec32(String),
     /// Element was not of type Array.
     #[error("Element was not of type Array")]
     ParsingArray,

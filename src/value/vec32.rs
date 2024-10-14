@@ -27,15 +27,16 @@ impl Vec32 {
         tracing::instrument(name = "Parse Vec32", skip_all, level = "trace")
     )]
     pub fn parse(value: redis::Value) -> FalkorResult<Vec32> {
-        let values: Vec<redis::Value> = redis_value_as_vec(value).map_err(|_| ParsingVec32)?;
+        let values: Vec<redis::Value> =
+            redis_value_as_vec(value).map_err(|e| ParsingVec32(e.to_string()))?;
 
-        let mut vec32 = Vec32 {
-            values: Vec::with_capacity(values.len()),
+        let parsed_values: Vec<f32> = values
+            .into_iter()
+            .map(redis_value_as_float)
+            .collect::<Result<_, _>>()?;
+        let vec32 = Vec32 {
+            values: parsed_values,
         };
-
-        for val in values {
-            vec32.values.push(redis_value_as_float(val)?);
-        }
 
         Ok(vec32)
     }
@@ -64,7 +65,10 @@ mod tests {
         let value = redis::Value::SimpleString("not an array".to_string());
         let result = Vec32::parse(value);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), FalkorDBError::ParsingVec32);
+        assert_eq!(
+            result.unwrap_err(),
+            FalkorDBError::ParsingVec32("Element was not of type Array".to_string())
+        );
     }
 
     #[test]
@@ -85,4 +89,19 @@ mod tests {
         assert!(result.is_ok());
         assert!(result.unwrap().values.is_empty());
     }
+}
+
+#[test]
+fn test_parse_special_float_values() {
+    let value = redis::Value::Array(vec![
+        redis::Value::SimpleString("NaN".to_string()),
+        redis::Value::SimpleString("Infinity".to_string()),
+        redis::Value::SimpleString("-Infinity".to_string()),
+    ]);
+    let result = Vec32::parse(value);
+    assert!(result.is_ok());
+    let vec = result.unwrap().values;
+    assert!(vec[0].is_nan());
+    assert!(vec[1].is_infinite());
+    assert!(vec[2].is_infinite());
 }

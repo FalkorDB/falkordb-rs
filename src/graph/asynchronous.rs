@@ -435,6 +435,9 @@ mod tests {
             vec![IndexType::Fulltext]
         );
 
+        assert_eq!(indices.data[0].fields.len(), 1);
+        assert_eq!(indices.data[0].fields[0], "Hello");
+
         graph
             .inner
             .drop_index(IndexType::Fulltext, EntityType::Node, "actor", &["Hello"])

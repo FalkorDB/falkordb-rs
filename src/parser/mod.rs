@@ -4,7 +4,8 @@
  */
 
 use crate::{
-    ConfigValue, Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point,
+    value::vec32::Vec32, ConfigValue, Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
+    Node, Path, Point,
 };
 use std::collections::HashMap;
 
@@ -22,6 +23,7 @@ pub(crate) enum ParserTypeMarker {
     Path = 9,
     Map = 10,
     Point = 11,
+    Vec32 = 12,
 }
 
 impl TryFrom<i64> for ParserTypeMarker {
@@ -40,6 +42,7 @@ impl TryFrom<i64> for ParserTypeMarker {
             9 => Self::Path,
             10 => Self::Map,
             11 => Self::Point,
+            12 => Self::Vec32,
             _ => Err(FalkorDBError::ParsingUnknownType)?,
         })
     }
@@ -74,6 +77,11 @@ pub(crate) fn redis_value_as_bool(value: redis::Value) -> FalkorResult<bool> {
 pub(crate) fn redis_value_as_double(value: redis::Value) -> FalkorResult<f64> {
     redis_value_as_string(value)
         .and_then(|string_val| string_val.parse().map_err(|_| FalkorDBError::ParsingF64))
+}
+
+pub(crate) fn redis_value_as_float(value: redis::Value) -> FalkorResult<f32> {
+    redis_value_as_string(value)
+        .and_then(|string_val| string_val.parse().map_err(|_| FalkorDBError::ParsingF32))
 }
 
 pub(crate) fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
@@ -332,6 +340,7 @@ pub(crate) fn parse_type(
         ParserTypeMarker::Path => FalkorValue::Path(Path::parse(val, graph_schema)?),
         ParserTypeMarker::Map => FalkorValue::Map(parse_regular_falkor_map(val, graph_schema)?),
         ParserTypeMarker::Point => FalkorValue::Point(Point::parse(val)?),
+        ParserTypeMarker::Vec32 => FalkorValue::Vec32(Vec32::parse(val)?),
     };
 
     Ok(res)

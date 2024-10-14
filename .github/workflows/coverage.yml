@@ -22,11 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Populate test graph
-        run: pip install falkordb && ./resources/populate_graph.py
+        run:  pip install falkordb && ./resources/populate_graph.py
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
       - name: Generate Code Coverage
-        run: cargo llvm-cov nextest --all --features tokio --codecov --output-path codecov.json
+        run:  cargo llvm-cov nextest --all --features tokio --codecov --output-path codecov.json
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4
         with:

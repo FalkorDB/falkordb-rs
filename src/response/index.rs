@@ -3,12 +3,11 @@
  * Licensed under the MIT License.
  */
 
-use crate::parser::ParserTypeMarker;
+use crate::parser::{parse_type, ParserTypeMarker};
 use crate::{
     parser::{
         parse_falkor_enum, parse_raw_redis_value, redis_value_as_string,
-        redis_value_as_typed_string, redis_value_as_typed_string_vec, redis_value_as_vec,
-        type_val_from_value, SchemaParsable,
+        redis_value_as_typed_string, redis_value_as_vec, type_val_from_value, SchemaParsable,
     },
     EntityType, FalkorDBError, FalkorValue, GraphSchema,
 };
@@ -36,6 +35,24 @@ pub enum IndexType {
     Vector,
     /// This index is a string
     Fulltext,
+}
+
+// parse array of strings, both array and strings represent as redis values
+fn parse_string_array(
+    value: redis::Value,
+    graph_schema: &mut GraphSchema,
+) -> Result<Vec<String>, FalkorDBError> {
+    type_val_from_value(value).and_then(|(type_marker, val)| {
+        if type_marker != ParserTypeMarker::Array {
+            return Err(FalkorDBError::ParsingArray);
+        }
+        let vector = parse_type(ParserTypeMarker::Array, val, graph_schema)?.into_vec()?;
+        vector
+            .into_iter()
+            .map(FalkorValue::into_string)
+            .into_iter()
+            .collect::<Result<Vec<String>, FalkorDBError>>()
+    })
 }
 
 fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>>, FalkorDBError> {
@@ -89,6 +106,8 @@ pub struct FalkorIndex {
     pub stopwords: Vec<String>,
     /// Various other information for querying by the user
     pub info: HashMap<String, FalkorValue>,
+    /// Various other options relevant for this index
+    pub options: HashMap<String, FalkorValue>,
 }
 
 impl SchemaParsable for FalkorIndex {
@@ -100,11 +119,11 @@ impl SchemaParsable for FalkorIndex {
         value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> Result<Self, FalkorDBError> {
-        let [label, fields, field_types, language, stopwords, entity_type, status, info] =
+        let [label, fields, field_types, options, language, stopwords, entity_type, status, info] =
             redis_value_as_vec(value).and_then(|as_vec| {
                 as_vec.try_into().map_err(|_| {
                     FalkorDBError::ParsingArrayToStructElementCount(
-                        "Expected exactly 8 elements in index object",
+                        "Expected exactly 9 elements in index object",
                     )
                 })
             })?;
@@ -113,11 +132,12 @@ impl SchemaParsable for FalkorIndex {
             entity_type: parse_falkor_enum(entity_type)?,
             status: parse_falkor_enum(status)?,
             index_label: redis_value_as_typed_string(label)?,
-            fields: redis_value_as_typed_string_vec(fields)?,
+            fields: parse_string_array(fields, graph_schema)?,
             field_types: parse_types_map(field_types)?,
             language: redis_value_as_typed_string(language)?,
-            stopwords: redis_value_as_typed_string_vec(stopwords)?,
+            stopwords: parse_string_array(stopwords, graph_schema)?,
             info: parse_raw_redis_value(info, graph_schema).and_then(|val| val.into_map())?,
+            options: parse_raw_redis_value(options, graph_schema).and_then(|val| val.into_map())?,
         })
     }
 }

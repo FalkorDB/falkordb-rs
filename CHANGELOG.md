@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.4...v0.1.5) - 2024-10-14
+
+### Changed 
+- Added support with the new Vec32 type supported by latest FalkorDB server, 
+  with older server the result will still return as Vec<f64>
+
+### Other
+- update redis, regex, thiserror and tokio
+
 ## [0.1.5](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.4...v0.1.5) - 2024-08-15
 
 ### Fixed

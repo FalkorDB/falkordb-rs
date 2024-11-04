@@ -91,19 +91,6 @@ pub(crate) fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis:
     }
 }
 
-// Parse a Redis response as a vector of Redis values
-// Redis response can be a vector of results or an error returned from redis
-pub(crate) fn redis_response_as_vec(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
-    match value {
-        redis::Value::Array(bulk_val) => Ok(bulk_val),
-        redis::Value::ServerError(e) => {
-            let redis_error: redis::RedisError = e.into();
-            Err(redis_error.into())
-        }
-        _ => Err(FalkorDBError::ParsingArray),
-    }
-}
-
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(name = "Parse Redis Info", skip_all, level = "info")

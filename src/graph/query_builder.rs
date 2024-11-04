@@ -5,7 +5,7 @@
 
 use crate::{
     graph::HasGraphSchema,
-    parser::{redis_response_as_vec, redis_value_as_vec, SchemaParsable},
+    parser::{redis_value_as_vec, SchemaParsable},
     Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet,
     QueryResult, SyncGraph,
 };
@@ -97,7 +97,13 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
         self,
         value: redis::Value,
     ) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
-        let res = redis_response_as_vec(value)?;
+        if let redis::Value::ServerError(e) = value {
+            return Err(FalkorDBError::RedisError(
+                e.details().unwrap_or("Unknown error").to_string(),
+            ));
+        }
+
+        let res = redis_value_as_vec(value)?;
 
         match res.len() {
             1 => {

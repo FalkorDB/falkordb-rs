@@ -131,3 +131,9 @@ impl From<strum::ParseError> for FalkorDBError {
         FalkorDBError::InvalidEnumType(value.to_string())
     }
 }
+
+impl From<redis::RedisError> for FalkorDBError {
+    fn from(value: redis::RedisError) -> Self {
+        FalkorDBError::RedisError(value.to_string())
+    }
+}

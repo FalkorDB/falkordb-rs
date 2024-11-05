@@ -91,6 +91,19 @@ pub(crate) fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis:
     }
 }
 
+// Parse a Redis response as a vector of Redis values
+// Redis response can be a vector of results or an error returned from redis
+pub(crate) fn redis_response_as_vec(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
+    match value {
+        redis::Value::Array(bulk_val) => Ok(bulk_val),
+        redis::Value::ServerError(e) => {
+            let redis_error: redis::RedisError = e.into();
+            Err(redis_error.into())
+        }
+        _ => Err(FalkorDBError::ParsingArray),
+    }
+}
+
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(name = "Parse Redis Info", skip_all, level = "info")
@@ -153,18 +166,10 @@ pub(crate) fn parse_config_hashmap(
 pub(crate) fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToString>>(
     value: redis::Value
 ) -> FalkorResult<T> {
-    type_val_from_value(value)
-        .and_then(|(type_marker, val)| {
-            if type_marker == ParserTypeMarker::String {
-                redis_value_as_string(val)
-            } else {
-                Err(FalkorDBError::ParsingArray)
-            }
-        })
-        .and_then(|val_string| {
-            T::try_from(val_string.as_str())
-                .map_err(|err| FalkorDBError::InvalidEnumType(err.to_string()))
-        })
+    redis_value_as_typed_string(value).and_then(|val_string| {
+        T::try_from(val_string.as_str())
+            .map_err(|err| FalkorDBError::InvalidEnumType(err.to_string()))
+    })
 }
 
 #[cfg_attr(

@@ -428,11 +428,9 @@ mod tests {
     #[test]
     fn test_invalid_cypher_query_syntax_returns_error() {
         let mut graph = create_test_client().select_graph("imdb");
-        if let Err(FalkorDBError::RedisError(_)) = graph.query("not a cypher query").execute() {
-            ()
-        } else {
-            panic!("Query should not have return FalkorDBError::RedisError");
-        }
+        let res = graph.query("not a cypher query").execute();
+        assert!(res.is_err());
+        assert!(matches!(res, Err(FalkorDBError::RedisError(_))));
     }
     #[test]
     fn test_list_indices() {

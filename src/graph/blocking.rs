@@ -429,7 +429,6 @@ mod tests {
     fn test_invalid_cypher_query_syntax_returns_error() {
         let mut graph = create_test_client().select_graph("imdb");
         let res = graph.query("not a cypher query").execute();
-        assert!(res.is_err());
         assert!(matches!(res, Err(FalkorDBError::RedisError(_))));
     }
     #[test]

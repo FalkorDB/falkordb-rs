@@ -97,6 +97,12 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
         self,
         value: redis::Value,
     ) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
+        if let redis::Value::ServerError(e) = value {
+            return Err(FalkorDBError::RedisError(
+                e.details().unwrap_or("Unknown error").to_string(),
+            ));
+        }
+
         let res = redis_value_as_vec(value)?;
 
         match res.len() {

@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.6...v0.1.7) - 2024-11-14
+
+### Other
+
+- Update coverage.yml ([#55](https://github.com/FalkorDB/falkordb-rs/pull/55))
+- Add test for when sending cypher query with syntax error the result s… ([#67](https://github.com/FalkorDB/falkordb-rs/pull/67))
+- Update dependencies ([#66](https://github.com/FalkorDB/falkordb-rs/pull/66))
+- Pass redis error to upstream instead of sending the generic FalkorDBError::ParsingArray ([#64](https://github.com/FalkorDB/falkordb-rs/pull/64))
+
 ## [0.1.6](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.5...v0.1.6) - 2024-10-14
 
 ### Other

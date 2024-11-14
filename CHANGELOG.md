@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.7...v0.1.8) - 2024-11-14
+
+### Other
+
+- Allow to trigger github workflow manually ([#68](https://github.com/FalkorDB/falkordb-rs/pull/68))
+- Update version in readme
+
 ## [0.1.7](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.6...v0.1.7) - 2024-11-14
 
 ### Other

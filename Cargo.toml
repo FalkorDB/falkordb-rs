@@ -17,11 +17,11 @@ all-features = true
 
 [dependencies]
 parking_lot = { version = "0.12.3", default-features = false, features = ["deadlock_detection"] }
-redis = { version = "0.27.4", default-features = false, features = ["sentinel"] }
-regex = { version = "1.11.0", default-features = false, features = ["std", "perf", "unicode-bool", "unicode-perl"] }
+redis = { version = "0.27.5", default-features = false, features = ["sentinel"] }
+regex = { version = "1.11.1", default-features = false, features = ["std", "perf", "unicode-bool", "unicode-perl"] }
 strum = { version = "0.26.3", default-features = false, features = ["std", "derive"] }
-thiserror = "1.0.64"
-tokio = { version = "1.40.0", default-features = false, features = ["macros", "sync", "rt-multi-thread"], optional = true }
+thiserror = "2.0.3"
+tokio = { version = "1.41.1", default-features = false, features = ["macros", "sync", "rt-multi-thread"], optional = true }
 tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"], optional = true }
 
 [dev-dependencies]

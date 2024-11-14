@@ -21,7 +21,7 @@
 Just add it to your `Cargo.toml`, like so:
 
 ```toml
-falkordb = { version = "0.1" }
+falkordb = { version = "0.17" }
 ```
 
 ### Run FalkorDB instance

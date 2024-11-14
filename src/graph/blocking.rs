@@ -392,7 +392,7 @@ mod tests {
     use super::*;
     use crate::{
         test_utils::{create_test_client, open_empty_test_graph},
-        IndexType,
+        FalkorDBError, IndexType,
     };
 
     #[test]
@@ -425,6 +425,15 @@ mod tests {
         assert_eq!(indices.get_indices_deleted(), Some(1));
     }
 
+    #[test]
+    fn test_illegal_query() {
+        let mut graph = create_test_client().select_graph("imdb");
+        if let Err(FalkorDBError::RedisError(_)) = graph.query("not a cypher query").execute() {
+            ()
+        } else {
+            panic!("Query should not have return FalkorDBError::RedisError");
+        }
+    }
     #[test]
     fn test_list_indices() {
         let mut graph = create_test_client().select_graph("imdb");

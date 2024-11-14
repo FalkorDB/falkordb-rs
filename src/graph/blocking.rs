@@ -426,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn test_illegal_query() {
+    fn test_invalid_cypher_query_syntax_returns_error() {
         let mut graph = create_test_client().select_graph("imdb");
         if let Err(FalkorDBError::RedisError(_)) = graph.query("not a cypher query").execute() {
             ()

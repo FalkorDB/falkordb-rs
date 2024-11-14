@@ -9,6 +9,7 @@ on:
       - main
   schedule:
       - cron: '0 0 * * *'  # This runs the workflow every day at midnight UTC
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

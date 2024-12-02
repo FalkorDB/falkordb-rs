@@ -22,7 +22,7 @@ regex = { version = "1.11.1", default-features = false, features = ["std", "perf
 strum = { version = "0.26.3", default-features = false, features = ["std", "derive"] }
 thiserror = "2.0.3"
 tokio = { version = "1.41.1", default-features = false, features = ["macros", "sync", "rt-multi-thread"], optional = true }
-tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"], optional = true }
+tracing = { version = "0.1.41", default-features = false, features = ["std", "attributes"], optional = true }
 
 [dev-dependencies]
 approx = "0.5.1"

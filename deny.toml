@@ -24,7 +24,8 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "MIT",
-    "ISC"
+    "ISC",
+    "Unicode-3.0",
 ]
 
 

@@ -39,7 +39,7 @@ use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
 let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
-                                          .expect("Invalid connection info");
+            .expect("Invalid connection info");
 
 let client = FalkorClientBuilder::new()
            .with_connection_info(connection_info)
@@ -83,7 +83,7 @@ use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
 let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
-                                          .expect("Invalid connection info");
+            .expect("Invalid connection info");
 
 let client = FalkorClientBuilder::new_async()
             .with_connection_info(connection_info)

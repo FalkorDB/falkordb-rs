@@ -31,7 +31,7 @@ jobs:
       - name: Generate Code Coverage
         run:  cargo llvm-cov nextest --all --features tokio --codecov --output-path codecov.json
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: codecov.json
           fail_ci_if_error: true

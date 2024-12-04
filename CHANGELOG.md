@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.8...v0.1.9) - 2024-12-04
+
+### Other
+
+- Update dependecies ([#74](https://github.com/FalkorDB/falkordb-rs/pull/74))
+- Fix async connection leak and co ([#72](https://github.com/FalkorDB/falkordb-rs/pull/72))
+
 ## [0.1.8](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.7...v0.1.8) - 2024-11-14
 
 ### Other

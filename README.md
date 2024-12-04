@@ -21,7 +21,7 @@
 Just add it to your `Cargo.toml`, like so:
 
 ```toml
-falkordb = { version = "0.1.8" }
+falkordb = { version = "0.1.9" }
 ```
 
 ### Run FalkorDB instance
@@ -39,22 +39,25 @@ use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
 let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
-.expect("Invalid connection info");
+            .expect("Invalid connection info");
 
 let client = FalkorClientBuilder::new()
-.with_connection_info(connection_info)
-.build().expect("Failed to build client");
+           .with_connection_info(connection_info)
+           .build()
+           .expect("Failed to build client");
 
 // Select the social graph
 let mut graph = client.select_graph("social");
 
 // Create 100 nodes and return a handful
 let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
-.with_timeout(5000).execute().expect("Failed executing query");
+            .with_timeout(5000)
+            .execute()
+            .expect("Failed executing query");
 
 // Can also be collected, like any other iterator
 while let Some(node) = nodes.data.next() {
-println ! ("{:?}", node);
+   println ! ("{:?}", node);
 }
 ```
 
@@ -66,7 +69,7 @@ This client supports nonblocking API using the [`tokio`](https://tokio.rs/) runt
 It can be enabled like so:
 
 ```toml
-falkordb = { version = "0.1.8", features = ["tokio"] }
+falkordb = { version = "0.1.9", features = ["tokio"] }
 ```
 
 Currently, this API requires running within a [
@@ -80,22 +83,27 @@ use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
 let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
-.expect("Invalid connection info");
+            .expect("Invalid connection info");
 
 let client = FalkorClientBuilder::new_async()
-.with_connection_info(connection_info)
-.build().await.expect("Failed to build client");
+            .with_connection_info(connection_info)
+            .build()
+            .await
+            .expect("Failed to build client");
 
 // Select the social graph
 let mut graph = client.select_graph("social");
 
 // Create 100 nodes and return a handful
 let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
-.with_timeout(5000).execute().await.expect("Failed executing query");
+            .with_timeout(5000)
+            .execute()
+            .await
+            .expect("Failed executing query");
 
 // Graph operations are asynchronous, but parsing is still concurrent:
 while let Some(node) = nodes.data.next() {
-println ! ("{:?}", node);
+     println ! ("{:?}", node);
 }
 ```
 
@@ -115,21 +123,21 @@ when using tokio: `"tokio-rustls"`/`"tokio-native-tls"`).
 For Rustls:
 
 ```toml
-falkordb = { version = "0.1.8", features = ["rustls"] }
+falkordb = { version = "0.1.9", features = ["rustls"] }
 ```
 
 ```toml
-falkordb = { version = "0.1.8", features = ["tokio-rustls"] }
+falkordb = { version = "0.1.9", features = ["tokio-rustls"] }
 ```
 
 For Native TLS:
 
 ```toml
-falkordb = { version = "0.1.8", features = ["native-tls"] }
+falkordb = { version = "0.1.9", features = ["native-tls"] }
 ```
 
 ```toml
-falkordb = { version = "0.1.8", features = ["tokio-native-tls"] }
+falkordb = { version = "0.1.9", features = ["tokio-native-tls"] }
 ```
 
 ### Tracing
@@ -138,7 +146,7 @@ This crate fully supports instrumentation using the [`tracing`](https://docs.rs/
 it, simply, enable the `tracing` feature:
 
 ```toml
-falkordb = { version = "0.1.8", features = ["tracing"] }
+falkordb = { version = "0.1.9", features = ["tracing"] }
 ```
 
 Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the

@@ -110,7 +110,7 @@ impl SyncGraph {
     pub fn profile<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<ExecutionPlan, &str, Self> {
+    ) -> QueryBuilder<'a, ExecutionPlan, &'a str, Self> {
         QueryBuilder::<'a>::new(self, "GRAPH.PROFILE", query_string)
     }
 
@@ -125,7 +125,7 @@ impl SyncGraph {
     pub fn explain<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<ExecutionPlan, &str, Self> {
+    ) -> QueryBuilder<'a, ExecutionPlan, &'a str, Self> {
         QueryBuilder::new(self, "GRAPH.EXPLAIN", query_string)
     }
 
@@ -156,7 +156,7 @@ impl SyncGraph {
     pub fn ro_query<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<QueryResult<LazyResultSet>, &str, Self> {
+    ) -> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, &'a str, Self> {
         QueryBuilder::new(self, "GRAPH.QUERY_RO", query_string)
     }
 
@@ -172,7 +172,7 @@ impl SyncGraph {
     pub fn call_procedure<'a, P>(
         &'a mut self,
         procedure_name: &'a str,
-    ) -> ProcedureQueryBuilder<P, Self> {
+    ) -> ProcedureQueryBuilder<'a, P, Self> {
         ProcedureQueryBuilder::new(self, procedure_name)
     }
 
@@ -188,7 +188,7 @@ impl SyncGraph {
     pub fn call_procedure_ro<'a, P>(
         &'a mut self,
         procedure_name: &'a str,
-    ) -> ProcedureQueryBuilder<P, Self> {
+    ) -> ProcedureQueryBuilder<'a, P, Self> {
         ProcedureQueryBuilder::new_readonly(self, procedure_name)
     }
 

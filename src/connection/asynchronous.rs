@@ -116,6 +116,7 @@ impl BorrowedAsyncConnection {
             Err(FalkorDBError::ConnectionDown) => {
                 if let Ok(new_conn) = self.client.get_async_connection().await {
                     self.conn = Some(new_conn);
+                    tokio::spawn(async { self.return_to_pool().await });
                     return Err(FalkorDBError::ConnectionDown);
                 }
                 Err(FalkorDBError::NoConnection)

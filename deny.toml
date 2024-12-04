@@ -14,7 +14,7 @@ unknown-git = "deny"
 [licenses]
 exceptions = [
     { name = "unicode-ident", allow = ["Unicode-DFS-2016"] }, # unique license
-    { name = "icu_locid", allow = "Unicode-3.0" },
+    { name = "icu_locid", allow = ["Unicode-3.0"] },
     { name = "ring", allow = ["LicenseRef-ring"] } # ring uses a specific BoringSSL license that does not match the standard text so requires allowing the specific hash
 ]
 unused-allowed-license = "allow"

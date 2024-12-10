@@ -302,19 +302,21 @@ mod tests {
             .query("CREATE (n:Person {name: 'John Doe', age: 30})")
             .execute()
             .expect("Could not create John");
+
+        // test ro_query with a read query
         graph
             .ro_query("MATCH (n:Person {name: 'John Doe', age: 30}) RETURN n")
             .execute()
             .expect("Could not read John");
+
+        // test ro_query with a write query
         let result = graph
             .ro_query("CREATE (n:Person {name: 'John Doe', age: 30})")
             .execute();
-
         assert!(
             result.is_err(),
             "Expected an error for write operation in read-only query"
         );
-
         if let Err(e) = result {
             assert!(
                 e.to_string()

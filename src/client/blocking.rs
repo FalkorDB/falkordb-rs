@@ -111,7 +111,7 @@ impl FalkorSyncClient {
         })
     }
 
-    ///
+
     ///  Get the max number of connections in the client's connection pool
     pub fn connection_pool_size(&self) -> u8 {
         self.inner.connection_pool_size

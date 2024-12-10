@@ -111,7 +111,7 @@ impl FalkorSyncClient {
         })
     }
 
-    /// Get the max number of connections in the client's connection pool
+    ///  Get the max number of connections in the client's connection pool
     pub fn connection_pool_size(&self) -> u8 {
         self.inner.connection_pool_size
     }
@@ -138,7 +138,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    /// The config key can also be "*", which will return ALL the configuration options.
+    ///    The config key can also be "*", which will return ALL the configuration options.
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
@@ -161,7 +161,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    /// The config key can also be "*", which will return ALL the configuration options.
+    ///    The config key can also be "*", which will return ALL the configuration options.
     /// * `value`: The new value to set, which is anything that can be converted into a [`ConfigValue`], namely string types and i64.
     #[cfg_attr(
         feature = "tracing",
@@ -293,6 +293,42 @@ mod tests {
         let graphs = res.unwrap();
         assert!(graphs.contains(&"imdb".to_string()));
     }
+
+    #[test]
+    fn test_read_only_query() {
+        let client = create_test_client();
+        let mut graph = client.select_graph("test_read_only_query");
+        graph
+            .query("CREATE (n:Person {name: 'John Doe', age: 30})")
+            .execute()
+            .expect("Could not create John");
+
+        // test ro_query with a read query
+        graph
+            .ro_query("MATCH (n:Person {name: 'John Doe', age: 30}) RETURN n")
+            .execute()
+            .expect("Could not read John");
+
+        // test ro_query with a write query
+        let result = graph
+            .ro_query("CREATE (n:Person {name: 'John Doe', age: 30})")
+            .execute();
+        assert!(
+            result.is_err(),
+            "Expected an error for write operation in read-only query"
+        );
+        if let Err(e) = result {
+            assert!(
+                e.to_string()
+                    .contains("is to be executed only on read-only queries"),
+                "Unexpected error message: {}",
+                e
+            );
+        }
+
+        graph.delete().unwrap();
+    }
+
     #[test]
     fn test_read_vec32() {
         let client = create_test_client();

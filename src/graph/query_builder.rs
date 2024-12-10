@@ -82,7 +82,8 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
     /// Specify a timeout after which to abort the query
     ///
     /// # Arguments
-    /// * `timeout`: the timeout after which to abort, in ms
+    /// * `timeout`: the timeout after which the server is allowed to abort or throw this request,
+    ///    in milliseconds, when that happens the server will return a timeout error
     pub fn with_timeout(
         self,
         timeout: i64,
@@ -155,7 +156,7 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
     }
 }
 
-impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, SyncGraph> {
+impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
@@ -234,7 +235,7 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, AsyncGr
     }
 }
 
-impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T, SyncGraph> {
+impl<T: Display> QueryBuilder<'_, ExecutionPlan, T, SyncGraph> {
     /// Executes the query, returning an [`ExecutionPlan`] from the data returned
     pub fn execute(mut self) -> FalkorResult<ExecutionPlan> {
         self.common_execute_steps().and_then(ExecutionPlan::parse)
@@ -386,7 +387,7 @@ impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
     }
 }
 
-impl<'a, Out> ProcedureQueryBuilder<'a, Out, SyncGraph> {
+impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -397,7 +398,7 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, SyncGraph> {
     )]
     fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
         let command = match self.readonly {
-            true => "GRAPH.QUERY_RO",
+            true => "GRAPH.RO_QUERY",
             false => "GRAPH.QUERY",
         };
 
@@ -431,7 +432,7 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
     )]
     async fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
         let command = match self.readonly {
-            true => "GRAPH.QUERY_RO",
+            true => "GRAPH.RO_QUERY",
             false => "GRAPH.QUERY",
         };
 
@@ -453,7 +454,7 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
     }
 }
 
-impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, SyncGraph> {
+impl ProcedureQueryBuilder<'_, QueryResult<Vec<FalkorIndex>>, SyncGraph> {
     /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`FalkorIndex`]s
     /// This functions consumes self
     #[cfg_attr(
@@ -481,7 +482,7 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, AsyncGraph> {
     }
 }
 
-impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, SyncGraph> {
+impl ProcedureQueryBuilder<'_, QueryResult<Vec<Constraint>>, SyncGraph> {
     /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`Constraint`]s
     /// This functions consumes self
     #[cfg_attr(

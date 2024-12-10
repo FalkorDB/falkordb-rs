@@ -36,7 +36,7 @@ impl<'a> LazyResultSet<'a> {
     }
 }
 
-impl<'a> Iterator for LazyResultSet<'a> {
+impl Iterator for LazyResultSet<'_> {
     type Item = Vec<FalkorValue>;
 
     #[cfg_attr(

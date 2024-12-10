@@ -157,7 +157,7 @@ impl SyncGraph {
         &'a mut self,
         query_string: &'a str,
     ) -> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, &'a str, Self> {
-        QueryBuilder::new(self, "GRAPH.QUERY_RO", query_string)
+        QueryBuilder::new(self, "GRAPH.RO_QUERY", query_string)
     }
 
     /// Creates a [`ProcedureQueryBuilder`] for this graph

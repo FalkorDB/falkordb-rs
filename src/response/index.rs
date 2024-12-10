@@ -50,7 +50,6 @@ fn parse_string_array(
         vector
             .into_iter()
             .map(FalkorValue::into_string)
-            .into_iter()
             .collect::<Result<Vec<String>, FalkorDBError>>()
     })
 }

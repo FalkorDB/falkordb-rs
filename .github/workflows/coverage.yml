@@ -35,8 +35,7 @@ jobs:
         with:
           files: codecov.json
           fail_ci_if_error: true
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          token: ${{ secrets.CODECOV_TOKEN }}
     services:
       falkordb:
         image: falkordb/falkordb:edge

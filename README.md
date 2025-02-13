@@ -50,7 +50,7 @@ let client = FalkorClientBuilder::new()
 let mut graph = client.select_graph("social");
 
 // Create 100 nodes and return a handful
-let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
+let mut nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
             .with_timeout(5000)
             .execute()
             .expect("Failed executing query");
@@ -95,7 +95,7 @@ let client = FalkorClientBuilder::new_async()
 let mut graph = client.select_graph("social");
 
 // Create 100 nodes and return a handful
-let nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
+let mut nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN n LIMIT 10")
             .with_timeout(5000)
             .execute()
             .await

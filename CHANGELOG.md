@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - crates io bug
 - Update deny action
 - Update redis and tokio version, and fix compatibility issues
-- Update redis and tokio version, and fix compatiblity issues
+- Update redis and tokio version, and fix compatibility issues
 - Update README
 - Remove deny from needs
 - *(deps)* bump thiserror from 1.0.61 to 1.0.62 ([#30](https://github.com/FalkorDB/falkordb-rs/pull/30))

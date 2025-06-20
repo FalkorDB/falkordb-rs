@@ -1,4 +1,5 @@
 FalkorDB
+falkordb
 nonblocking
 Mutex
 tokio
@@ -25,6 +26,7 @@ FalkorDBError
 ParsingArray
 FalkorIndex
 ParsingArrayToStructElementCount
+vec
 Vec
 Misspelled words:
 CVEs

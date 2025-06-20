@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- Update dependecies ([#74](https://github.com/FalkorDB/falkordb-rs/pull/74))
+- Update dependencies ([#74](https://github.com/FalkorDB/falkordb-rs/pull/74))
 - Fix async connection leak and co ([#72](https://github.com/FalkorDB/falkordb-rs/pull/72))
 
 ## [0.1.8](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.7...v0.1.8) - 2024-11-14
@@ -74,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 - crates io bug
 - Update deny action
-- Update redis and tokio version, and fix compatiblity issues
+- Update redis and tokio version, and fix compatibility issues
 - Update redis and tokio version, and fix compatiblity issues
 - Update README
 - Remove deny from needs
@@ -95,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.1...v0.1.2) - 2024-06-18
 
 ### Added
-- Implemenet Async Graph API ([#23](https://github.com/FalkorDB/falkordb-rs/pull/23))
+- Implement Async Graph API ([#23](https://github.com/FalkorDB/falkordb-rs/pull/23))
 - implement QueryResult properly ([#19](https://github.com/FalkorDB/falkordb-rs/pull/19))
 
 ### Fixed
@@ -107,7 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.0...v0.1.1) - 2024-06-09
 
 ### Added
-- LazyResultSet implemenation, allowing one-by-one parsing ([#14](https://github.com/FalkorDB/falkordb-rs/pull/14))
+- LazyResultSet implementation, allowing one-by-one parsing ([#14](https://github.com/FalkorDB/falkordb-rs/pull/14))
 
 ### Fixed
 - Update badges

@@ -16,12 +16,12 @@ all-features = true
 [lib]
 
 [dependencies]
-parking_lot = { version = "0.12.3", default-features = false, features = ["deadlock_detection"] }
-redis = { version = "0.28.2", default-features = false, features = ["sentinel"] }
+parking_lot = { version = "0.12.4", default-features = false, features = ["deadlock_detection"] }
+redis = { version = "0.32.1", default-features = false, features = ["sentinel"] }
 regex = { version = "1.11.1", default-features = false, features = ["std", "perf", "unicode-bool", "unicode-perl"] }
-strum = { version = "0.26.3", default-features = false, features = ["std", "derive"] }
-thiserror = "2.0.11"
-tokio = { version = "1.43.0", default-features = false, features = ["macros", "sync", "rt-multi-thread"], optional = true }
+strum = { version = "0.27.1", default-features = false, features = ["std", "derive"] }
+thiserror = "2.0.12"
+tokio = { version = "1.45.1", default-features = false, features = ["macros", "sync", "rt-multi-thread"], optional = true }
 tracing = { version = "0.1.41", default-features = false, features = ["std", "attributes"], optional = true }
 
 [dev-dependencies]

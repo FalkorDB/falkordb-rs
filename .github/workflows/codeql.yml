@@ -30,6 +30,8 @@ jobs:
       uses: github/codeql-action/init@v3
       with:
         languages: ${{ matrix.language }}
+      env:
+        CODEQL_ENABLE_EXPERIMENTAL_FEATURES: true
 
     - name: Build Rust project
       run: |

@@ -35,3 +35,9 @@ QueryResult
 LazyResultSet
 doctests
 gitignore
+socio
+sexualized
+html
+https
+www
+faq

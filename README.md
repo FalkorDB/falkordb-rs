@@ -117,7 +117,7 @@ This client is currently built upon the [`redis`](https://docs.rs/redis/latest/r
 using
 its implementation, which uses either [`rustls`](https://docs.rs/rustls/latest/rustls/) or [
 `native_tls`](https://docs.rs/native-tls/latest/native_tls/).
-This is not enabled by default, and the user ust opt-in by enabling the respective features: `"rustls"`/`"native-tls"` (
+This is not enabled by default, and the user just opt-in by enabling the respective features: `"rustls"`/`"native-tls"` (
 when using tokio: `"tokio-rustls"`/`"tokio-native-tls"`).
 
 For Rustls:

@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.11...v0.1.12) - 2025-06-24
+
+### Other
+
+- Update wordlist.txt
+- Create spellcheck.yml ([#107](https://github.com/FalkorDB/falkordb-rs/pull/107))
+- clean deny errors
+- update deps
+
 ## [0.1.11](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.10...v0.1.11) - 2025-02-13
 
 ### Fixed

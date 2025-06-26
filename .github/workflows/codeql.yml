@@ -35,7 +35,7 @@ jobs:
 
     - name: Build Rust project
       run: |
-        cargo build --all --release
+        cargo build --all
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3

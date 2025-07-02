@@ -21,7 +21,9 @@ pub enum FalkorDBError {
     #[error("Received unsupported number of sentinel masters in list, there can be only one")]
     SentinelMastersCount,
     ///This requested returned a connection error, however, we may be able to create a new connection to the server, this operation should probably be retried in a bit.
-    #[error("This requested returned a connection error, however, we may be able to create a new connection to the server, this operation should probably be retried in a bit.")]
+    #[error(
+        "This requested returned a connection error, however, we may be able to create a new connection to the server, this operation should probably be retried in a bit."
+    )]
     ConnectionDown,
     /// An error occurred while sending the request to Redis.
     #[error("An error occurred while sending the request to Redis: {0}")]
@@ -36,7 +38,9 @@ pub enum FalkorDBError {
     #[error("The connection returned invalid data for this command")]
     InvalidDataReceived,
     /// The provided URL scheme points at a database provider that is currently unavailable, make sure the correct feature is enabled.
-    #[error("The provided URL scheme points at a database provider that is currently unavailable, make sure the correct feature is enabled")]
+    #[error(
+        "The provided URL scheme points at a database provider that is currently unavailable, make sure the correct feature is enabled"
+    )]
     UnavailableProvider,
     /// An error occurred when dealing with reference counts or RefCells, perhaps mutual borrows?
     #[error(
@@ -113,17 +117,24 @@ pub enum FalkorDBError {
     #[error("Both key id and type marker were not of type i64")]
     ParsingKTVTypes,
     /// Attempting to parse an Array into a struct, but the array doesn't have the expected element count.
-    #[error("Attempting to parse an Array into a struct, but the array doesn't have the expected element count: {0}")]
+    #[error(
+        "Attempting to parse an Array into a struct, but the array doesn't have the expected element count: {0}"
+    )]
     ParsingArrayToStructElementCount(&'static str),
     /// Invalid enum string variant was encountered when parsing
     #[error("Invalid enum string variant was encountered when parsing: {0}")]
     InvalidEnumType(String),
     /// Running in a single-threaded tokio runtime! Running async operations in a blocking context will cause a panic, aborting operation
-    #[error("Running in a single-threaded tokio runtime! Running async operations in a blocking context will cause a panic, aborting operation")]
+    #[error(
+        "Running in a single-threaded tokio runtime! Running async operations in a blocking context will cause a panic, aborting operation"
+    )]
     SingleThreadedRuntime,
     /// No runtime detected, you are trying to run an async operation from a sync context
     #[error("No runtime detected, you are trying to run an async operation from a sync context")]
     NoRuntime,
+    /// Invalid temporal value encountered, such as an invalid date or time format.
+    #[error("Invalid temporal value: {0}")]
+    ParseTemporalError(String),
 }
 
 impl From<strum::ParseError> for FalkorDBError {

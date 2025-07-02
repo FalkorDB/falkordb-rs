@@ -4,11 +4,11 @@
  */
 
 use crate::{
-    client::blocking::FalkorSyncClientInner,
-    graph::{generate_create_index_query, generate_drop_index_query, HasGraphSchema},
-    parser::redis_value_as_vec,
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
     IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, QueryResult, SlowlogEntry,
+    client::blocking::FalkorSyncClientInner,
+    graph::{HasGraphSchema, generate_create_index_query, generate_drop_index_query},
+    parser::redis_value_as_vec,
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
@@ -391,8 +391,8 @@ impl HasGraphSchema for SyncGraph {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_test_client, open_empty_test_graph},
         FalkorDBError, IndexType,
+        test_utils::{create_test_client, open_empty_test_graph},
     };
 
     #[test]

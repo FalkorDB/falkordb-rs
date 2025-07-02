@@ -4,14 +4,14 @@
  */
 
 use crate::{
-    client::{blocking::FalkorSyncClientInner, ProvidesSyncConnections},
+    FalkorDBError, FalkorResult,
+    client::{ProvidesSyncConnections, blocking::FalkorSyncClientInner},
     connection::map_redis_err,
     parser::parse_redis_info,
-    FalkorDBError, FalkorResult,
 };
 use std::{
     collections::HashMap,
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
 };
 
 pub(crate) enum FalkorSyncConnection {

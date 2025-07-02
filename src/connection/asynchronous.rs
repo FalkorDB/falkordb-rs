@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    client::asynchronous::FalkorAsyncClientInner, connection::map_redis_err,
-    parser::parse_redis_info, FalkorDBError, FalkorResult,
+    FalkorDBError, FalkorResult, client::asynchronous::FalkorAsyncClientInner,
+    connection::map_redis_err, parser::parse_redis_info,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;

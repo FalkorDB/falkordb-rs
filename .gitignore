@@ -5,3 +5,5 @@
 /codecov.json
 /dump.rdb
 venv/
+.history
+.DS_Store

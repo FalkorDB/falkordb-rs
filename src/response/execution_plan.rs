@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    parser::{redis_value_as_string, redis_value_as_vec},
     FalkorDBError, FalkorResult,
+    parser::{redis_value_as_string, redis_value_as_vec},
 };
 use regex::Regex;
 use std::{

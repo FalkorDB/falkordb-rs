@@ -4,7 +4,7 @@
  */
 
 use crate::parser::ParserTypeMarker;
-use crate::{parser::parse_type, FalkorValue, GraphSchema};
+use crate::{FalkorValue, GraphSchema, parser::parse_type};
 use std::collections::VecDeque;
 
 /// A wrapper around the returned raw data, allowing parsing on demand of each result

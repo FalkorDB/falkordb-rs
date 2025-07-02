@@ -3,9 +3,11 @@
  * Licensed under the MIT License.
  */
 
+use chrono::{DateTime, Utc};
+
 use crate::{
-    value::vec32::Vec32, ConfigValue, Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
-    Node, Path, Point,
+    ConfigValue, Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point,
+    value::vec32::Vec32,
 };
 use std::collections::HashMap;
 
@@ -24,6 +26,9 @@ pub(crate) enum ParserTypeMarker {
     Map = 10,
     Point = 11,
     Vec32 = 12,
+    DateTime = 13,
+    Date = 14,
+    Time = 15,
 }
 
 impl TryFrom<i64> for ParserTypeMarker {
@@ -43,6 +48,9 @@ impl TryFrom<i64> for ParserTypeMarker {
             10 => Self::Map,
             11 => Self::Point,
             12 => Self::Vec32,
+            13 => Self::DateTime,
+            14 => Self::Date,
+            15 => Self::Time,
             _ => Err(FalkorDBError::ParsingUnknownType)?,
         })
     }
@@ -341,6 +349,27 @@ pub(crate) fn parse_type(
         ParserTypeMarker::Map => FalkorValue::Map(parse_regular_falkor_map(val, graph_schema)?),
         ParserTypeMarker::Point => FalkorValue::Point(Point::parse(val)?),
         ParserTypeMarker::Vec32 => FalkorValue::Vec32(Vec32::parse(val)?),
+        ParserTypeMarker::DateTime => FalkorValue::DateTime(
+            DateTime::<Utc>::from_timestamp(redis_value_as_int(val)?, 0).ok_or(
+                FalkorDBError::ParseTemporalError(
+                    "Could not parse date time from timestamp".to_string(),
+                ),
+            )?,
+        ),
+        ParserTypeMarker::Date => FalkorValue::Date(
+            DateTime::<Utc>::from_timestamp(redis_value_as_int(val)?, 0)
+                .map(|dt| dt.date_naive())
+                .ok_or(FalkorDBError::ParseTemporalError(
+                    "Could not parse date from timestamp".to_string(),
+                ))?,
+        ),
+        ParserTypeMarker::Time => FalkorValue::Time(
+            DateTime::<Utc>::from_timestamp(redis_value_as_int(val)?, 0)
+                .map(|dt| dt.time())
+                .ok_or(FalkorDBError::ParseTemporalError(
+                    "Could not parse time from timestamp".to_string(),
+                ))?,
+        ),
     };
 
     Ok(res)
@@ -357,8 +386,8 @@ pub(crate) trait SchemaParsable: Sized {
 mod tests {
     use super::*;
     use crate::{
-        client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
-        graph_schema::tests::open_readonly_graph_with_modified_schema, FalkorDBError,
+        FalkorDBError, client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
+        graph_schema::tests::open_readonly_graph_with_modified_schema,
     };
 
     #[test]

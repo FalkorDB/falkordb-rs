@@ -45,6 +45,12 @@ pub enum FalkorValue {
     None,
     /// Failed parsing this value
     Unparseable(String),
+    /// A DateTime value, using chrono's DateTime<Utc>
+    DateTime(chrono::DateTime<chrono::Utc>),
+    /// A Date value, using chrono's NaiveDate
+    Date(chrono::NaiveDate),
+    /// A Time value, using chrono's NaiveTime
+    Time(chrono::NaiveTime),
 }
 
 macro_rules! impl_to_falkordb_value {
@@ -150,6 +156,37 @@ impl FalkorValue {
     pub fn as_point(&self) -> Option<&Point> {
         match self {
             FalkorValue::Point(val) => Some(val),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the internal [`chrono::DateTime<chrono::Utc>`] if this is a DateTime variant.
+    ///
+    /// # Returns
+    /// A reference to the internal [`chrono::DateTime<chrono::Utc>`]
+    pub fn as_date_time(&self) -> Option<&chrono::DateTime<chrono::Utc>> {
+        match self {
+            FalkorValue::DateTime(val) => Some(val),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the internal [`chrono::NaiveDate`] if this is a Date variant.
+    /// # Returns
+    /// A reference to the internal [`chrono::NaiveDate`]
+    pub fn as_date(&self) -> Option<&chrono::NaiveDate> {
+        match self {
+            FalkorValue::Date(val) => Some(val),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the internal [`chrono::NaiveTime`] if this is a Time variant.
+    /// # Returns
+    /// A reference to the internal [`chrono::NaiveTime`]
+    pub fn as_time(&self) -> Option<&chrono::NaiveTime> {
+        match self {
+            FalkorValue::Time(val) => Some(val),
             _ => None,
         }
     }

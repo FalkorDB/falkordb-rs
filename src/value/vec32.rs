@@ -4,9 +4,9 @@
  */
 
 use crate::{
-    parser::{redis_value_as_float, redis_value_as_vec},
     FalkorDBError::ParsingVec32,
     FalkorResult,
+    parser::{redis_value_as_float, redis_value_as_vec},
 };
 
 #[derive(Clone, Debug, Default, PartialEq)]

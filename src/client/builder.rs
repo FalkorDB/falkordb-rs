@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    client::FalkorClientProvider, FalkorConnectionInfo, FalkorDBError, FalkorResult,
-    FalkorSyncClient,
+    FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorSyncClient,
+    client::FalkorClientProvider,
 };
 use std::num::NonZeroU8;
 
@@ -147,10 +147,12 @@ mod tests {
         let connection_info = "falkor://127.0.0.1:6379".try_into();
         assert!(connection_info.is_ok());
 
-        assert!(FalkorClientBuilder::new()
-            .with_connection_info(connection_info.unwrap())
-            .build()
-            .is_ok());
+        assert!(
+            FalkorClientBuilder::new()
+                .with_connection_info(connection_info.unwrap())
+                .build()
+                .is_ok()
+        );
     }
 
     #[test]

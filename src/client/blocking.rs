@@ -4,15 +4,15 @@
  */
 
 use crate::{
+    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
     client::{FalkorClientProvider, ProvidesSyncConnections},
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
     parser::{parse_config_hashmap, redis_value_as_untyped_string_vec},
-    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
 };
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
 };
 
 /// A user-opaque inner struct, containing the actual implementation of the blocking client
@@ -138,7 +138,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    ///    The config key can also be "*", which will return ALL the configuration options.
+    /// * The config key can also be "*", which will return ALL the configuration options.
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
@@ -161,7 +161,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    ///    The config key can also be "*", which will return ALL the configuration options.
+    /// * The config key can also be "*", which will return ALL the configuration options.
     /// * `value`: The new value to set, which is anything that can be converted into a [`ConfigValue`], namely string types and i64.
     #[cfg_attr(
         feature = "tracing",
@@ -254,10 +254,11 @@ mod tests {
     use super::*;
     use crate::FalkorValue::Node;
     use crate::{
-        test_utils::{create_test_client, TestSyncGraphHandle},
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
+        test_utils::{TestSyncGraphHandle, create_test_client},
     };
     use approx::assert_relative_eq;
+    use chrono::{Datelike, Timelike};
     use std::{mem, num::NonZeroU8, sync::mpsc::TryRecvError, thread};
 
     #[test]
@@ -321,8 +322,7 @@ mod tests {
             assert!(
                 e.to_string()
                     .contains("is to be executed only on read-only queries"),
-                "Unexpected error message: {}",
-                e
+                "Unexpected error message: {e}"
             );
         }
 
@@ -341,7 +341,7 @@ mod tests {
             .query("MATCH (p:Document) RETURN p")
             .execute()
             .expect("Could not get document");
-        while let Some(falkor_value) = res.data.next() {
+        for falkor_value in res.data.by_ref() {
             // iterate on a node value
             for value in falkor_value {
                 if let Node(node) = value {
@@ -361,6 +361,61 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_get_time() {
+        let client = create_test_client();
+
+        let mut graph = client.select_graph("imdb");
+        let mut res = graph
+            .query("RETURN localtime({hour: 12}) as time")
+            .execute()
+            .expect("Could not return localtime hour 12");
+        let Some(falkor_value) = res.data.next() else {
+            panic!("No data returned from query");
+        };
+        let Some(value) = falkor_value.first() else {
+            panic!("No value returned from query");
+        };
+        assert_eq!(value.as_time().unwrap().hour(), 12);
+    }
+
+    #[test]
+    fn test_get_date() {
+        let client = create_test_client();
+
+        let mut graph = client.select_graph("imdb");
+        let mut res = graph
+            .query("RETURN date({year : 1984}) as date")
+            .execute()
+            .expect("Could not return 1984");
+        let Some(falkor_value) = res.data.next() else {
+            panic!("No data returned from query");
+        };
+        let Some(value) = falkor_value.first() else {
+            panic!("No value returned from query");
+        };
+        assert_eq!(value.as_date().unwrap().year(), 1984);
+    }
+
+    #[test]
+    fn test_get_date_time() {
+        let client = create_test_client();
+
+        let mut graph = client.select_graph("imdb");
+        let mut res = graph
+            .query("RETURN localdatetime({year : 1984}) as date")
+            .execute()
+            .expect("Could not return localdatetime");
+        let Some(falkor_value) = res.data.next() else {
+            panic!("No data returned from query");
+        };
+        let Some(value) = falkor_value.first() else {
+            panic!("No value returned from query");
+        };
+
+        assert_eq!(value.as_date_time().unwrap().year(), 1984);
     }
 
     #[test]

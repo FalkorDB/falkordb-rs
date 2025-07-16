@@ -369,7 +369,7 @@ mod tests {
 
         let mut graph = client.select_graph("imdb");
         let mut res = graph
-            .query("RETURN localtime({hour: 12}) as time")
+            .query("RETURN localtime({hour: 12, minute:0, second:0}) as time")
             .execute()
             .expect("Could not return localtime hour 12");
         let Some(falkor_value) = res.data.next() else {
@@ -379,6 +379,8 @@ mod tests {
             panic!("No value returned from query");
         };
         assert_eq!(value.as_time().unwrap().hour(), 12);
+        assert_eq!(value.as_time().unwrap().minute(), 0);
+        assert_eq!(value.as_time().unwrap().second(), 0);
     }
 
     #[test]

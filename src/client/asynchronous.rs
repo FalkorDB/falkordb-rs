@@ -4,18 +4,18 @@
  */
 
 use crate::{
+    AsyncGraph, ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult,
     client::{FalkorClientProvider, ProvidesSyncConnections},
     connection::{
         asynchronous::{BorrowedAsyncConnection, FalkorAsyncConnection},
         blocking::FalkorSyncConnection,
     },
     parser::{parse_config_hashmap, redis_value_as_untyped_string_vec},
-    AsyncGraph, ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
     runtime::{Handle, RuntimeFlavor},
-    sync::{mpsc, Mutex},
+    sync::{Mutex, mpsc},
     task,
 };
 
@@ -271,8 +271,8 @@ impl FalkorAsyncClient {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_async_test_client, TestAsyncGraphHandle},
         FalkorClientBuilder,
+        test_utils::{TestAsyncGraphHandle, create_async_test_client},
     };
     use std::{mem, num::NonZeroU8, thread};
     use tokio::sync::mpsc::error::TryRecvError;

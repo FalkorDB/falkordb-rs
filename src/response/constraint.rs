@@ -4,11 +4,11 @@
  */
 
 use crate::{
-    parser::{
-        parse_falkor_enum, redis_value_as_typed_string, redis_value_as_typed_string_vec,
-        redis_value_as_vec, SchemaParsable,
-    },
     EntityType, FalkorDBError, FalkorResult, GraphSchema,
+    parser::{
+        SchemaParsable, parse_falkor_enum, redis_value_as_typed_string,
+        redis_value_as_typed_string_vec, redis_value_as_vec,
+    },
 };
 
 /// The type of restriction to apply for the property
@@ -59,9 +59,19 @@ impl SchemaParsable for Constraint {
         value: redis::Value,
         _: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [redis::Value; 5] = redis_value_as_vec(value)
-            .and_then(|res| res.try_into()
-                .map_err(|_| FalkorDBError::ParsingArrayToStructElementCount("Expected exactly 5 elements in constraint object")))?;
+        let [
+            constraint_type_raw,
+            label_raw,
+            properties_raw,
+            entity_type_raw,
+            status_raw,
+        ]: [redis::Value; 5] = redis_value_as_vec(value).and_then(|res| {
+            res.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 5 elements in constraint object",
+                )
+            })
+        })?;
 
         Ok(Self {
             constraint_type: parse_falkor_enum(constraint_type_raw)?,

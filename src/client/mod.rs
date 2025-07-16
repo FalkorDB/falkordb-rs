@@ -4,9 +4,9 @@
  */
 
 use crate::{
+    FalkorDBError, FalkorResult,
     connection::blocking::FalkorSyncConnection,
     parser::{redis_value_as_string, redis_value_as_vec},
-    FalkorDBError, FalkorResult,
 };
 use std::collections::HashMap;
 

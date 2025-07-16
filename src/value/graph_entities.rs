@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    parser::{redis_value_as_int, redis_value_as_vec},
     FalkorDBError, FalkorResult, FalkorValue, GraphSchema, SchemaType,
+    parser::{redis_value_as_int, redis_value_as_vec},
 };
 use std::collections::HashMap;
 
@@ -81,8 +81,13 @@ impl Edge {
         value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
-        let [entity_id, relationship_id_raw, src_node_id, dst_node_id, properties]: [redis::Value;
-            5] = redis_value_as_vec(value).and_then(|val_vec| {
+        let [
+            entity_id,
+            relationship_id_raw,
+            src_node_id,
+            dst_node_id,
+            properties,
+        ]: [redis::Value; 5] = redis_value_as_vec(value).and_then(|val_vec| {
             val_vec.try_into().map_err(|_| {
                 FalkorDBError::ParsingArrayToStructElementCount(
                     "Expected exactly 5 elements in edge object",

@@ -4,10 +4,10 @@
  */
 
 use crate::{
-    graph::HasGraphSchema,
-    parser::{redis_value_as_vec, SchemaParsable},
     Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet,
     QueryResult, SyncGraph,
+    graph::HasGraphSchema,
+    parser::{SchemaParsable, redis_value_as_vec},
 };
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 
@@ -83,7 +83,7 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
     ///
     /// # Arguments
     /// * `timeout`: the timeout after which the server is allowed to abort or throw this request,
-    ///    in milliseconds, when that happens the server will return a timeout error
+    /// * in milliseconds, when that happens the server will return a timeout error
     pub fn with_timeout(
         self,
         timeout: i64,
@@ -264,10 +264,10 @@ pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
     let args_str = args
         .unwrap_or_default()
         .iter()
-        .map(|e| format!("${}", e))
+        .map(|e| format!("${e}"))
         .collect::<Vec<_>>()
         .join(",");
-    let mut query_string = format!("CALL {}({})", procedure, args_str);
+    let mut query_string = format!("CALL {procedure}({args_str})");
 
     let params = args.map(|args| {
         args.iter()

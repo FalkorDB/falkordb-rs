@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    parser::{redis_value_as_double, redis_value_as_string, redis_value_as_vec},
     FalkorDBError, FalkorResult,
+    parser::{redis_value_as_double, redis_value_as_string, redis_value_as_vec},
 };
 
 /// A slowlog entry, representing one of the N slowest queries in the current log

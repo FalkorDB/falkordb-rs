@@ -4,11 +4,11 @@
  */
 
 use crate::{
+    FalkorDBError, FalkorResult, FalkorValue,
     client::ProvidesSyncConnections,
     parser::{
-        parse_type, redis_value_as_int, redis_value_as_string, redis_value_as_vec, ParserTypeMarker,
+        ParserTypeMarker, parse_type, redis_value_as_int, redis_value_as_string, redis_value_as_vec,
     },
-    FalkorDBError, FalkorResult, FalkorValue,
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -276,8 +276,8 @@ impl GraphSchema {
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
-        test_utils::create_test_client, SyncGraph,
+        SyncGraph, client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
+        test_utils::create_test_client,
     };
     use std::collections::HashMap;
 

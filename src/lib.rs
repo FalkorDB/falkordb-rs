@@ -31,19 +31,19 @@ pub use graph::{
 };
 pub use graph_schema::{GraphSchema, SchemaType};
 pub use response::{
+    QueryResult,
     constraint::{Constraint, ConstraintStatus, ConstraintType},
     execution_plan::ExecutionPlan,
     index::{FalkorIndex, IndexStatus, IndexType},
     lazy_result_set::LazyResultSet,
     slowlog_entry::SlowlogEntry,
-    QueryResult,
 };
 pub use value::{
+    FalkorValue,
     config::ConfigValue,
     graph_entities::{Edge, EntityType, Node},
     path::Path,
     point::Point,
-    FalkorValue,
 };
 
 #[cfg(feature = "tokio")]

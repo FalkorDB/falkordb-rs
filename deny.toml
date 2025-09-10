@@ -3,7 +3,21 @@
 [bans]
 multiple-versions = "deny"
 skip = [
-    "windows-link",  # Allow multiple versions due to chrono dependency conflicts
+    "windows-link",        # Allow multiple versions due to chrono dependency conflicts
+    "core-foundation",     # Allow multiple versions due to security-framework conflicts
+    "security-framework",  # Allow multiple versions due to native-tls/rustls conflicts
+    "socket2",            # Allow multiple versions due to tokio/redis conflicts
+    "wasi",               # Allow multiple versions due to mio/getrandom conflicts
+    "windows-sys",        # Allow multiple versions due to various Windows dependencies
+    "windows-targets",    # Allow multiple versions due to windows-sys conflicts
+    "windows_aarch64_gnullvm",  # Windows target specific
+    "windows_aarch64_msvc",     # Windows target specific
+    "windows_i686_gnu",         # Windows target specific
+    "windows_i686_gnullvm",     # Windows target specific
+    "windows_i686_msvc",        # Windows target specific
+    "windows_x86_64_gnu",       # Windows target specific
+    "windows_x86_64_gnullvm",   # Windows target specific
+    "windows_x86_64_msvc",      # Windows target specific
 ]
 
 [sources]

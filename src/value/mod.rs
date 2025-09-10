@@ -300,44 +300,52 @@ impl FalkorValue {
 
 impl TryFrom<FalkorValue> for chrono::Duration {
     type Error = FalkorDBError;
-    
+
     fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
         match value {
             FalkorValue::Duration(duration) => Ok(duration),
-            _ => Err(FalkorDBError::ParseTemporalError("Not a Duration value".to_string())),
+            _ => Err(FalkorDBError::ParseTemporalError(
+                "Not a Duration value".to_string(),
+            )),
         }
     }
 }
 
 impl TryFrom<FalkorValue> for chrono::DateTime<chrono::Utc> {
     type Error = FalkorDBError;
-    
+
     fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
         match value {
             FalkorValue::DateTime(datetime) => Ok(datetime),
-            _ => Err(FalkorDBError::ParseTemporalError("Not a DateTime value".to_string())),
+            _ => Err(FalkorDBError::ParseTemporalError(
+                "Not a DateTime value".to_string(),
+            )),
         }
     }
 }
 
 impl TryFrom<FalkorValue> for chrono::NaiveDate {
     type Error = FalkorDBError;
-    
+
     fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
         match value {
             FalkorValue::Date(date) => Ok(date),
-            _ => Err(FalkorDBError::ParseTemporalError("Not a Date value".to_string())),
+            _ => Err(FalkorDBError::ParseTemporalError(
+                "Not a Date value".to_string(),
+            )),
         }
     }
 }
 
 impl TryFrom<FalkorValue> for chrono::NaiveTime {
     type Error = FalkorDBError;
-    
+
     fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
         match value {
             FalkorValue::Time(time) => Ok(time),
-            _ => Err(FalkorDBError::ParseTemporalError("Not a Time value".to_string())),
+            _ => Err(FalkorDBError::ParseTemporalError(
+                "Not a Time value".to_string(),
+            )),
         }
     }
 }

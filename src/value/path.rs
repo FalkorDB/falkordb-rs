@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 
-use crate::{parser::redis_value_as_vec, Edge, FalkorDBError, FalkorResult, GraphSchema, Node};
+use crate::{Edge, FalkorDBError, FalkorResult, GraphSchema, Node, parser::redis_value_as_vec};
 
 /// Represents a path between two nodes, contains all the nodes, and the relationships between them along the path
 #[derive(Clone, Debug, Default, PartialEq)]

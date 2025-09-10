@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    parser::{parse_header, redis_value_as_untyped_string_vec},
     FalkorResult,
+    parser::{parse_header, redis_value_as_untyped_string_vec},
 };
 use std::str::FromStr;
 

@@ -4,12 +4,12 @@
  */
 
 use crate::{
+    Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
+    IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, QueryResult, SlowlogEntry,
     client::asynchronous::FalkorAsyncClientInner,
     graph::HasGraphSchema,
     graph::{generate_create_index_query, generate_drop_index_query},
     parser::redis_value_as_vec,
-    Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
-    IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, QueryResult, SlowlogEntry,
 };
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
@@ -403,8 +403,8 @@ impl HasGraphSchema for AsyncGraph {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_async_test_client, open_empty_async_test_graph},
         IndexType,
+        test_utils::{create_async_test_client, open_empty_async_test_graph},
     };
 
     #[tokio::test(flavor = "multi_thread")]

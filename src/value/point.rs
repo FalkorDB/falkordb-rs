@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    parser::{redis_value_as_double, redis_value_as_vec},
     FalkorDBError, FalkorResult,
+    parser::{redis_value_as_double, redis_value_as_vec},
 };
 
 /// A point in the world.

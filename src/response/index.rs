@@ -3,13 +3,13 @@
  * Licensed under the MIT License.
  */
 
-use crate::parser::{parse_type, ParserTypeMarker};
+use crate::parser::{ParserTypeMarker, parse_type};
 use crate::{
-    parser::{
-        parse_falkor_enum, parse_raw_redis_value, redis_value_as_string,
-        redis_value_as_typed_string, redis_value_as_vec, type_val_from_value, SchemaParsable,
-    },
     EntityType, FalkorDBError, FalkorValue, GraphSchema,
+    parser::{
+        SchemaParsable, parse_falkor_enum, parse_raw_redis_value, redis_value_as_string,
+        redis_value_as_typed_string, redis_value_as_vec, type_val_from_value,
+    },
 };
 use std::collections::HashMap;
 
@@ -118,14 +118,23 @@ impl SchemaParsable for FalkorIndex {
         value: redis::Value,
         graph_schema: &mut GraphSchema,
     ) -> Result<Self, FalkorDBError> {
-        let [label, fields, field_types, options, language, stopwords, entity_type, status, info] =
-            redis_value_as_vec(value).and_then(|as_vec| {
-                as_vec.try_into().map_err(|_| {
-                    FalkorDBError::ParsingArrayToStructElementCount(
-                        "Expected exactly 9 elements in index object",
-                    )
-                })
-            })?;
+        let [
+            label,
+            fields,
+            field_types,
+            options,
+            language,
+            stopwords,
+            entity_type,
+            status,
+            info,
+        ] = redis_value_as_vec(value).and_then(|as_vec| {
+            as_vec.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 9 elements in index object",
+                )
+            })
+        })?;
 
         Ok(Self {
             entity_type: parse_falkor_enum(entity_type)?,

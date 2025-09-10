@@ -4,15 +4,15 @@
  */
 
 use crate::{
+    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
     client::{FalkorClientProvider, ProvidesSyncConnections},
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
     parser::{parse_config_hashmap, redis_value_as_untyped_string_vec},
-    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
 };
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
 };
 
 /// A user-opaque inner struct, containing the actual implementation of the blocking client
@@ -138,7 +138,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    ///    The config key can also be "*", which will return ALL the configuration options.
+    /// * The config key can also be "*", which will return ALL the configuration options.
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
@@ -161,7 +161,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    ///    The config key can also be "*", which will return ALL the configuration options.
+    /// * The config key can also be "*", which will return ALL the configuration options.
     /// * `value`: The new value to set, which is anything that can be converted into a [`ConfigValue`], namely string types and i64.
     #[cfg_attr(
         feature = "tracing",
@@ -254,10 +254,11 @@ mod tests {
     use super::*;
     use crate::FalkorValue::Node;
     use crate::{
-        test_utils::{create_test_client, TestSyncGraphHandle},
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
+        test_utils::{TestSyncGraphHandle, create_test_client},
     };
     use approx::assert_relative_eq;
+    use chrono::{Datelike, Timelike};
     use std::{mem, num::NonZeroU8, sync::mpsc::TryRecvError, thread};
 
     #[test]
@@ -321,8 +322,7 @@ mod tests {
             assert!(
                 e.to_string()
                     .contains("is to be executed only on read-only queries"),
-                "Unexpected error message: {}",
-                e
+                "Unexpected error message: {e}"
             );
         }
 
@@ -341,7 +341,7 @@ mod tests {
             .query("MATCH (p:Document) RETURN p")
             .execute()
             .expect("Could not get document");
-        while let Some(falkor_value) = res.data.next() {
+        for falkor_value in res.data.by_ref() {
             // iterate on a node value
             for value in falkor_value {
                 if let Node(node) = value {
@@ -360,6 +360,151 @@ mod tests {
                     panic!("MATCH should return a node");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_get_time() {
+        let client = create_test_client();
+
+        let mut graph = client.select_graph("imdb");
+        let mut res = graph
+            .query("RETURN localtime({hour: 12, minute:0, second:0}) as time")
+            .execute()
+            .expect("Could not return localtime hour 12");
+        let Some(falkor_value) = res.data.next() else {
+            panic!("No data returned from query");
+        };
+        let Some(value) = falkor_value.first() else {
+            panic!("No value returned from query");
+        };
+        assert_eq!(value.as_time().unwrap().hour(), 12);
+        assert_eq!(value.as_time().unwrap().minute(), 0);
+        assert_eq!(value.as_time().unwrap().second(), 0);
+    }
+
+    #[test]
+    fn test_get_date() {
+        let client = create_test_client();
+
+        let mut graph = client.select_graph("imdb");
+        let mut res = graph
+            .query("RETURN date({year : 1984}) as date")
+            .execute()
+            .expect("Could not return 1984");
+        let Some(falkor_value) = res.data.next() else {
+            panic!("No data returned from query");
+        };
+        let Some(value) = falkor_value.first() else {
+            panic!("No value returned from query");
+        };
+        assert_eq!(value.as_date().unwrap().year(), 1984);
+    }
+
+    #[test]
+    fn test_get_date_time() {
+        let client = create_test_client();
+
+        let mut graph = client.select_graph("imdb");
+        let mut res = graph
+            .query("RETURN localdatetime({year : 1984}) as date")
+            .execute()
+            .expect("Could not return localdatetime");
+        let Some(falkor_value) = res.data.next() else {
+            panic!("No data returned from query");
+        };
+        let Some(value) = falkor_value.first() else {
+            panic!("No value returned from query");
+        };
+
+        assert_eq!(value.as_date_time().unwrap().year(), 1984);
+    }
+
+    #[test]
+    fn test_duration_component_construction() {
+        use std::collections::HashMap;
+
+        let client = create_test_client();
+        let mut graph = client.select_graph("duration_test");
+
+        // Test cases: (input map, expected total seconds)
+        let test_cases: Vec<(HashMap<&str, i32>, i64)> = vec![
+            // Single components
+            (HashMap::from([("years", 2)]), 2 * 365 * 24 * 3600), // ~2 years in seconds
+            (HashMap::from([("months", 3)]), 3 * 30 * 24 * 3600), // ~3 months in seconds
+            (HashMap::from([("weeks", 1)]), 1 * 7 * 24 * 3600),   // 1 week in seconds
+            (HashMap::from([("hours", 6)]), 6 * 3600),            // 6 hours in seconds
+            (HashMap::from([("minutes", 23)]), 23 * 60),          // 23 minutes in seconds
+            (HashMap::from([("seconds", 15)]), 15),               // 15 seconds
+            // Multiple components
+            (
+                HashMap::from([("years", 2), ("months", 3)]),
+                2 * 365 * 24 * 3600 + 3 * 30 * 24 * 3600,
+            ),
+            (
+                HashMap::from([("years", 2), ("months", 3), ("days", 4)]),
+                2 * 365 * 24 * 3600 + 3 * 30 * 24 * 3600 + 4 * 24 * 3600,
+            ),
+            (
+                HashMap::from([("hours", 5), ("minutes", 22)]),
+                5 * 3600 + 22 * 60,
+            ),
+            (
+                HashMap::from([("hours", 5), ("minutes", 22), ("seconds", 7)]),
+                5 * 3600 + 22 * 60 + 7,
+            ),
+            // Negative values
+            (HashMap::from([("years", -2)]), -2 * 365 * 24 * 3600),
+            (HashMap::from([("months", -3)]), -3 * 30 * 24 * 3600),
+            (HashMap::from([("hours", -6)]), -6 * 3600),
+            (HashMap::from([("minutes", -23)]), -23 * 60),
+            (HashMap::from([("seconds", -15)]), -15),
+            (
+                HashMap::from([("years", -2), ("months", -3)]),
+                -2 * 365 * 24 * 3600 - 3 * 30 * 24 * 3600,
+            ),
+        ];
+
+        for (input_map, expected_seconds) in test_cases {
+            // Build the parameter string for the Cypher query
+            let mut params = Vec::new();
+            for (key, value) in &input_map {
+                params.push(format!("{}: {}", key, value));
+            }
+            let param_string = params.join(", ");
+
+            let query = format!("RETURN duration({{{}}})", param_string);
+
+            let mut res = graph
+                .query(&query)
+                .execute()
+                .expect("Could not execute duration query");
+
+            let Some(falkor_value) = res.data.next() else {
+                panic!("No data returned from query for input: {:?}", input_map);
+            };
+            let Some(value) = falkor_value.first() else {
+                panic!("No value returned from query for input: {:?}", input_map);
+            };
+
+            let duration = value.as_duration().expect("Expected duration value");
+
+            // Allow some tolerance for year/month approximations (within 10% for large durations)
+            let actual_seconds = duration.num_seconds();
+            let tolerance = if expected_seconds.abs() > 3600 * 24 * 30 {
+                // For durations > 1 month
+                (expected_seconds.abs() as f64 * 0.1) as i64 // 10% tolerance
+            } else {
+                0 // Exact match for smaller durations
+            };
+
+            assert!(
+                (actual_seconds - expected_seconds).abs() <= tolerance,
+                "Duration mismatch for {:?}: expected ~{} seconds, got {} seconds",
+                input_map,
+                expected_seconds,
+                actual_seconds
+            );
         }
     }
 

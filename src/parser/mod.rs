@@ -3,9 +3,11 @@
  * Licensed under the MIT License.
  */
 
+use chrono::{DateTime, Utc};
+
 use crate::{
-    value::vec32::Vec32, ConfigValue, Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
-    Node, Path, Point,
+    ConfigValue, Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point,
+    value::vec32::Vec32,
 };
 use std::collections::HashMap;
 
@@ -24,6 +26,10 @@ pub(crate) enum ParserTypeMarker {
     Map = 10,
     Point = 11,
     Vec32 = 12,
+    DateTime = 13,
+    Date = 14,
+    Time = 15,
+    Duration = 16,
 }
 
 impl TryFrom<i64> for ParserTypeMarker {
@@ -43,6 +49,10 @@ impl TryFrom<i64> for ParserTypeMarker {
             10 => Self::Map,
             11 => Self::Point,
             12 => Self::Vec32,
+            13 => Self::DateTime,
+            14 => Self::Date,
+            15 => Self::Time,
+            16 => Self::Duration,
             _ => Err(FalkorDBError::ParsingUnknownType)?,
         })
     }
@@ -89,6 +99,95 @@ pub(crate) fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis:
         redis::Value::Array(bulk_val) => Ok(bulk_val),
         _ => Err(FalkorDBError::ParsingArray),
     }
+}
+
+/// Parses an ISO 8601 duration string (e.g., "P1Y2M3DT4H5M6S") into a chrono::Duration
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Parse Duration From String", skip_all, level = "trace")
+)]
+pub(crate) fn parse_duration_from_string(duration_str: &str) -> FalkorResult<chrono::Duration> {
+    // Remove 'P' prefix if present
+    let duration_str = duration_str.strip_prefix('P').unwrap_or(duration_str);
+
+    let mut years = 0i64;
+    let mut months = 0i64;
+    let mut days = 0i64;
+    let mut hours = 0i64;
+    let mut minutes = 0i64;
+    let mut seconds = 0i64;
+
+    let mut current_number = String::new();
+    let mut in_time_part = false;
+
+    for ch in duration_str.chars() {
+        match ch {
+            'T' => {
+                in_time_part = true;
+            }
+            'Y' if !in_time_part => {
+                years = current_number.parse().map_err(|_| {
+                    FalkorDBError::ParseTemporalError("Invalid year value in duration".to_string())
+                })?;
+                current_number.clear();
+            }
+            'M' if !in_time_part => {
+                months = current_number.parse().map_err(|_| {
+                    FalkorDBError::ParseTemporalError("Invalid month value in duration".to_string())
+                })?;
+                current_number.clear();
+            }
+            'D' if !in_time_part => {
+                days = current_number.parse().map_err(|_| {
+                    FalkorDBError::ParseTemporalError("Invalid day value in duration".to_string())
+                })?;
+                current_number.clear();
+            }
+            'H' if in_time_part => {
+                hours = current_number.parse().map_err(|_| {
+                    FalkorDBError::ParseTemporalError("Invalid hour value in duration".to_string())
+                })?;
+                current_number.clear();
+            }
+            'M' if in_time_part => {
+                minutes = current_number.parse().map_err(|_| {
+                    FalkorDBError::ParseTemporalError(
+                        "Invalid minute value in duration".to_string(),
+                    )
+                })?;
+                current_number.clear();
+            }
+            'S' if in_time_part => {
+                seconds = current_number.parse().map_err(|_| {
+                    FalkorDBError::ParseTemporalError(
+                        "Invalid second value in duration".to_string(),
+                    )
+                })?;
+                current_number.clear();
+            }
+            '0'..='9' | '.' => {
+                current_number.push(ch);
+            }
+            _ => {
+                return Err(FalkorDBError::ParseTemporalError(format!(
+                    "Invalid character '{}' in duration string",
+                    ch
+                )));
+            }
+        }
+    }
+
+    // Convert to total seconds (approximate for years/months)
+    let total_seconds = seconds +
+                      minutes * 60 +
+                      hours * 3600 +
+                      days * 86400 +
+                      months * 30 * 86400 + // Approximate: 30 days per month
+                      years * 365 * 86400; // Approximate: 365 days per year
+
+    chrono::Duration::try_seconds(total_seconds).ok_or(FalkorDBError::ParseTemporalError(
+        "Duration value out of range".to_string(),
+    ))
 }
 
 #[cfg_attr(
@@ -341,6 +440,30 @@ pub(crate) fn parse_type(
         ParserTypeMarker::Map => FalkorValue::Map(parse_regular_falkor_map(val, graph_schema)?),
         ParserTypeMarker::Point => FalkorValue::Point(Point::parse(val)?),
         ParserTypeMarker::Vec32 => FalkorValue::Vec32(Vec32::parse(val)?),
+        ParserTypeMarker::DateTime => FalkorValue::DateTime(
+            DateTime::<Utc>::from_timestamp(redis_value_as_int(val)?, 0).ok_or(
+                FalkorDBError::ParseTemporalError(
+                    "Could not parse date time from timestamp".to_string(),
+                ),
+            )?,
+        ),
+        ParserTypeMarker::Date => FalkorValue::Date(
+            DateTime::<Utc>::from_timestamp(redis_value_as_int(val)?, 0)
+                .map(|dt| dt.date_naive())
+                .ok_or(FalkorDBError::ParseTemporalError(
+                    "Could not parse date from timestamp".to_string(),
+                ))?,
+        ),
+        ParserTypeMarker::Time => FalkorValue::Time(
+            DateTime::<Utc>::from_timestamp(redis_value_as_int(val)?, 0)
+                .map(|dt| dt.time())
+                .ok_or(FalkorDBError::ParseTemporalError(
+                    "Could not parse time from timestamp".to_string(),
+                ))?,
+        ),
+        ParserTypeMarker::Duration => {
+            FalkorValue::Duration(chrono::Duration::seconds(redis_value_as_int(val)?))
+        }
     };
 
     Ok(res)
@@ -357,8 +480,8 @@ pub(crate) trait SchemaParsable: Sized {
 mod tests {
     use super::*;
     use crate::{
-        client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
-        graph_schema::tests::open_readonly_graph_with_modified_schema, FalkorDBError,
+        FalkorDBError, client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
+        graph_schema::tests::open_readonly_graph_with_modified_schema,
     };
 
     #[test]
@@ -749,5 +872,101 @@ mod tests {
 
         assert_eq!(res.get("IntKey"), Some(FalkorValue::I64(1)).as_ref());
         assert_eq!(res.get("BoolKey"), Some(FalkorValue::Bool(true)).as_ref());
+    }
+
+    #[test]
+    fn test_parse_duration_simple() {
+        let mut graph = open_readonly_graph_with_modified_schema();
+
+        let res = parse_type(
+            ParserTypeMarker::Duration,
+            redis::Value::SimpleString("P1Y2M3DT4H5M6S".to_string()),
+            graph.get_graph_schema_mut(),
+        );
+        assert!(res.is_ok());
+
+        let falkor_duration = res.unwrap();
+        let FalkorValue::Duration(duration) = falkor_duration else {
+            panic!("Is not of type duration")
+        };
+
+        // Should be approximately 1 year + 2 months + 3 days + 4 hours + 5 minutes + 6 seconds
+        // = 365*24*3600 + 60*24*3600 + 3*24*3600 + 4*3600 + 5*60 + 6 seconds
+        let expected_seconds =
+            365 * 24 * 3600 + 60 * 24 * 3600 + 3 * 24 * 3600 + 4 * 3600 + 5 * 60 + 6;
+        assert_eq!(duration.num_seconds(), expected_seconds);
+    }
+
+    #[test]
+    fn test_parse_duration_time_only() {
+        let mut graph = open_readonly_graph_with_modified_schema();
+
+        let res = parse_type(
+            ParserTypeMarker::Duration,
+            redis::Value::SimpleString("PT2H30M15S".to_string()),
+            graph.get_graph_schema_mut(),
+        );
+        assert!(res.is_ok());
+
+        let falkor_duration = res.unwrap();
+        let FalkorValue::Duration(duration) = falkor_duration else {
+            panic!("Is not of type duration")
+        };
+
+        // Should be 2 hours + 30 minutes + 15 seconds = 2*3600 + 30*60 + 15 = 9015 seconds
+        assert_eq!(duration.num_seconds(), 9015);
+    }
+
+    #[test]
+    fn test_parse_duration_date_only() {
+        let mut graph = open_readonly_graph_with_modified_schema();
+
+        let res = parse_type(
+            ParserTypeMarker::Duration,
+            redis::Value::SimpleString("P1Y6M".to_string()),
+            graph.get_graph_schema_mut(),
+        );
+        assert!(res.is_ok());
+
+        let falkor_duration = res.unwrap();
+        let FalkorValue::Duration(duration) = falkor_duration else {
+            panic!("Is not of type duration")
+        };
+
+        // Should be 1 year + 6 months = 365*24*3600 + 6*30*24*3600 seconds
+        let expected_seconds = 365 * 24 * 3600 + 6 * 30 * 24 * 3600;
+        assert_eq!(duration.num_seconds(), expected_seconds);
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        let mut graph = open_readonly_graph_with_modified_schema();
+
+        let res = parse_type(
+            ParserTypeMarker::Duration,
+            redis::Value::SimpleString("INVALID".to_string()),
+            graph.get_graph_schema_mut(),
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_from_string_function() {
+        // Test the parse_duration_from_string function directly
+        let duration = parse_duration_from_string("P1DT2H3M4S").unwrap();
+        let expected_seconds = 1 * 24 * 3600 + 2 * 3600 + 3 * 60 + 4;
+        assert_eq!(duration.num_seconds(), expected_seconds);
+
+        // Test with P prefix
+        let duration2 = parse_duration_from_string("P1DT2H3M4S").unwrap();
+        assert_eq!(duration2.num_seconds(), expected_seconds);
+
+        // Test without P prefix
+        let duration3 = parse_duration_from_string("1DT2H3M4S").unwrap();
+        assert_eq!(duration3.num_seconds(), expected_seconds);
+
+        // Test invalid input
+        let result = parse_duration_from_string("INVALID");
+        assert!(result.is_err());
     }
 }

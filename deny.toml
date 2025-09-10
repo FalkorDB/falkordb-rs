@@ -3,30 +3,21 @@
 [bans]
 multiple-versions = "deny"
 skip = [
-    "wasi", 
-    "getrandom",
-    "windows-sys", 
-    "core-foundation", 
-    "security-framework", 
-    "windows-targets",
-    "windows_aarch64_gnullvm",
-    "windows_aarch64_msvc", 
-    "windows_i686_gnu",
-    "windows_i686_gnullvm",
-    "windows_i686_msvc",
-    "windows_x86_64_gnu",
-    "windows_x86_64_gnullvm",
-    "windows_x86_64_msvc"
+    "windows-link",  # Allow multiple versions due to chrono dependency conflicts
 ]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 
-[licenses]
-exceptions = [
-    { name = "ring", allow = ["LicenseRef-ring"] } # ring uses a specific BoringSSL license that does not match the standard text so requires allowing the specific hash
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 }
 ]
+
+[licenses]
 unused-allowed-license = "allow"
 confidence-threshold = 0.93
 allow = [
@@ -37,12 +28,4 @@ allow = [
     "MIT",
     "ISC",
     "Unicode-3.0",
-]
-
-
-[[licenses.clarify]]
-name = "ring"
-expression = "LicenseRef-ring"
-license-files = [
-    { path = "LICENSE", hash = 0xbd0eed23 },
 ]

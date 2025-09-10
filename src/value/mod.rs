@@ -51,6 +51,8 @@ pub enum FalkorValue {
     Date(chrono::NaiveDate),
     /// A Time value, using chrono's NaiveTime
     Time(chrono::NaiveTime),
+    /// A Duration value, using chrono's Duration
+    Duration(chrono::Duration),
 }
 
 macro_rules! impl_to_falkordb_value {
@@ -79,6 +81,30 @@ impl_to_falkordb_value!(String, Self::String);
 impl From<&str> for FalkorValue {
     fn from(value: &str) -> Self {
         Self::String(value.to_string())
+    }
+}
+
+impl From<chrono::Duration> for FalkorValue {
+    fn from(value: chrono::Duration) -> Self {
+        FalkorValue::Duration(value)
+    }
+}
+
+impl From<chrono::DateTime<chrono::Utc>> for FalkorValue {
+    fn from(value: chrono::DateTime<chrono::Utc>) -> Self {
+        FalkorValue::DateTime(value)
+    }
+}
+
+impl From<chrono::NaiveDate> for FalkorValue {
+    fn from(value: chrono::NaiveDate) -> Self {
+        FalkorValue::Date(value)
+    }
+}
+
+impl From<chrono::NaiveTime> for FalkorValue {
+    fn from(value: chrono::NaiveTime) -> Self {
+        FalkorValue::Time(value)
     }
 }
 
@@ -191,6 +217,16 @@ impl FalkorValue {
         }
     }
 
+    /// Returns a reference to the internal [`chrono::Duration`] if this is a Duration variant.
+    /// # Returns
+    /// A reference to the internal [`chrono::Duration`]
+    pub fn as_duration(&self) -> Option<&chrono::Duration> {
+        match self {
+            FalkorValue::Duration(val) => Some(val),
+            _ => None,
+        }
+    }
+
     /// Returns a Copy of the inner [`i64`] if this is an Int64 variant
     ///
     /// # Returns
@@ -258,6 +294,50 @@ impl FalkorValue {
         match self {
             FalkorValue::Map(map) => Ok(map),
             _ => Err(FalkorDBError::ParsingMap),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for chrono::Duration {
+    type Error = FalkorDBError;
+    
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::Duration(duration) => Ok(duration),
+            _ => Err(FalkorDBError::ParseTemporalError("Not a Duration value".to_string())),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for chrono::DateTime<chrono::Utc> {
+    type Error = FalkorDBError;
+    
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::DateTime(datetime) => Ok(datetime),
+            _ => Err(FalkorDBError::ParseTemporalError("Not a DateTime value".to_string())),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for chrono::NaiveDate {
+    type Error = FalkorDBError;
+    
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::Date(date) => Ok(date),
+            _ => Err(FalkorDBError::ParseTemporalError("Not a Date value".to_string())),
+        }
+    }
+}
+
+impl TryFrom<FalkorValue> for chrono::NaiveTime {
+    type Error = FalkorDBError;
+    
+    fn try_from(value: FalkorValue) -> Result<Self, Self::Error> {
+        match value {
+            FalkorValue::Time(time) => Ok(time),
+            _ => Err(FalkorDBError::ParseTemporalError("Not a Time value".to_string())),
         }
     }
 }
@@ -385,5 +465,72 @@ mod tests {
 
         let non_string_val = FalkorValue::I64(42);
         assert!(non_string_val.into_string().is_err());
+    }
+
+    #[test]
+    fn test_as_duration() {
+        let duration = chrono::Duration::hours(2);
+        let duration_val = FalkorValue::Duration(duration);
+        assert_eq!(duration_val.as_duration().unwrap(), &duration);
+
+        let non_duration_val = FalkorValue::I64(42);
+        assert!(non_duration_val.as_duration().is_none());
+    }
+
+    #[test]
+    fn test_as_datetime() {
+        let datetime = chrono::DateTime::from_timestamp(1234567890, 0).unwrap();
+        let datetime_val = FalkorValue::DateTime(datetime);
+        assert_eq!(datetime_val.as_date_time().unwrap(), &datetime);
+
+        let non_datetime_val = FalkorValue::I64(42);
+        assert!(non_datetime_val.as_date_time().is_none());
+    }
+
+    #[test]
+    fn test_as_date() {
+        let date = chrono::NaiveDate::from_ymd_opt(2023, 12, 25).unwrap();
+        let date_val = FalkorValue::Date(date);
+        assert_eq!(date_val.as_date().unwrap(), &date);
+
+        let non_date_val = FalkorValue::I64(42);
+        assert!(non_date_val.as_date().is_none());
+    }
+
+    #[test]
+    fn test_as_time() {
+        let time = chrono::NaiveTime::from_hms_opt(14, 30, 0).unwrap();
+        let time_val = FalkorValue::Time(time);
+        assert_eq!(time_val.as_time().unwrap(), &time);
+
+        let non_time_val = FalkorValue::I64(42);
+        assert!(non_time_val.as_time().is_none());
+    }
+
+    #[test]
+    fn test_duration_from_into() {
+        let duration = chrono::Duration::minutes(45);
+        let duration_val = FalkorValue::from(duration);
+        assert_eq!(duration_val.as_duration().unwrap(), &duration);
+
+        let converted_duration: chrono::Duration = duration_val.try_into().unwrap();
+        assert_eq!(converted_duration, duration);
+    }
+
+    #[test]
+    fn test_datetime_from_into() {
+        let datetime = chrono::DateTime::from_timestamp(1234567890, 0).unwrap();
+        let datetime_val = FalkorValue::from(datetime);
+        assert_eq!(datetime_val.as_date_time().unwrap(), &datetime);
+
+        let converted_datetime: chrono::DateTime<chrono::Utc> = datetime_val.try_into().unwrap();
+        assert_eq!(converted_datetime, datetime);
+    }
+
+    #[test]
+    fn test_duration_conversion_error() {
+        let non_duration_val = FalkorValue::I64(42);
+        let result: Result<chrono::Duration, _> = non_duration_val.try_into();
+        assert!(result.is_err());
     }
 }

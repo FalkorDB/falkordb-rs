@@ -693,9 +693,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "0.32.2"
+version = "0.32.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2f6fd3fd5bb3a9a48819ae5cbad501968f208c1abd139649e7e2cf5d7f4b40b"
+checksum = "15965fbccb975c38a08a68beca6bdb57da9081cd0859417c5975a160d968c3cb"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -710,7 +710,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "ryu",
- "socket2",
+ "socket2 0.6.0",
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
@@ -946,6 +946,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "socket2"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "233504af464074f9d066d7b5416c5f9b894a5862a6506e306f7b816cdd6f1807"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1061,11 +1071,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75ef51a33ef1da925cea3e4eb122833cb377c61439ca401b770f54902b806779"
 dependencies = [
  "backtrace",
- "bytes",
  "libc",
  "mio",
  "pin-project-lite",
- "socket2",
+ "socket2 0.5.10",
  "tokio-macros",
  "windows-sys 0.52.0",
 ]

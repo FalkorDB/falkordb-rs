@@ -17,7 +17,7 @@ all-features = true
 
 [dependencies]
 parking_lot = { version = "0.12.4", default-features = false, features = ["deadlock_detection"] }
-redis = { version = "0.32.2", default-features = false, features = ["sentinel"] }
+redis = { version = "0.32.6", default-features = false, features = ["sentinel"] }
 regex = { version = "1.11.1", default-features = false, features = ["std", "perf", "unicode-bool", "unicode-perl"] }
 strum = { version = "0.27.1", default-features = false, features = ["std", "derive"] }
 thiserror = "2.0.12"

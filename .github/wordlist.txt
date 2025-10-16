@@ -41,3 +41,14 @@ html
 https
 www
 faq
+EmbeddedConfig
+PathBuf
+prototyping
+Embedded
+Spawns
+Unix
+cleans
+FalkorResult
+FalkorClientBuilder
+FalkorConnectionInfo
+EmbeddedServer

@@ -48,3 +48,7 @@ name = "basic_usage"
 [[example]]
 name = "async_api"
 required-features = ["tokio"]
+
+[[example]]
+name = "embedded_usage"
+required-features = ["embedded"]

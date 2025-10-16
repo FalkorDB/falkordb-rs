@@ -91,10 +91,14 @@ mod tests {
 
     #[test]
     fn test_redis_fallback_provider() {
-        let FalkorConnectionInfo::Redis(redis) =
-            FalkorConnectionInfo::fallback_provider("redis://127.0.0.1:6379".to_string()).unwrap();
-
-        assert_eq!(redis.addr.to_string(), "127.0.0.1:6379".to_string());
+        let result = FalkorConnectionInfo::fallback_provider("redis://127.0.0.1:6379".to_string()).unwrap();
+        match result {
+            FalkorConnectionInfo::Redis(redis) => {
+                assert_eq!(redis.addr.to_string(), "127.0.0.1:6379".to_string());
+            }
+            #[cfg(feature = "embedded")]
+            _ => panic!("Expected Redis connection info"),
+        }
     }
 
     #[test]
@@ -109,8 +113,13 @@ mod tests {
             mem::discriminant(&FalkorConnectionInfo::Redis(raw_redis_conn.clone()))
         );
 
-        let FalkorConnectionInfo::Redis(conn) = redis_conn;
-        assert_eq!(conn.addr, raw_redis_conn.addr);
+        match redis_conn {
+            FalkorConnectionInfo::Redis(conn) => {
+                assert_eq!(conn.addr, raw_redis_conn.addr);
+            }
+            #[cfg(feature = "embedded")]
+            _ => panic!("Expected Redis connection info"),
+        }
     }
 
     #[test]

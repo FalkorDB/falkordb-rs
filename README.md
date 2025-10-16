@@ -151,3 +151,60 @@ falkordb = { version = "0.1.10", features = ["tracing"] }
 
 Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the
 correct level as you desire it.
+
+### Embedded FalkorDB Server
+
+This client supports running an embedded FalkorDB server, which is useful for:
+- Testing without external dependencies
+- Embedded applications
+- Quick prototyping and development
+
+To use the embedded feature, enable it in your `Cargo.toml`:
+
+```toml
+falkordb = { version = "0.1.10", features = ["embedded"] }
+```
+
+#### Requirements
+
+- `redis-server` must be installed and available in PATH (or you can specify a custom path)
+- `falkordb.so` module must be installed (or you can specify a custom path)
+
+You can install these from:
+- Redis: https://github.com/redis/redis
+- FalkorDB: https://github.com/falkordb/falkordb
+
+#### Usage Example
+
+```rust
+use falkordb::{EmbeddedConfig, FalkorClientBuilder, FalkorConnectionInfo};
+
+// Create an embedded configuration with defaults
+let embedded_config = EmbeddedConfig::default();
+
+// Or customize the configuration:
+// let embedded_config = EmbeddedConfig {
+//     redis_server_path: Some(PathBuf::from("/path/to/redis-server")),
+//     falkordb_module_path: Some(PathBuf::from("/path/to/falkordb.so")),
+//     db_dir: Some(PathBuf::from("/tmp/my_falkordb")),
+//     ..Default::default()
+// };
+
+// Build a client with embedded FalkorDB
+let client = FalkorClientBuilder::new()
+    .with_connection_info(FalkorConnectionInfo::Embedded(embedded_config))
+    .build()
+    .expect("Failed to build client");
+
+// Use the client normally
+let mut graph = client.select_graph("social");
+graph.query("CREATE (:Person {name: 'Alice', age: 30})").execute()?;
+
+// The embedded server will be automatically shut down when the client is dropped
+```
+
+The embedded server:
+- Spawns a `redis-server` process with the FalkorDB module loaded
+- Uses Unix socket for communication (no network port)
+- Automatically cleans up when the client is dropped
+- Can be configured with custom paths, database directory, and socket location

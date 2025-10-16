@@ -197,4 +197,37 @@ mod tests {
 
         assert_eq!(client.unwrap().connection_pool_size(), 16);
     }
+    
+    #[test]
+    #[cfg(feature = "embedded")]
+    fn test_embedded_config_creation() {
+        // Test that we can create an embedded config
+        let config = crate::EmbeddedConfig::default();
+        assert_eq!(config.db_filename, "falkordb.rdb");
+        assert!(config.redis_server_path.is_none());
+        assert!(config.falkordb_module_path.is_none());
+    }
+    
+    #[test]
+    #[cfg(feature = "embedded")]
+    fn test_embedded_builder_fails_without_binaries() {
+        // Test that building with embedded config fails gracefully when binaries are not found
+        use std::path::PathBuf;
+        
+        let config = crate::EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/nonexistent/redis-server")),
+            falkordb_module_path: Some(PathBuf::from("/nonexistent/falkordb.so")),
+            ..Default::default()
+        };
+        
+        let result = FalkorClientBuilder::new()
+            .with_connection_info(crate::FalkorConnectionInfo::Embedded(config))
+            .build();
+        
+        // Should fail because the binaries don't exist
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(matches!(e, crate::FalkorDBError::EmbeddedServerError(_)));
+        }
+    }
 }

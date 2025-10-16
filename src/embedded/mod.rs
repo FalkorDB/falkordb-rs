@@ -8,11 +8,12 @@
 //! This module provides functionality to spawn and manage an embedded Redis server
 //! with the FalkorDB module loaded, allowing for in-process graph database operations.
 
-use crate::{FalkorDBError, FalkorResult};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::Duration;
 use std::{fs, thread};
+
+use crate::{FalkorDBError, FalkorResult};
 
 /// Configuration for an embedded FalkorDB server instance.
 #[derive(Debug, Clone)]

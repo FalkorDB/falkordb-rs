@@ -91,7 +91,8 @@ mod tests {
 
     #[test]
     fn test_redis_fallback_provider() {
-        let result = FalkorConnectionInfo::fallback_provider("redis://127.0.0.1:6379".to_string()).unwrap();
+        let result =
+            FalkorConnectionInfo::fallback_provider("redis://127.0.0.1:6379".to_string()).unwrap();
         match result {
             FalkorConnectionInfo::Redis(redis) => {
                 assert_eq!(redis.addr.to_string(), "127.0.0.1:6379".to_string());

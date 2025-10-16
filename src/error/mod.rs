@@ -124,6 +124,9 @@ pub enum FalkorDBError {
     /// No runtime detected, you are trying to run an async operation from a sync context
     #[error("No runtime detected, you are trying to run an async operation from a sync context")]
     NoRuntime,
+    /// An error occurred with the embedded FalkorDB server
+    #[error("Embedded server error: {0}")]
+    EmbeddedServerError(String),
 }
 
 impl From<strum::ParseError> for FalkorDBError {

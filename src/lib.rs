@@ -12,6 +12,8 @@
 mod client;
 mod connection;
 mod connection_info;
+#[cfg(feature = "embedded")]
+mod embedded;
 mod error;
 mod graph;
 mod graph_schema;
@@ -50,6 +52,9 @@ pub use value::{
 pub use client::asynchronous::FalkorAsyncClient;
 #[cfg(feature = "tokio")]
 pub use graph::asynchronous::AsyncGraph;
+
+#[cfg(feature = "embedded")]
+pub use embedded::{EmbeddedConfig, EmbeddedServer};
 
 #[cfg(test)]
 pub(crate) mod test_utils {

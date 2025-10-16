@@ -23,6 +23,7 @@ strum = { version = "0.27.1", default-features = false, features = ["std", "deri
 thiserror = "2.0.12"
 tokio = { version = "1.45.1", default-features = false, features = ["macros", "sync", "rt-multi-thread"], optional = true }
 tracing = { version = "0.1.41", default-features = false, features = ["std", "attributes"], optional = true }
+which = { version = "7.0.1", optional = true }
 
 [dev-dependencies]
 approx = "0.5.1"
@@ -38,6 +39,8 @@ tokio-native-tls = ["tokio", "redis/tokio-native-tls-comp"]
 tokio-rustls = ["tokio", "redis/tokio-rustls-comp"]
 
 tracing = ["dep:tracing"]
+
+embedded = ["dep:which"]
 
 [[example]]
 name = "basic_usage"

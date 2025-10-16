@@ -56,17 +56,52 @@ impl<const R: char> FalkorClientBuilder<R> {
 
     fn get_client<E: ToString, T: TryInto<FalkorConnectionInfo, Error = E>>(
         connection_info: T
-    ) -> FalkorResult<FalkorClientProvider> {
+    ) -> FalkorResult<(FalkorClientProvider, FalkorConnectionInfo)> {
         let connection_info = connection_info
             .try_into()
             .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
-        Ok(match connection_info {
-            FalkorConnectionInfo::Redis(connection_info) => FalkorClientProvider::Redis {
-                client: redis::Client::open(connection_info.clone())
+        
+        #[cfg(feature = "embedded")]
+        if let FalkorConnectionInfo::Embedded(ref config) = connection_info {
+            // Start the embedded server
+            let embedded_server = std::sync::Arc::new(crate::embedded::EmbeddedServer::start(config.clone())?);
+            
+            // Create a Redis client that connects to the embedded server's Unix socket
+            let socket_path = embedded_server.socket_path();
+            let redis_connection_info = redis::ConnectionInfo {
+                addr: redis::ConnectionAddr::Unix(socket_path.to_path_buf()),
+                redis: redis::RedisConnectionInfo {
+                    db: 0,
+                    username: None,
+                    password: None,
+                    protocol: redis::ProtocolVersion::RESP2,
+                },
+            };
+            
+            let client = redis::Client::open(redis_connection_info.clone())
+                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+            
+            return Ok((
+                FalkorClientProvider::Redis {
+                    client,
+                    sentinel: None,
+                    embedded_server: Some(embedded_server),
+                },
+                FalkorConnectionInfo::Redis(redis_connection_info),
+            ));
+        }
+        
+        Ok((match connection_info {
+            FalkorConnectionInfo::Redis(ref redis_info) => FalkorClientProvider::Redis {
+                client: redis::Client::open(redis_info.clone())
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
                 sentinel: None,
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
             },
-        })
+            #[cfg(feature = "embedded")]
+            FalkorConnectionInfo::Embedded(_) => unreachable!("Handled above"),
+        }, connection_info))
     }
 }
 
@@ -92,15 +127,15 @@ impl FalkorClientBuilder<'S'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        let mut client = Self::get_client(connection_info.clone())?;
+        let (mut client, actual_connection_info) = Self::get_client(connection_info)?;
 
         #[allow(irrefutable_let_patterns)]
-        if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
+        if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
             if let Some(sentinel) = client.get_sentinel_client(redis_conn_info)? {
                 client.set_sentinel(sentinel);
             }
         }
-        FalkorSyncClient::create(client, connection_info, self.num_connections.get())
+        FalkorSyncClient::create(client, actual_connection_info, self.num_connections.get())
     }
 }
 
@@ -126,15 +161,15 @@ impl FalkorClientBuilder<'A'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        let mut client = Self::get_client(connection_info.clone())?;
+        let (mut client, actual_connection_info) = Self::get_client(connection_info)?;
 
         #[allow(irrefutable_let_patterns)]
-        if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
+        if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
             if let Some(sentinel) = client.get_sentinel_client_async(redis_conn_info).await? {
                 client.set_sentinel(sentinel);
             }
         }
-        FalkorAsyncClient::create(client, connection_info, self.num_connections.get()).await
+        FalkorAsyncClient::create(client, actual_connection_info, self.num_connections.get()).await
     }
 }
 

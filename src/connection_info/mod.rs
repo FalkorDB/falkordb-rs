@@ -5,12 +5,18 @@
 
 use crate::{FalkorDBError, FalkorResult};
 
+#[cfg(feature = "embedded")]
+use crate::embedded::EmbeddedConfig;
+
 /// An agnostic container which allows maintaining of various connection details.
 /// The different enum variants are enabled based on compilation features
 #[derive(Clone, Debug)]
 pub enum FalkorConnectionInfo {
     /// A Redis database connection
     Redis(redis::ConnectionInfo),
+    /// An embedded FalkorDB server (requires the "embedded" feature)
+    #[cfg(feature = "embedded")]
+    Embedded(EmbeddedConfig),
 }
 
 impl FalkorConnectionInfo {
@@ -33,6 +39,8 @@ impl FalkorConnectionInfo {
     pub fn address(&self) -> String {
         match self {
             FalkorConnectionInfo::Redis(redis_info) => redis_info.addr.to_string(),
+            #[cfg(feature = "embedded")]
+            FalkorConnectionInfo::Embedded(_) => "embedded".to_string(),
         }
     }
 }

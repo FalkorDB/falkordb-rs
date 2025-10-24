@@ -39,6 +39,54 @@ pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
     format!("{params_str}{query_str}")
 }
 
+/// Convert serde_json::Value to Cypher literal syntax
+/// Cypher uses unquoted keys in maps: {key: value} not {"key": "value"}
+fn json_value_to_cypher_literal(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => {
+            // Escape single quotes and backslashes, wrap in single quotes
+            format!("'{}'", s.replace("\\", "\\\\").replace("'", "\\'"))
+        }
+        serde_json::Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(json_value_to_cypher_literal).collect();
+            format!("[{}]", items.join(", "))
+        }
+        serde_json::Value::Object(map) => {
+            let items: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, json_value_to_cypher_literal(v)))
+                .collect();
+            format!("{{{}}}", items.join(", "))
+        }
+    }
+}
+
+/// Construct query with JSON parameters (for complex data structures like UNWIND batches)
+/// This replaces parameter placeholders like $batch with Cypher literal syntax
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Construct Query with JSON Params", skip_all, level = "trace")
+)]
+pub(crate) fn construct_query_with_json_params<Q: Display>(
+    query_str: Q,
+    json_params: Option<&HashMap<String, serde_json::Value>>,
+) -> String {
+    let mut query = query_str.to_string();
+
+    if let Some(params) = json_params {
+        for (key, value) in params {
+            let placeholder = format!("${key}");
+            let cypher_literal = json_value_to_cypher_literal(value);
+            query = query.replace(&placeholder, &cypher_literal);
+        }
+    }
+
+    query
+}
+
 /// A Builder-pattern struct that allows creating and executing queries on a graph
 pub struct QueryBuilder<'a, Output, T: Display, G: HasGraphSchema> {
     _unused: PhantomData<Output>,
@@ -46,6 +94,7 @@ pub struct QueryBuilder<'a, Output, T: Display, G: HasGraphSchema> {
     command: &'a str,
     query_string: T,
     params: Option<&'a HashMap<String, String>>,
+    json_params: Option<&'a HashMap<String, serde_json::Value>>,
     timeout: Option<i64>,
 }
 
@@ -61,6 +110,7 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
             command,
             query_string,
             params: None,
+            json_params: None,
             timeout: None,
         }
     }
@@ -79,11 +129,41 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
         }
     }
 
+    /// Pass JSON parameters to the query for complex data structures (e.g., UNWIND batches)
+    ///
+    /// This method allows passing complex parameters like arrays of maps which are common
+    /// in UNWIND operations. The parameters are converted to Cypher literal syntax.
+    ///
+    /// # Arguments
+    /// * `json_params`: A [`HashMap`] of parameter names to JSON values
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut batch_data = Vec::new();
+    /// // ... populate batch_data ...
+    /// let mut params = HashMap::new();
+    /// params.insert("batch".to_string(), serde_json::Value::Array(batch_data));
+    ///
+    /// graph.query("UNWIND $batch AS row CREATE (n:Node) SET n = row")
+    ///     .with_json_params(&params)
+    ///     .execute()
+    ///     .await?;
+    /// ```
+    pub fn with_json_params(
+        self,
+        json_params: &'a HashMap<String, serde_json::Value>,
+    ) -> Self {
+        Self {
+            json_params: Some(json_params),
+            ..self
+        }
+    }
+
     /// Specify a timeout after which to abort the query
     ///
     /// # Arguments
     /// * `timeout`: the timeout after which the server is allowed to abort or throw this request,
-    ///    in milliseconds, when that happens the server will return a timeout error
+    ///   in milliseconds, when that happens the server will return a timeout error
     pub fn with_timeout(
         self,
         timeout: i64,
@@ -162,7 +242,12 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
     )]
     fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        let query = construct_query(&self.query_string, self.params);
+        // Prefer JSON params if provided, otherwise use string params
+        let query = if self.json_params.is_some() {
+            construct_query_with_json_params(&self.query_string, self.json_params)
+        } else {
+            construct_query(&self.query_string, self.params)
+        };
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
         let mut params = vec![query.as_str(), "--compact"];
@@ -189,7 +274,12 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
     )]
     async fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        let query = construct_query(&self.query_string, self.params);
+        // Prefer JSON params if provided, otherwise use string params
+        let query = if self.json_params.is_some() {
+            construct_query_with_json_params(&self.query_string, self.json_params)
+        } else {
+            construct_query(&self.query_string, self.params)
+        };
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
         let mut params = vec![query.as_str(), "--compact"];
@@ -264,10 +354,10 @@ pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
     let args_str = args
         .unwrap_or_default()
         .iter()
-        .map(|e| format!("${}", e))
+        .map(|e| format!("${e}"))
         .collect::<Vec<_>>()
         .join(",");
-    let mut query_string = format!("CALL {}({})", procedure, args_str);
+    let mut query_string = format!("CALL {procedure}({args_str})");
 
     let params = args.map(|args| {
         args.iter()
@@ -627,5 +717,111 @@ mod tests {
         assert!(result.contains(" age=30 "));
         assert!(result.contains(" city=Wonderland "));
         assert!(result.ends_with("MATCH (n) RETURN n"));
+    }
+
+    #[test]
+    fn test_json_value_to_cypher_literal_primitives() {
+        assert_eq!(
+            json_value_to_cypher_literal(&serde_json::json!(null)),
+            "null"
+        );
+        assert_eq!(
+            json_value_to_cypher_literal(&serde_json::json!(true)),
+            "true"
+        );
+        assert_eq!(
+            json_value_to_cypher_literal(&serde_json::json!(false)),
+            "false"
+        );
+        assert_eq!(json_value_to_cypher_literal(&serde_json::json!(42)), "42");
+        assert_eq!(
+            json_value_to_cypher_literal(&serde_json::json!(3.14)),
+            "3.14"
+        );
+        assert_eq!(
+            json_value_to_cypher_literal(&serde_json::json!("hello")),
+            "'hello'"
+        );
+    }
+
+    #[test]
+    fn test_json_value_to_cypher_literal_string_escaping() {
+        assert_eq!(
+            json_value_to_cypher_literal(&serde_json::json!("it's")),
+            "'it\\'s'"
+        );
+        assert_eq!(
+            json_value_to_cypher_literal(&serde_json::json!("back\\slash")),
+            "'back\\\\slash'"
+        );
+    }
+
+    #[test]
+    fn test_json_value_to_cypher_literal_array() {
+        let arr = serde_json::json!([1, 2, 3]);
+        assert_eq!(json_value_to_cypher_literal(&arr), "[1, 2, 3]");
+
+        let mixed = serde_json::json!(["a", 42, true]);
+        assert_eq!(json_value_to_cypher_literal(&mixed), "['a', 42, true]");
+    }
+
+    #[test]
+    fn test_json_value_to_cypher_literal_object() {
+        let obj = serde_json::json!({"name": "Alice", "age": 30});
+        let result = json_value_to_cypher_literal(&obj);
+
+        // HashMap iteration order is not guaranteed, so check both components
+        assert!(result.starts_with("{"));
+        assert!(result.ends_with("}"));
+        assert!(result.contains("name: 'Alice'"));
+        assert!(result.contains("age: 30"));
+    }
+
+    #[test]
+    fn test_json_value_to_cypher_literal_nested() {
+        let nested = serde_json::json!({
+            "id": 1,
+            "props": {
+                "name": "Alice",
+                "tags": ["tag1", "tag2"]
+            }
+        });
+        let result = json_value_to_cypher_literal(&nested);
+
+        assert!(result.contains("id: 1"));
+        assert!(result.contains("name: 'Alice'"));
+        assert!(result.contains("tags: ['tag1', 'tag2']"));
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_simple() {
+        let query_str = "MATCH (n) WHERE n.id = $id RETURN n";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        assert_eq!(result, "MATCH (n) WHERE n.id = 42 RETURN n");
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_array() {
+        let query_str = "UNWIND $batch AS row CREATE (n) SET n = row";
+        let batch_data = serde_json::json!([
+            {"id": 1, "name": "Alice"},
+            {"id": 2, "name": "Bob"}
+        ]);
+        let mut params = HashMap::new();
+        params.insert("batch".to_string(), batch_data);
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        assert!(result.contains("UNWIND [{id: 1, name: 'Alice'}, {id: 2, name: 'Bob'}]"));
+        assert!(result.contains("AS row CREATE (n) SET n = row"));
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_no_params() {
+        let query_str = "MATCH (n) RETURN n";
+        let result = construct_query_with_json_params(query_str, None);
+        assert_eq!(result, "MATCH (n) RETURN n");
     }
 }

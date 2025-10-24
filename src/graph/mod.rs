@@ -25,13 +25,13 @@ pub(crate) fn generate_create_index_query<P: Display>(
 ) -> String {
     let properties_string = properties
         .iter()
-        .map(|element| format!("l.{}", element))
+        .map(|element| format!("l.{element}"))
         .collect::<Vec<_>>()
         .join(", ");
 
     let pattern = match entity_type {
-        EntityType::Node => format!("(l:{})", label),
-        EntityType::Edge => format!("()-[l:{}]->()", label),
+        EntityType::Node => format!("(l:{label})"),
+        EntityType::Edge => format!("()-[l:{label}]->()"),
     };
 
     let idx_type = match index_field_type {
@@ -48,13 +48,10 @@ pub(crate) fn generate_create_index_query<P: Display>(
                 .collect::<Vec<_>>()
                 .join(",")
         })
-        .map(|options_string| format!(" OPTIONS {{ {} }}", options_string))
+        .map(|options_string| format!(" OPTIONS {{ {options_string} }}"))
         .unwrap_or_default();
 
-    format!(
-        "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
-        properties_string, options_string
-    )
+    format!("CREATE {idx_type}INDEX FOR {pattern} ON ({properties_string}){options_string}")
 }
 
 pub(crate) fn generate_drop_index_query<P: Display>(
@@ -65,13 +62,13 @@ pub(crate) fn generate_drop_index_query<P: Display>(
 ) -> String {
     let properties_string = properties
         .iter()
-        .map(|element| format!("e.{}", element))
+        .map(|element| format!("e.{element}"))
         .collect::<Vec<_>>()
         .join(", ");
 
     let pattern = match entity_type {
-        EntityType::Node => format!("(e:{})", label),
-        EntityType::Edge => format!("()-[e:{}]->()", label),
+        EntityType::Node => format!("(e:{label})"),
+        EntityType::Edge => format!("()-[e:{label}]->()"),
     };
 
     let idx_type = match index_field_type {
@@ -81,8 +78,5 @@ pub(crate) fn generate_drop_index_query<P: Display>(
     }
     .to_string();
 
-    format!(
-        "DROP {idx_type} INDEX for {pattern} ON ({})",
-        properties_string
-    )
+    format!("DROP {idx_type} INDEX for {pattern} ON ({properties_string})")
 }

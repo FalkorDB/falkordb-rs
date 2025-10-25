@@ -93,7 +93,9 @@ pub(crate) fn construct_query_with_json_params<Q: Display>(
             let regex = regex::Regex::new(&pattern)
                 .expect("Failed to create regex for parameter replacement");
             let cypher_literal = json_value_to_cypher_literal(value);
-            query = regex.replace_all(&query, cypher_literal.as_str()).to_string();
+            query = regex
+                .replace_all(&query, cypher_literal.as_str())
+                .to_string();
         }
     }
 
@@ -260,7 +262,7 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
             self.json_params.is_none() || self.params.is_none(),
             "Cannot use both json_params and params simultaneously - json_params will be used"
         );
-        
+
         let query = if self.json_params.is_some() {
             construct_query_with_json_params(&self.query_string, self.json_params)
         } else {
@@ -297,7 +299,7 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
             self.json_params.is_none() || self.params.is_none(),
             "Cannot use both json_params and params simultaneously - json_params will be used"
         );
-        
+
         let query = if self.json_params.is_some() {
             construct_query_with_json_params(&self.query_string, self.json_params)
         } else {

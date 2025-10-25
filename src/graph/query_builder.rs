@@ -57,7 +57,11 @@ fn json_value_to_cypher_literal(value: &serde_json::Value) -> String {
         serde_json::Value::Object(map) => {
             let items: Vec<String> = map
                 .iter()
-                .map(|(k, v)| format!("{}: {}", k, json_value_to_cypher_literal(v)))
+                .map(|(k, v)| {
+                    // Escape backticks in keys by doubling them, then wrap in backticks
+                    let escaped_key = k.replace("`", "``");
+                    format!("`{}`: {}", escaped_key, json_value_to_cypher_literal(v))
+                })
                 .collect();
             format!("{{{}}}", items.join(", "))
         }
@@ -77,10 +81,19 @@ pub(crate) fn construct_query_with_json_params<Q: Display>(
     let mut query = query_str.to_string();
 
     if let Some(params) = json_params {
-        for (key, value) in params {
-            let placeholder = format!("${key}");
+        // Sort params by key length descending to handle substring collisions
+        // e.g., replace $id_type before $id to avoid $id replacing part of $id_type
+        let mut sorted_params: Vec<_> = params.iter().collect();
+        sorted_params.sort_by(|(k1, _), (k2, _)| k2.len().cmp(&k1.len()));
+
+        for (key, value) in sorted_params {
+            // Use regex with word boundary to match exact parameter names
+            // The pattern matches $ followed by the exact key and a word boundary
+            let pattern = format!(r"\${}\b", regex::escape(key));
+            let regex = regex::Regex::new(&pattern)
+                .expect("Failed to create regex for parameter replacement");
             let cypher_literal = json_value_to_cypher_literal(value);
-            query = query.replace(&placeholder, &cypher_literal);
+            query = regex.replace_all(&query, cypher_literal.as_str()).to_string();
         }
     }
 
@@ -242,7 +255,12 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
     )]
     fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        // Prefer JSON params if provided, otherwise use string params
+        // json_params takes precedence over params when both are provided
+        debug_assert!(
+            self.json_params.is_none() || self.params.is_none(),
+            "Cannot use both json_params and params simultaneously - json_params will be used"
+        );
+        
         let query = if self.json_params.is_some() {
             construct_query_with_json_params(&self.query_string, self.json_params)
         } else {
@@ -274,7 +292,12 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
     )]
     async fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        // Prefer JSON params if provided, otherwise use string params
+        // json_params takes precedence over params when both are provided
+        debug_assert!(
+            self.json_params.is_none() || self.params.is_none(),
+            "Cannot use both json_params and params simultaneously - json_params will be used"
+        );
+        
         let query = if self.json_params.is_some() {
             construct_query_with_json_params(&self.query_string, self.json_params)
         } else {
@@ -773,8 +796,8 @@ mod tests {
         // HashMap iteration order is not guaranteed, so check both components
         assert!(result.starts_with("{"));
         assert!(result.ends_with("}"));
-        assert!(result.contains("name: 'Alice'"));
-        assert!(result.contains("age: 30"));
+        assert!(result.contains("`name`: 'Alice'"));
+        assert!(result.contains("`age`: 30"));
     }
 
     #[test]
@@ -788,9 +811,9 @@ mod tests {
         });
         let result = json_value_to_cypher_literal(&nested);
 
-        assert!(result.contains("id: 1"));
-        assert!(result.contains("name: 'Alice'"));
-        assert!(result.contains("tags: ['tag1', 'tag2']"));
+        assert!(result.contains("`id`: 1"));
+        assert!(result.contains("`name`: 'Alice'"));
+        assert!(result.contains("`tags`: ['tag1', 'tag2']"));
     }
 
     #[test]
@@ -814,7 +837,7 @@ mod tests {
         params.insert("batch".to_string(), batch_data);
 
         let result = construct_query_with_json_params(query_str, Some(&params));
-        assert!(result.contains("UNWIND [{id: 1, name: 'Alice'}, {id: 2, name: 'Bob'}]"));
+        assert!(result.contains("UNWIND [{`id`: 1, `name`: 'Alice'}, {`id`: 2, `name`: 'Bob'}]"));
         assert!(result.contains("AS row CREATE (n) SET n = row"));
     }
 
@@ -823,5 +846,52 @@ mod tests {
         let query_str = "MATCH (n) RETURN n";
         let result = construct_query_with_json_params(query_str, None);
         assert_eq!(result, "MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_substring_collision() {
+        let query_str = "MATCH (n) WHERE n.id = $id AND n.id_type = $id_type";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+        params.insert("id_type".to_string(), serde_json::json!("user"));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        // Should not incorrectly replace $id within $id_type
+        assert!(result.contains("n.id = 42"));
+        assert!(result.contains("n.id_type = 'user'"));
+        assert!(!result.contains("n.42_type"));
+    }
+
+    #[test]
+    fn test_json_value_to_cypher_literal_special_keys() {
+        // Test keys with spaces
+        let obj = serde_json::json!({"key with spaces": "value"});
+        let result = json_value_to_cypher_literal(&obj);
+        assert!(result.contains("`key with spaces`: 'value'"));
+
+        // Test keys with hyphens
+        let obj = serde_json::json!({"key-with-hyphens": "value"});
+        let result = json_value_to_cypher_literal(&obj);
+        assert!(result.contains("`key-with-hyphens`: 'value'"));
+
+        // Test keys with colons
+        let obj = serde_json::json!({"key:with:colons": "value"});
+        let result = json_value_to_cypher_literal(&obj);
+        assert!(result.contains("`key:with:colons`: 'value'"));
+
+        // Test keys that are Cypher keywords
+        let obj = serde_json::json!({"match": "value"});
+        let result = json_value_to_cypher_literal(&obj);
+        assert!(result.contains("`match`: 'value'"));
+
+        // Test keys starting with digits
+        let obj = serde_json::json!({"1st": "value"});
+        let result = json_value_to_cypher_literal(&obj);
+        assert!(result.contains("`1st`: 'value'"));
+
+        // Test keys with backticks (should be escaped)
+        let obj = serde_json::json!({"key`with`backticks": "value"});
+        let result = json_value_to_cypher_literal(&obj);
+        assert!(result.contains("`key``with``backticks`: 'value'"));
     }
 }

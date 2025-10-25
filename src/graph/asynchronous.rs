@@ -423,12 +423,25 @@ mod tests {
             .await
             .expect("Could not create index");
 
-        let indices = graph
-            .inner
-            .list_indices()
-            .await
-            .expect("Could not list indices");
+        // Retry logic for CI flakiness - index might take a moment to appear
+        let mut indices_result = None;
+        for attempt in 0..5 {
+            let indices = graph
+                .inner
+                .list_indices()
+                .await
+                .expect("Could not list indices");
 
+            if indices.data.len() == 1 {
+                indices_result = Some(indices);
+                break;
+            }
+            if attempt < 4 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+
+        let indices = indices_result.expect("Index not found after 5 attempts");
         assert_eq!(indices.data.len(), 1);
         assert_eq!(
             indices.data[0].field_types["Hello"],

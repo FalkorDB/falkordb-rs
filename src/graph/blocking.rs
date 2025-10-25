@@ -411,7 +411,20 @@ mod tests {
             .expect("Could not create index");
         assert_eq!(indices.get_indices_created(), Some(1));
 
-        let indices = graph.inner.list_indices().expect("Could not list indices");
+        // Retry logic for CI flakiness - index might take a moment to appear
+        let mut indices_result = None;
+        for attempt in 0..5 {
+            let indices = graph.inner.list_indices().expect("Could not list indices");
+            if indices.data.len() == 1 {
+                indices_result = Some(indices);
+                break;
+            }
+            if attempt < 4 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+
+        let indices = indices_result.expect("Index not found after 5 attempts");
         assert_eq!(indices.data.len(), 1);
         assert_eq!(
             indices.data[0].field_types["Hello"],

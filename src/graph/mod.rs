@@ -80,3 +80,42 @@ pub(crate) fn generate_drop_index_query<P: Display>(
 
     format!("DROP {idx_type} INDEX for {pattern} ON ({properties_string})")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_create_index_query_node_fulltext() {
+        let query = generate_create_index_query(
+            IndexType::Fulltext,
+            EntityType::Node,
+            "actor",
+            &["Hello"],
+            None,
+        );
+        assert_eq!(query, "CREATE FULLTEXT INDEX FOR (l:actor) ON (l.Hello)");
+    }
+
+    #[test]
+    fn test_generate_create_index_query_edge_range() {
+        let query = generate_create_index_query(
+            IndexType::Range,
+            EntityType::Edge,
+            "follows",
+            &["since", "weight"],
+            None,
+        );
+        assert_eq!(
+            query,
+            "CREATE INDEX FOR ()-[l:follows]->() ON (l.since, l.weight)"
+        );
+    }
+
+    #[test]
+    fn test_generate_drop_index_query() {
+        let query =
+            generate_drop_index_query(IndexType::Fulltext, EntityType::Node, "actor", &["Hello"]);
+        assert_eq!(query, "DROP FULLTEXT INDEX for (e:actor) ON (e.Hello)");
+    }
+}

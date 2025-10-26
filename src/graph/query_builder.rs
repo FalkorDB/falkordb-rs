@@ -68,25 +68,27 @@ fn json_value_to_cypher_literal(value: &serde_json::Value) -> String {
     }
 }
 
-/// Construct query with JSON parameters (for complex data structures like UNWIND batches)
-/// This replaces parameter placeholders like $batch with Cypher literal syntax.
-/// Placeholders inside single-quoted strings or backtick-quoted identifiers are NOT replaced.
-#[cfg_attr(
-    feature = "tracing",
-    tracing::instrument(name = "Construct Query with JSON Params", skip_all, level = "trace")
-)]
-pub(crate) fn construct_query_with_json_params<Q: Display>(
-    query_str: Q,
-    json_params: &HashMap<String, serde_json::Value>,
-) -> String {
-    let query = query_str.to_string();
-
-    let params = json_params;
-
-    // Sort params by key length descending to handle substring collisions
-    let mut sorted_keys: Vec<_> = params.keys().collect();
-    sorted_keys.sort_by(|k1, k2| k2.len().cmp(&k1.len()));
-
+/// Replace parameter placeholders in a Cypher query, respecting quoted regions.
+///
+/// This tokenizer-based parser respects:
+/// - Single-quoted strings: `'$param'` (not replaced)
+/// - Backtick-quoted identifiers: `` `$param` `` (not replaced)
+/// - Escaped quotes: `''` and `` `` `` (doubled quotes)
+/// - Backslash escapes: `\'` in strings
+///
+/// # Arguments
+/// * `query` - The Cypher query string
+/// * `replacer` - Function that takes a parameter name and returns its replacement string
+///
+/// # Returns
+/// The query with placeholders replaced
+fn replace_cypher_parameters<F>(
+    query: &str,
+    mut replacer: F,
+) -> String
+where
+    F: FnMut(&str) -> Option<String>,
+{
     let mut result = String::with_capacity(query.len());
     let chars: Vec<char> = query.chars().collect();
     let mut i = 0;
@@ -148,34 +150,25 @@ pub(crate) fn construct_query_with_json_params<Q: Display>(
 
         // Check for parameter placeholder outside quoted regions
         if ch == '$' {
-            let mut matched = false;
-            // Try to match each parameter key (longest first)
-            for key in &sorted_keys {
-                let key_chars: Vec<char> = key.chars().collect();
-                // Check if we have enough characters and they match
-                if i + 1 + key_chars.len() <= chars.len() {
-                    let match_slice = &chars[i + 1..i + 1 + key_chars.len()];
-                    if match_slice == key_chars.as_slice() {
-                        // Check word boundary: next char must not be alphanumeric or underscore
-                        let next_idx = i + 1 + key_chars.len();
-                        let is_boundary = next_idx >= chars.len()
-                            || !chars[next_idx].is_alphanumeric() && chars[next_idx] != '_';
+            // Extract parameter name (alphanumeric + underscore)
+            let start = i + 1;
+            let mut end = start;
+            while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+                end += 1;
+            }
 
-                        if is_boundary {
-                            // Replace with the parameter value
-                            let cypher_literal = json_value_to_cypher_literal(&params[*key]);
-                            result.push_str(&cypher_literal);
-                            i = next_idx;
-                            matched = true;
-                            break;
-                        }
-                    }
+            if end > start {
+                let param_name: String = chars[start..end].iter().collect();
+                if let Some(replacement) = replacer(&param_name) {
+                    result.push_str(&replacement);
+                    i = end;
+                    continue;
                 }
             }
-            if !matched {
-                result.push(ch);
-                i += 1;
-            }
+
+            // No match, keep the $ character
+            result.push(ch);
+            i += 1;
         } else {
             result.push(ch);
             i += 1;
@@ -183,6 +176,37 @@ pub(crate) fn construct_query_with_json_params<Q: Display>(
     }
 
     result
+}
+
+/// Construct query with JSON parameters (for complex data structures like UNWIND batches)
+/// This replaces parameter placeholders like $batch with Cypher literal syntax.
+/// Placeholders inside single-quoted strings or backtick-quoted identifiers are NOT replaced.
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(name = "Construct Query with JSON Params", skip_all, level = "trace")
+)]
+pub(crate) fn construct_query_with_json_params<Q: Display>(
+    query_str: Q,
+    json_params: &HashMap<String, serde_json::Value>,
+) -> String {
+    let query = query_str.to_string();
+
+    // Sort params by key length descending to handle substring collisions
+    let mut sorted_keys: Vec<_> = json_params.keys().collect();
+    sorted_keys.sort_by(|k1, k2| k2.len().cmp(&k1.len()));
+
+    replace_cypher_parameters(&query, |param_name| {
+        // Try to match longest key first (already sorted)
+        for key in &sorted_keys {
+            if param_name.starts_with(key.as_str()) {
+                // Ensure exact match with word boundary
+                if param_name.len() == key.len() {
+                    return Some(json_value_to_cypher_literal(&json_params[*key]));
+                }
+            }
+        }
+        None
+    })
 }
 
 /// A Builder-pattern struct that allows creating and executing queries on a graph
@@ -1055,6 +1079,135 @@ mod tests {
         let result = construct_query_with_json_params(query_str, &params);
         // Should preserve the unclosed quote and not replace inside it
         assert_eq!(result, "RETURN '$id");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_basic() {
+        let query = "MATCH (n) WHERE n.id = $id RETURN n";
+        let result = replace_cypher_parameters(query, |param| {
+            if param == "id" {
+                Some("42".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(result, "MATCH (n) WHERE n.id = 42 RETURN n");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_in_quotes() {
+        let query = "RETURN '$id' AS literal, $id AS value";
+        let result = replace_cypher_parameters(query, |param| {
+            if param == "id" {
+                Some("42".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(result, "RETURN '$id' AS literal, 42 AS value");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_in_backticks() {
+        let query = "MATCH (n) WHERE n.`$id` = $id";
+        let result = replace_cypher_parameters(query, |param| {
+            if param == "id" {
+                Some("42".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(result, "MATCH (n) WHERE n.`$id` = 42");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_escaped_quotes() {
+        let query = "RETURN '$id''s' AS s, $id AS x";
+        let result = replace_cypher_parameters(query, |param| {
+            if param == "id" {
+                Some("42".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(result, "RETURN '$id''s' AS s, 42 AS x");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_doubled_backticks() {
+        let query = "MATCH (n) WHERE n.`$id``x` = $id";
+        let result = replace_cypher_parameters(query, |param| {
+            if param == "id" {
+                Some("42".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(result, "MATCH (n) WHERE n.`$id``x` = 42");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_backslash_escape() {
+        let query = r"RETURN '$id\'s' AS s, $id AS x";
+        let result = replace_cypher_parameters(query, |param| {
+            if param == "id" {
+                Some("42".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(result, r"RETURN '$id\'s' AS s, 42 AS x");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_no_match() {
+        let query = "RETURN $unknown";
+        let result = replace_cypher_parameters(query, |_| None);
+        assert_eq!(result, "RETURN $unknown");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_multiple_params() {
+        let query = "MATCH (n) WHERE n.id = $id AND n.name = $name";
+        let result = replace_cypher_parameters(query, |param| match param {
+            "id" => Some("42".to_string()),
+            "name" => Some("'Alice'".to_string()),
+            _ => None,
+        });
+        assert_eq!(result, "MATCH (n) WHERE n.id = 42 AND n.name = 'Alice'");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_param_with_underscore() {
+        let query = "RETURN $user_id";
+        let result = replace_cypher_parameters(query, |param| {
+            if param == "user_id" {
+                Some("123".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(result, "RETURN 123");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_dollar_alone() {
+        let query = "RETURN $ + 1";
+        let result = replace_cypher_parameters(query, |_| Some("42".to_string()));
+        assert_eq!(result, "RETURN $ + 1");
+    }
+
+    #[test]
+    fn test_replace_cypher_parameters_at_end() {
+        let query = "RETURN $id";
+        let result = replace_cypher_parameters(query, |param| {
+            if param == "id" {
+                Some("42".to_string())
+            } else {
+                None
+            }
+        });
+        assert_eq!(result, "RETURN 42");
     }
 
     #[test]

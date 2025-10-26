@@ -379,7 +379,8 @@ pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
     let args_str = args
         .unwrap_or_default()
         .iter()
-        .map(|e| format!("${e}"))
+        .enumerate()
+        .map(|(idx, _)| format!("$param{idx}"))
         .collect::<Vec<_>>()
         .join(",");
     let mut query_string = format!("CALL {procedure}({args_str})");
@@ -649,7 +650,7 @@ mod tests {
         let args = &["arg1".to_string(), "arg2".to_string()];
         let yields: Option<&[String]> = None;
 
-        let expected_query = "CALL my_procedure($arg1,$arg2)".to_string();
+        let expected_query = "CALL my_procedure($param0,$param1)".to_string();
         let mut expected_params = HashMap::new();
         expected_params.insert("param0".to_string(), "arg1".to_string());
         expected_params.insert("param1".to_string(), "arg2".to_string());
@@ -679,7 +680,7 @@ mod tests {
         let args = &["arg1".to_string(), "arg2".to_string()];
         let yields = &["yield1".to_string(), "yield2".to_string()];
 
-        let expected_query = "CALL my_procedure($arg1,$arg2) YIELD yield1,yield2".to_string();
+        let expected_query = "CALL my_procedure($param0,$param1) YIELD yield1,yield2".to_string();
         let mut expected_params = HashMap::new();
         expected_params.insert("param0".to_string(), "arg1".to_string());
         expected_params.insert("param1".to_string(), "arg2".to_string());

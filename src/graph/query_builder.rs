@@ -77,13 +77,11 @@ fn json_value_to_cypher_literal(value: &serde_json::Value) -> String {
 )]
 pub(crate) fn construct_query_with_json_params<Q: Display>(
     query_str: Q,
-    json_params: Option<&HashMap<String, serde_json::Value>>,
+    json_params: &HashMap<String, serde_json::Value>,
 ) -> String {
     let query = query_str.to_string();
 
-    let Some(params) = json_params else {
-        return query;
-    };
+    let params = json_params;
 
     // Sort params by key length descending to handle substring collisions
     let mut sorted_keys: Vec<_> = params.keys().collect();
@@ -348,8 +346,8 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
             "Cannot use both json_params and params simultaneously - json_params will be used"
         );
 
-        let query = if self.json_params.is_some() {
-            construct_query_with_json_params(&self.query_string, self.json_params)
+        let query = if let Some(json_params) = self.json_params {
+            construct_query_with_json_params(&self.query_string, json_params)
         } else {
             construct_query(&self.query_string, self.params)
         };
@@ -385,8 +383,8 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
             "Cannot use both json_params and params simultaneously - json_params will be used"
         );
 
-        let query = if self.json_params.is_some() {
-            construct_query_with_json_params(&self.query_string, self.json_params)
+        let query = if let Some(json_params) = self.json_params {
+            construct_query_with_json_params(&self.query_string, json_params)
         } else {
             construct_query(&self.query_string, self.params)
         };
@@ -910,7 +908,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("id".to_string(), serde_json::json!(42));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         assert_eq!(result, "MATCH (n) WHERE n.id = 42 RETURN n");
     }
 
@@ -924,7 +922,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("batch".to_string(), batch_data);
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         assert!(result.contains("UNWIND [{`id`: 1, `name`: 'Alice'}, {`id`: 2, `name`: 'Bob'}]"));
         assert!(result.contains("AS row CREATE (n) SET n = row"));
     }
@@ -932,7 +930,8 @@ mod tests {
     #[test]
     fn test_construct_query_with_json_params_no_params() {
         let query_str = "MATCH (n) RETURN n";
-        let result = construct_query_with_json_params(query_str, None);
+        let params = HashMap::new();
+        let result = construct_query_with_json_params(query_str, &params);
         assert_eq!(result, "MATCH (n) RETURN n");
     }
 
@@ -943,7 +942,7 @@ mod tests {
         params.insert("id".to_string(), serde_json::json!(42));
         params.insert("id_type".to_string(), serde_json::json!("user"));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         // Should not incorrectly replace $id within $id_type
         assert!(result.contains("n.id = 42"));
         assert!(result.contains("n.id_type = 'user'"));
@@ -956,7 +955,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("id".to_string(), serde_json::json!(42));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         // Only unquoted $id should be replaced
         assert!(result.contains("'$id' AS s"));
         assert!(result.contains("42 AS x"));
@@ -968,7 +967,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("id".to_string(), serde_json::json!(42));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         // Placeholder in backtick identifier should not be replaced
         assert!(result.contains("n.`$id` = 42"));
     }
@@ -980,7 +979,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("id".to_string(), serde_json::json!(42));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         assert!(result.contains("'$id''s value' AS s"));
         assert!(result.contains("42 AS x"));
     }
@@ -992,7 +991,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("id".to_string(), serde_json::json!(42));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         assert!(result.contains("'$id\\'s value' AS s"));
         assert!(result.contains("42 AS x"));
     }
@@ -1004,7 +1003,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("id".to_string(), serde_json::json!(42));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         assert!(result.contains("n.`$id``name` = 42"));
     }
 
@@ -1017,7 +1016,7 @@ mod tests {
         params.insert("id".to_string(), serde_json::json!(42));
         params.insert("type".to_string(), serde_json::json!("user"));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         assert!(result.contains("n.name = '$name'"));
         assert!(result.contains("n.id = 42"));
         assert!(result.contains("n.type = '$type'"));
@@ -1030,7 +1029,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("id".to_string(), serde_json::json!(42));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         // $id_extra should not be replaced because underscore is not a word boundary
         assert!(result.contains("n.$id_extra = 42"));
     }
@@ -1042,7 +1041,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("id".to_string(), serde_json::json!(42));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         assert_eq!(result, "RETURN 42");
     }
 
@@ -1053,7 +1052,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("id".to_string(), serde_json::json!(42));
 
-        let result = construct_query_with_json_params(query_str, Some(&params));
+        let result = construct_query_with_json_params(query_str, &params);
         // Should preserve the unclosed quote and not replace inside it
         assert_eq!(result, "RETURN '$id");
     }

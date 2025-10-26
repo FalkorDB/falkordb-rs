@@ -369,9 +369,7 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
             Some(QueryParams::Json(json_params)) => {
                 construct_query_with_json_params(&self.query_string, json_params)
             }
-            Some(QueryParams::Simple(params)) => {
-                construct_query(&self.query_string, Some(params))
-            }
+            Some(QueryParams::Simple(params)) => construct_query(&self.query_string, Some(params)),
             None => construct_query(&self.query_string, None::<&HashMap<&str, &str>>),
         };
 
@@ -404,9 +402,7 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
             Some(QueryParams::Json(json_params)) => {
                 construct_query_with_json_params(&self.query_string, json_params)
             }
-            Some(QueryParams::Simple(params)) => {
-                construct_query(&self.query_string, Some(params))
-            }
+            Some(QueryParams::Simple(params)) => construct_query(&self.query_string, Some(params)),
             None => construct_query(&self.query_string, None::<&HashMap<&str, &str>>),
         };
 

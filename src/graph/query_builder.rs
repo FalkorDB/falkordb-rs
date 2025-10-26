@@ -209,14 +209,22 @@ pub(crate) fn construct_query_with_json_params<Q: Display>(
     })
 }
 
+/// Parameter types for Cypher queries
+#[derive(Debug, Clone)]
+pub enum QueryParams<'a> {
+    /// Simple string parameters formatted as "CYPHER key=value"
+    Simple(&'a HashMap<String, String>),
+    /// JSON parameters converted to Cypher literal syntax (for complex data structures)
+    Json(&'a HashMap<String, serde_json::Value>),
+}
+
 /// A Builder-pattern struct that allows creating and executing queries on a graph
 pub struct QueryBuilder<'a, Output, T: Display, G: HasGraphSchema> {
     _unused: PhantomData<Output>,
     graph: &'a mut G,
     command: &'a str,
     query_string: T,
-    params: Option<&'a HashMap<String, String>>,
-    json_params: Option<&'a HashMap<String, serde_json::Value>>,
+    params: Option<QueryParams<'a>>,
     timeout: Option<i64>,
 }
 
@@ -232,51 +240,44 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
             command,
             query_string,
             params: None,
-            json_params: None,
             timeout: None,
         }
     }
 
-    /// Pass the following params to the query as "CYPHER {param_key}={param_val}"
+    /// Pass parameters to the query
+    ///
+    /// Accepts either:
+    /// - Simple string parameters: formatted as "CYPHER {param_key}={param_val}"
+    /// - JSON parameters: converted to Cypher literal syntax for complex data structures
     ///
     /// # Arguments
-    /// * `params`: A [`HashMap`] of params in key-val format
+    /// * `params`: [`QueryParams`] enum containing either simple or JSON parameters
+    ///
+    /// # Examples
+    /// ```ignore
+    /// // Simple string parameters
+    /// let mut params = HashMap::new();
+    /// params.insert("name".to_string(), "Alice".to_string());
+    /// graph.query("MATCH (n {name: $name}) RETURN n")
+    ///     .with_params(QueryParams::Simple(&params))
+    ///     .execute()?;
+    ///
+    /// // JSON parameters for complex data
+    /// let mut json_params = HashMap::new();
+    /// json_params.insert("batch".to_string(), serde_json::json!([
+    ///     {"id": 1, "name": "Alice"},
+    ///     {"id": 2, "name": "Bob"}
+    /// ]));
+    /// graph.query("UNWIND $batch AS row CREATE (n:Node) SET n = row")
+    ///     .with_params(QueryParams::Json(&json_params))
+    ///     .execute()?;
+    /// ```
     pub fn with_params(
         self,
-        params: &'a HashMap<String, String>,
+        params: QueryParams<'a>,
     ) -> Self {
         Self {
             params: Some(params),
-            ..self
-        }
-    }
-
-    /// Pass JSON parameters to the query for complex data structures (e.g., UNWIND batches)
-    ///
-    /// This method allows passing complex parameters like arrays of maps which are common
-    /// in UNWIND operations. The parameters are converted to Cypher literal syntax.
-    ///
-    /// # Arguments
-    /// * `json_params`: A [`HashMap`] of parameter names to JSON values
-    ///
-    /// # Example
-    /// ```ignore
-    /// let mut batch_data = Vec::new();
-    /// // ... populate batch_data ...
-    /// let mut params = HashMap::new();
-    /// params.insert("batch".to_string(), serde_json::Value::Array(batch_data));
-    ///
-    /// graph.query("UNWIND $batch AS row CREATE (n:Node) SET n = row")
-    ///     .with_json_params(&params)
-    ///     .execute()
-    ///     .await?;
-    /// ```
-    pub fn with_json_params(
-        self,
-        json_params: &'a HashMap<String, serde_json::Value>,
-    ) -> Self {
-        Self {
-            json_params: Some(json_params),
             ..self
         }
     }
@@ -364,16 +365,14 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
     )]
     fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        // json_params takes precedence over params when both are provided
-        debug_assert!(
-            self.json_params.is_none() || self.params.is_none(),
-            "Cannot use both json_params and params simultaneously - json_params will be used"
-        );
-
-        let query = if let Some(json_params) = self.json_params {
-            construct_query_with_json_params(&self.query_string, json_params)
-        } else {
-            construct_query(&self.query_string, self.params)
+        let query = match &self.params {
+            Some(QueryParams::Json(json_params)) => {
+                construct_query_with_json_params(&self.query_string, json_params)
+            }
+            Some(QueryParams::Simple(params)) => {
+                construct_query(&self.query_string, Some(params))
+            }
+            None => construct_query(&self.query_string, None::<&HashMap<&str, &str>>),
         };
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
@@ -401,16 +400,14 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
     )]
     async fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        // json_params takes precedence over params when both are provided
-        debug_assert!(
-            self.json_params.is_none() || self.params.is_none(),
-            "Cannot use both json_params and params simultaneously - json_params will be used"
-        );
-
-        let query = if let Some(json_params) = self.json_params {
-            construct_query_with_json_params(&self.query_string, json_params)
-        } else {
-            construct_query(&self.query_string, self.params)
+        let query = match &self.params {
+            Some(QueryParams::Json(json_params)) => {
+                construct_query_with_json_params(&self.query_string, json_params)
+            }
+            Some(QueryParams::Simple(params)) => {
+                construct_query(&self.query_string, Some(params))
+            }
+            None => construct_query(&self.query_string, None::<&HashMap<&str, &str>>),
         };
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
@@ -1241,5 +1238,43 @@ mod tests {
         let obj = serde_json::json!({"key`with`backticks": "value"});
         let result = json_value_to_cypher_literal(&obj);
         assert!(result.contains("`key``with``backticks`: 'value'"));
+    }
+
+    #[test]
+    fn test_query_params_enum_simple() {
+        // Test that QueryParams::Simple works with construct_query
+        let query_str = "MATCH (n) RETURN n";
+        let mut params = HashMap::new();
+        params.insert("name".to_string(), "Alice".to_string());
+        params.insert("age".to_string(), "30".to_string());
+
+        let query_params = QueryParams::Simple(&params);
+
+        let result = match query_params {
+            QueryParams::Simple(p) => construct_query(query_str, Some(p)),
+            QueryParams::Json(_) => panic!("Expected Simple params"),
+        };
+
+        assert!(result.starts_with("CYPHER "));
+        assert!(result.contains(" name=Alice "));
+        assert!(result.contains(" age=30 "));
+        assert!(result.ends_with(" RETURN n"));
+    }
+
+    #[test]
+    fn test_query_params_enum_json() {
+        // Test that QueryParams::Json works with construct_query_with_json_params
+        let query_str = "MATCH (n) WHERE n.id = $id RETURN n";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let query_params = QueryParams::Json(&params);
+
+        let result = match query_params {
+            QueryParams::Json(p) => construct_query_with_json_params(query_str, p),
+            QueryParams::Simple(_) => panic!("Expected Json params"),
+        };
+
+        assert_eq!(result, "MATCH (n) WHERE n.id = 42 RETURN n");
     }
 }

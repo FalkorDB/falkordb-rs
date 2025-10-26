@@ -27,7 +27,7 @@ pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
 pub use graph::{
     blocking::SyncGraph,
-    query_builder::{ProcedureQueryBuilder, QueryBuilder},
+    query_builder::{ProcedureQueryBuilder, QueryBuilder, QueryParams},
 };
 pub use graph_schema::{GraphSchema, SchemaType};
 pub use response::{

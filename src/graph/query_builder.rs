@@ -974,6 +974,91 @@ mod tests {
     }
 
     #[test]
+    fn test_construct_query_with_json_params_escaped_quotes() {
+        // Test doubled single quotes (Cypher escape)
+        let query_str = "RETURN '$id''s value' AS s, $id AS x";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        assert!(result.contains("'$id''s value' AS s"));
+        assert!(result.contains("42 AS x"));
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_backslash_escape() {
+        // Test backslash escapes in strings
+        let query_str = "RETURN '$id\\'s value' AS s, $id AS x";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        assert!(result.contains("'$id\\'s value' AS s"));
+        assert!(result.contains("42 AS x"));
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_doubled_backticks() {
+        // Test doubled backticks (escape in identifiers)
+        let query_str = "MATCH (n) WHERE n.`$id``name` = $id";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        assert!(result.contains("n.`$id``name` = 42"));
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_multiple_quotes() {
+        // Test multiple quoted regions
+        let query_str = "MATCH (n) WHERE n.name = '$name' AND n.id = $id AND n.type = '$type'";
+        let mut params = HashMap::new();
+        params.insert("name".to_string(), serde_json::json!("Alice"));
+        params.insert("id".to_string(), serde_json::json!(42));
+        params.insert("type".to_string(), serde_json::json!("user"));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        assert!(result.contains("n.name = '$name'"));
+        assert!(result.contains("n.id = 42"));
+        assert!(result.contains("n.type = '$type'"));
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_no_word_boundary() {
+        // Test that partial matches don't replace (word boundary check)
+        let query_str = "MATCH (n) WHERE n.$id_extra = $id";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        // $id_extra should not be replaced because underscore is not a word boundary
+        assert!(result.contains("n.$id_extra = 42"));
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_end_of_string() {
+        // Test placeholder at end of string
+        let query_str = "RETURN $id";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        assert_eq!(result, "RETURN 42");
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_unclosed_quote() {
+        // Test query with unclosed quote (edge case - should still work)
+        let query_str = "RETURN '$id";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        // Should preserve the unclosed quote and not replace inside it
+        assert_eq!(result, "RETURN '$id");
+    }
+
+    #[test]
     fn test_json_value_to_cypher_literal_special_keys() {
         // Test keys with spaces
         let obj = serde_json::json!({"key with spaces": "value"});

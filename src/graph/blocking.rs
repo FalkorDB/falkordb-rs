@@ -395,6 +395,24 @@ mod tests {
         FalkorDBError, IndexType,
     };
 
+    /// Wait for all indices to become operational (following Python client pattern)
+    fn wait_for_indices_to_sync(graph: &mut SyncGraph) {
+        let query = "CALL db.indexes() YIELD status WHERE status <> 'OPERATIONAL' RETURN count(1)";
+        loop {
+            let result = graph.ro_query(query).execute();
+            if let Ok(result) = result {
+                if let Some(first_row) = result.data.into_iter().next() {
+                    if let Some(crate::FalkorValue::I64(count)) = first_row.get(0) {
+                        if *count == 0 {
+                            break; // All indices are operational
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
     #[test]
     fn test_create_drop_index() {
         let mut graph = open_empty_test_graph("test_create_drop_index");
@@ -411,20 +429,10 @@ mod tests {
             .expect("Could not create index");
         assert_eq!(indices.get_indices_created(), Some(1));
 
-        // Retry logic for CI flakiness - index might take a moment to appear
-        let mut indices_result = None;
-        for attempt in 0..5 {
-            let indices = graph.inner.list_indices().expect("Could not list indices");
-            if indices.data.len() == 1 {
-                indices_result = Some(indices);
-                break;
-            }
-            if attempt < 4 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
+        // Wait for index to become operational (Python client approach)
+        wait_for_indices_to_sync(&mut graph.inner);
 
-        let indices = indices_result.expect("Index not found after 5 attempts");
+        let indices = graph.inner.list_indices().expect("Could not list indices");
         assert_eq!(indices.data.len(), 1);
         assert_eq!(
             indices.data[0].field_types["Hello"],

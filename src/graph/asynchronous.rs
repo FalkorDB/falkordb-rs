@@ -407,6 +407,24 @@ mod tests {
         IndexType,
     };
 
+    /// Wait for all indices to become operational (following Python client pattern)
+    async fn wait_for_indices_to_sync(graph: &mut AsyncGraph) {
+        let query = "CALL db.indexes() YIELD status WHERE status <> 'OPERATIONAL' RETURN count(1)";
+        loop {
+            let result = graph.ro_query(query).execute().await;
+            if let Ok(result) = result {
+                if let Some(first_row) = result.data.into_iter().next() {
+                    if let Some(crate::FalkorValue::I64(count)) = first_row.get(0) {
+                        if *count == 0 {
+                            break; // All indices are operational
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_create_drop_index() {
         let mut graph = open_empty_async_test_graph("test_create_drop_index_async").await;
@@ -423,25 +441,14 @@ mod tests {
             .await
             .expect("Could not create index");
 
-        // Retry logic for CI flakiness - index might take a moment to appear
-        let mut indices_result = None;
-        for attempt in 0..5 {
-            let indices = graph
-                .inner
-                .list_indices()
-                .await
-                .expect("Could not list indices");
+        // Wait for index to become operational (Python client approach)
+        wait_for_indices_to_sync(&mut graph.inner).await;
 
-            if indices.data.len() == 1 {
-                indices_result = Some(indices);
-                break;
-            }
-            if attempt < 4 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            }
-        }
-
-        let indices = indices_result.expect("Index not found after 5 attempts");
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices");
         assert_eq!(indices.data.len(), 1);
         assert_eq!(
             indices.data[0].field_types["Hello"],

@@ -69,7 +69,8 @@ fn json_value_to_cypher_literal(value: &serde_json::Value) -> String {
 }
 
 /// Construct query with JSON parameters (for complex data structures like UNWIND batches)
-/// This replaces parameter placeholders like $batch with Cypher literal syntax
+/// This replaces parameter placeholders like $batch with Cypher literal syntax.
+/// Placeholders inside single-quoted strings or backtick-quoted identifiers are NOT replaced.
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(name = "Construct Query with JSON Params", skip_all, level = "trace")
@@ -78,28 +79,112 @@ pub(crate) fn construct_query_with_json_params<Q: Display>(
     query_str: Q,
     json_params: Option<&HashMap<String, serde_json::Value>>,
 ) -> String {
-    let mut query = query_str.to_string();
+    let query = query_str.to_string();
 
-    if let Some(params) = json_params {
-        // Sort params by key length descending to handle substring collisions
-        // e.g., replace $id_type before $id to avoid $id replacing part of $id_type
-        let mut sorted_params: Vec<_> = params.iter().collect();
-        sorted_params.sort_by(|(k1, _), (k2, _)| k2.len().cmp(&k1.len()));
+    let Some(params) = json_params else {
+        return query;
+    };
 
-        for (key, value) in sorted_params {
-            // Use regex with word boundary to match exact parameter names
-            // The pattern matches $ followed by the exact key and a word boundary
-            let pattern = format!(r"\${}\b", regex::escape(key));
-            let regex = regex::Regex::new(&pattern)
-                .expect("Failed to create regex for parameter replacement");
-            let cypher_literal = json_value_to_cypher_literal(value);
-            query = regex
-                .replace_all(&query, cypher_literal.as_str())
-                .to_string();
+    // Sort params by key length descending to handle substring collisions
+    let mut sorted_keys: Vec<_> = params.keys().collect();
+    sorted_keys.sort_by(|k1, k2| k2.len().cmp(&k1.len()));
+
+    let mut result = String::with_capacity(query.len());
+    let chars: Vec<char> = query.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let ch = chars[i];
+
+        // Handle single-quoted strings
+        if ch == '\'' {
+            result.push(ch);
+            i += 1;
+            // Skip everything until closing quote, handling escaped quotes
+            while i < chars.len() {
+                let inner = chars[i];
+                result.push(inner);
+                if inner == '\'' {
+                    // Check for doubled single quote (escape in Cypher)
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        result.push(chars[i + 1]);
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break; // End of string
+                    }
+                } else if inner == '\\' && i + 1 < chars.len() {
+                    // Handle backslash escape
+                    result.push(chars[i + 1]);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Handle backtick-quoted identifiers
+        if ch == '`' {
+            result.push(ch);
+            i += 1;
+            // Skip everything until closing backtick, handling doubled backticks
+            while i < chars.len() {
+                let inner = chars[i];
+                result.push(inner);
+                if inner == '`' {
+                    // Check for doubled backtick (escape)
+                    if i + 1 < chars.len() && chars[i + 1] == '`' {
+                        result.push(chars[i + 1]);
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break; // End of identifier
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Check for parameter placeholder outside quoted regions
+        if ch == '$' {
+            let mut matched = false;
+            // Try to match each parameter key (longest first)
+            for key in &sorted_keys {
+                let key_chars: Vec<char> = key.chars().collect();
+                // Check if we have enough characters and they match
+                if i + 1 + key_chars.len() <= chars.len() {
+                    let match_slice = &chars[i + 1..i + 1 + key_chars.len()];
+                    if match_slice == key_chars.as_slice() {
+                        // Check word boundary: next char must not be alphanumeric or underscore
+                        let next_idx = i + 1 + key_chars.len();
+                        let is_boundary = next_idx >= chars.len()
+                            || !chars[next_idx].is_alphanumeric() && chars[next_idx] != '_';
+
+                        if is_boundary {
+                            // Replace with the parameter value
+                            let cypher_literal = json_value_to_cypher_literal(&params[*key]);
+                            result.push_str(&cypher_literal);
+                            i = next_idx;
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !matched {
+                result.push(ch);
+                i += 1;
+            }
+        } else {
+            result.push(ch);
+            i += 1;
         }
     }
 
-    query
+    result
 }
 
 /// A Builder-pattern struct that allows creating and executing queries on a graph
@@ -863,6 +948,29 @@ mod tests {
         assert!(result.contains("n.id = 42"));
         assert!(result.contains("n.id_type = 'user'"));
         assert!(!result.contains("n.42_type"));
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_quoted_string() {
+        let query_str = "RETURN '$id' AS s, $id AS x";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        // Only unquoted $id should be replaced
+        assert!(result.contains("'$id' AS s"));
+        assert!(result.contains("42 AS x"));
+    }
+
+    #[test]
+    fn test_construct_query_with_json_params_backtick_identifier() {
+        let query_str = "MATCH (n) WHERE n.`$id` = $id";
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), serde_json::json!(42));
+
+        let result = construct_query_with_json_params(query_str, Some(&params));
+        // Placeholder in backtick identifier should not be replaced
+        assert!(result.contains("n.`$id` = 42"));
     }
 
     #[test]

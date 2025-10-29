@@ -5,12 +5,12 @@
 
 use crate::FalkorDBError;
 
-pub(crate) mod blocking;
+pub mod blocking;
 
 #[cfg(feature = "tokio")]
 pub(crate) mod asynchronous;
 
-fn map_redis_err(error: redis::RedisError) -> FalkorDBError {
+fn map_redis_err(error: &redis::RedisError) -> FalkorDBError {
     match error.kind() {
         redis::ErrorKind::IoError
         | redis::ErrorKind::ClusterConnectionNotFound

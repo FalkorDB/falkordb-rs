@@ -14,8 +14,8 @@ pub enum FalkorConnectionInfo {
 }
 
 impl FalkorConnectionInfo {
-    fn fallback_provider(mut full_url: String) -> FalkorResult<FalkorConnectionInfo> {
-        Ok(FalkorConnectionInfo::Redis({
+    fn fallback_provider(mut full_url: String) -> FalkorResult<Self> {
+        Ok(Self::Redis({
             if full_url.starts_with("falkor://") {
                 full_url = full_url.replace("falkor://", "redis://");
             } else if full_url.starts_with("falkors://") {
@@ -30,9 +30,10 @@ impl FalkorConnectionInfo {
     ///
     /// # Returns
     /// A [`String`] representation of the address and port, or a UNIX socket path
+    #[must_use]
     pub fn address(&self) -> String {
         match self {
-            FalkorConnectionInfo::Redis(redis_info) => redis_info.addr.to_string(),
+            Self::Redis(redis_info) => redis_info.addr.to_string(),
         }
     }
 }
@@ -45,15 +46,17 @@ impl TryFrom<&str> for FalkorConnectionInfo {
             .map_err(|err| FalkorDBError::ParsingError(format!("Error constructing regex: {err}")))?
             .captures(value)
             .and_then(|cap| cap.get(1))
-            .map(|m| (value.to_string(), m.as_str()))
-            .unwrap_or((format!("falkor://{value}"), "falkor"));
+            .map_or_else(
+                || (format!("falkor://{value}"), "falkor"),
+                |m| (value.to_string(), m.as_str()),
+            );
 
         match url_schema {
-            "redis" | "rediss" => Ok(FalkorConnectionInfo::Redis(
+            "redis" | "rediss" => Ok(Self::Redis(
                 redis::IntoConnectionInfo::into_connection_info(value)
                     .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?,
             )),
-            _ => FalkorConnectionInfo::fallback_provider(url),
+            _ => Self::fallback_provider(url),
         }
     }
 }

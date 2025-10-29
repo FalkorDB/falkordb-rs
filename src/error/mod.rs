@@ -7,7 +7,7 @@ use crate::SchemaType;
 
 /// A verbose error enum used throughout the client, messages are static string slices.
 /// this allows easy error integration using [`thiserror`]
-#[derive(thiserror::Error, Debug, PartialEq)]
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum FalkorDBError {
     /// A required ID for parsing was not found in the schema.
     #[error("A required Id for parsing was not found in the schema")]
@@ -38,7 +38,7 @@ pub enum FalkorDBError {
     /// The provided URL scheme points at a database provider that is currently unavailable, make sure the correct feature is enabled.
     #[error("The provided URL scheme points at a database provider that is currently unavailable, make sure the correct feature is enabled")]
     UnavailableProvider,
-    /// An error occurred when dealing with reference counts or RefCells, perhaps mutual borrows?
+    /// An error occurred when dealing with reference counts or `RefCells`, perhaps mutual borrows?
     #[error(
         "An error occurred when dealing with reference counts or RefCells, perhaps mutual borrows?"
     )]
@@ -88,19 +88,19 @@ pub enum FalkorDBError {
     /// Element was not of type String.
     #[error("Element was not of type String")]
     ParsingString,
-    /// Element was not of type FEdge.
+    /// Element was not of type `FEdge`.
     #[error("Element was not of type FEdge")]
     ParsingFEdge,
-    /// Element was not of type FNode.
+    /// Element was not of type `FNode`.
     #[error("Element was not of type FNode")]
     ParsingFNode,
-    /// Element was not of type Path.
+    /// Element was not of type `Path`.
     #[error("Element was not of type Path")]
     ParsingPath,
     /// Element was not of type Map.
     #[error("Element was not of type Map")]
     ParsingMap,
-    /// Element was not of type FPoint.
+    /// Element was not of type `FPoint`.
     #[error("Element was not of type FPoint")]
     ParsingFPoint,
     /// Key id was not of type i64.
@@ -128,6 +128,6 @@ pub enum FalkorDBError {
 
 impl From<strum::ParseError> for FalkorDBError {
     fn from(value: strum::ParseError) -> Self {
-        FalkorDBError::InvalidEnumType(value.to_string())
+        Self::InvalidEnumType(value.to_string())
     }
 }

@@ -14,7 +14,7 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-pub(crate) enum FalkorSyncConnection {
+pub enum FalkorSyncConnection {
     #[cfg(test)]
     None,
 
@@ -34,20 +34,20 @@ impl FalkorSyncConnection {
         params: Option<&[&str]>,
     ) -> FalkorResult<redis::Value> {
         match self {
-            FalkorSyncConnection::Redis(redis_conn) => {
+            Self::Redis(redis_conn) => {
                 use redis::ConnectionLike as _;
                 let mut cmd = redis::cmd(command);
                 cmd.arg(subcommand);
                 cmd.arg(graph_name);
                 if let Some(params) = params {
                     for param in params {
-                        cmd.arg(param.to_string());
+                        cmd.arg((*param).to_string());
                     }
                 }
-                redis_conn.req_command(&cmd).map_err(map_redis_err)
+                redis_conn.req_command(&cmd).map_err(|e| map_redis_err(&e))
             }
             #[cfg(test)]
-            FalkorSyncConnection::None => Ok(redis::Value::Nil),
+            Self::None => Ok(redis::Value::Nil),
         }
     }
 
@@ -67,8 +67,7 @@ impl FalkorSyncConnection {
         let info_map = self.get_redis_info(Some("server"))?;
         Ok(info_map
             .get("redis_mode")
-            .map(|redis_mode| redis_mode == "sentinel")
-            .unwrap_or_default())
+            .is_some_and(|redis_mode| redis_mode == "sentinel"))
     }
 }
 
@@ -83,7 +82,7 @@ pub struct BorrowedSyncConnection {
 }
 
 impl BorrowedSyncConnection {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         conn: FalkorSyncConnection,
         return_tx: mpsc::SyncSender<FalkorSyncConnection>,
         client: Arc<FalkorSyncClientInner>,

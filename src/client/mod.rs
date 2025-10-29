@@ -87,7 +87,6 @@ impl FalkorClientProvider {
     }
 
     pub(crate) fn get_sentinel_client_common(
-        &self,
         connection_info: &redis::ConnectionInfo,
         sentinel_masters: Vec<redis::Value>,
     ) -> FalkorResult<Option<redis::sentinel::SentinelClient>> {
@@ -150,7 +149,7 @@ impl FalkorClientProvider {
         conn.execute_command(None, "SENTINEL", Some("MASTERS"), None)
             .and_then(redis_value_as_vec)
             .and_then(|sentinel_masters| {
-                self.get_sentinel_client_common(connection_info, sentinel_masters)
+                Self::get_sentinel_client_common(connection_info, sentinel_masters)
             })
     }
 
@@ -177,6 +176,6 @@ impl FalkorClientProvider {
     }
 }
 
-pub(crate) trait ProvidesSyncConnections: Sync + Send {
+pub trait ProvidesSyncConnections: Sync + Send {
     fn get_connection(&self) -> FalkorResult<FalkorSyncConnection>;
 }

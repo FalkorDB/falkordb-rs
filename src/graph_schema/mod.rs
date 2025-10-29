@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{collections::HashMap, sync::Arc};
 
-pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
+pub const fn get_refresh_command(schema_type: SchemaType) -> &'static str {
     match schema_type {
         SchemaType::Labels => "DB.LABELS",
         SchemaType::Properties => "DB.PROPERTYKEYS",
@@ -22,7 +22,7 @@ pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
 
 // Intermediate type for map parsing
 #[derive(Debug)]
-pub(crate) struct FKeyTypeVal {
+pub struct FKeyTypeVal {
     pub(crate) key: i64,
     pub(crate) type_marker: ParserTypeMarker,
     pub(crate) val: redis::Value,
@@ -48,7 +48,7 @@ impl TryFrom<redis::Value> for FKeyTypeVal {
         redis_value_as_int(key_raw).and_then(|key| {
             redis_value_as_int(type_raw)
                 .and_then(ParserTypeMarker::try_from)
-                .map(|type_marker| FKeyTypeVal {
+                .map(|type_marker| Self {
                     key,
                     type_marker,
                     val,
@@ -60,6 +60,7 @@ impl TryFrom<redis::Value> for FKeyTypeVal {
 /// An enum specifying which schema type we are addressing
 /// When querying using the compact parser, ids are returned for the various schema entities instead of strings
 /// Using this enum we know which of the schema maps to access in order to convert these ids to strings
+#[allow(clippy::too_long_first_doc_paragraph)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SchemaType {
     /// The schema for [`Node`](crate::Node) labels
@@ -70,7 +71,7 @@ pub enum SchemaType {
     Relationships,
 }
 
-pub(crate) type IdMap = HashMap<i64, String>;
+pub type IdMap = HashMap<i64, String>;
 
 /// A struct containing the various schema maps, allowing conversions between ids and their string representations.
 #[derive(Clone)]
@@ -84,6 +85,7 @@ pub struct GraphSchema {
 }
 
 impl GraphSchema {
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn new<T: ToString>(
         graph_name: T,
         client: Arc<dyn ProvidesSyncConnections>,
@@ -108,24 +110,27 @@ impl GraphSchema {
 
     /// Returns a read-write-locked map, of the relationship ids to their respective string representations.
     /// Minimize locking these to avoid starvation.
-    pub fn relationships(&self) -> &IdMap {
+    #[must_use]
+    pub const fn relationships(&self) -> &IdMap {
         &self.relationships
     }
 
     /// Returns a read-write-locked map, of the label ids to their respective string representations.
     /// Minimize locking these to avoid starvation.
-    pub fn labels(&self) -> &IdMap {
+    #[must_use]
+    pub const fn labels(&self) -> &IdMap {
         &self.labels
     }
 
     /// Returns a read-write-locked map, of the property ids to their respective string representations.
     /// Minimize locking these to avoid starvation.
-    pub fn properties(&self) -> &IdMap {
+    #[must_use]
+    pub const fn properties(&self) -> &IdMap {
         &self.properties
     }
 
     #[inline]
-    fn get_id_map_by_schema_type(
+    const fn get_id_map_by_schema_type(
         &self,
         schema_type: SchemaType,
     ) -> &IdMap {
@@ -140,6 +145,7 @@ impl GraphSchema {
         feature = "tracing",
         tracing::instrument(name = "Refresh Schema Type", skip_all, level = "info")
     )]
+    #[allow(clippy::cast_possible_wrap)]
     fn refresh(
         &mut self,
         schema_type: SchemaType,
@@ -273,7 +279,7 @@ impl GraphSchema {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
     use crate::{
         client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
@@ -281,7 +287,7 @@ pub(crate) mod tests {
     };
     use std::collections::HashMap;
 
-    pub(crate) fn open_readonly_graph_with_modified_schema() -> SyncGraph {
+    pub fn open_readonly_graph_with_modified_schema() -> SyncGraph {
         let client = create_test_client();
         let mut graph = client.select_graph("imdb");
 
@@ -418,6 +424,6 @@ pub(crate) mod tests {
                 "property4".to_string(),
                 "property5".to_string()
             ]
-        )
+        );
     }
 }

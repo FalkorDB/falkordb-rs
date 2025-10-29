@@ -39,11 +39,12 @@ impl SyncGraph {
     ///
     /// # Returns
     /// The graph name as a string slice, without cloning.
-    pub fn graph_name(&self) -> &str {
+    #[must_use]
+    pub const fn graph_name(&self) -> &str {
         self.graph_name.as_str()
     }
 
-    pub(crate) fn get_client(&self) -> &Arc<FalkorSyncClientInner> {
+    pub(crate) const fn get_client(&self) -> &Arc<FalkorSyncClientInner> {
         &self.client
     }
 

@@ -5,3 +5,4 @@
 /codecov.json
 /dump.rdb
 venv/
+.history

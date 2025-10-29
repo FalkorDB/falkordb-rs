@@ -27,7 +27,7 @@ impl<const R: char> FalkorClientBuilder<R> {
     ///
     /// # Returns
     /// The consumed and modified self.
-	#[must_use]
+    #[must_use]
     pub fn with_connection_info(
         self,
         falkor_connection_info: FalkorConnectionInfo,
@@ -45,7 +45,7 @@ impl<const R: char> FalkorClientBuilder<R> {
     ///
     /// # Returns
     /// The consumed and modified self.
-	#[must_use]
+    #[must_use]
     pub fn with_num_connections(
         self,
         num_connections: NonZeroU8,
@@ -78,7 +78,7 @@ impl FalkorClientBuilder<'S'> {
     /// # Returns
     /// The new [`FalkorClientBuilder`]
     #[allow(clippy::new_without_default)]
-	#[must_use]
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             connection_info: None,

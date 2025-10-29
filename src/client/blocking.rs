@@ -434,7 +434,11 @@ mod tests {
         let configuration = client.config_get("*").expect("Could not get configuration");
         assert_eq!(
             configuration.get("THREAD_COUNT").cloned().unwrap(),
-            ConfigValue::Int64(i64::try_from(thread::available_parallelism().unwrap().get()).ok().unwrap())
+            ConfigValue::Int64(
+                i64::try_from(thread::available_parallelism().unwrap().get())
+                    .ok()
+                    .unwrap()
+            )
         );
     }
 

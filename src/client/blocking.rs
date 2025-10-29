@@ -18,8 +18,8 @@ use std::{
 /// A user-opaque inner struct, containing the actual implementation of the blocking client
 /// The idea is that each member here is either Copy, or locked in some form, and the public struct only has an Arc to this struct
 /// allowing thread safe operations and cloning
-pub(crate) struct FalkorSyncClientInner {
-    _inner: Mutex<FalkorClientProvider>,
+pub struct FalkorSyncClientInner {
+    inner: Mutex<FalkorClientProvider>,
 
     connection_pool_size: u8,
     connection_pool_tx: mpsc::SyncSender<FalkorSyncConnection>,
@@ -60,10 +60,11 @@ impl ProvidesSyncConnections for FalkorSyncClientInner {
         )
     )]
     fn get_connection(&self) -> FalkorResult<FalkorSyncConnection> {
-        self._inner.lock().get_connection()
+        self.inner.lock().get_connection()
     }
 }
 
+#[allow(clippy::too_long_first_doc_paragraph)]
 /// This is the publicly exposed API of the sync Falkor Client
 /// It makes no assumptions in regard to which database the Falkor module is running on,
 /// and will select it based on enabled features and url connection
@@ -102,7 +103,7 @@ impl FalkorSyncClient {
 
         Ok(Self {
             inner: Arc::new(FalkorSyncClientInner {
-                _inner: client.into(),
+                inner: client.into(),
                 connection_pool_size: num_connections,
                 connection_pool_tx,
                 connection_pool_rx: Mutex::new(connection_pool_rx),
@@ -111,7 +112,8 @@ impl FalkorSyncClient {
         })
     }
 
-    ///  Get the max number of connections in the client's connection pool
+    /// Get the max number of connections in the client's connection pool
+    #[must_use]
     pub fn connection_pool_size(&self) -> u8 {
         self.inner.connection_pool_size
     }
@@ -138,7 +140,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    ///    The config key can also be "*", which will return ALL the configuration options.
+    ///   The config key can also be "*", which will return ALL the configuration options.
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
@@ -161,7 +163,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    ///    The config key can also be "*", which will return ALL the configuration options.
+    ///   The config key can also be "*", which will return ALL the configuration options.
     /// * `value`: The new value to set, which is anything that can be converted into a [`ConfigValue`], namely string types and i64.
     #[cfg_attr(
         feature = "tracing",
@@ -238,11 +240,11 @@ impl FalkorSyncClient {
 }
 
 #[cfg(test)]
-pub(crate) fn create_empty_inner_sync_client() -> Arc<FalkorSyncClientInner> {
+pub fn create_empty_inner_sync_client() -> Arc<FalkorSyncClientInner> {
     let (tx, rx) = mpsc::sync_channel(1);
     tx.send(FalkorSyncConnection::None).ok();
     Arc::new(FalkorSyncClientInner {
-        _inner: Mutex::new(FalkorClientProvider::None),
+        inner: Mutex::new(FalkorClientProvider::None),
         connection_pool_size: 0,
         connection_pool_tx: tx,
         connection_pool_rx: Mutex::new(rx),
@@ -321,8 +323,7 @@ mod tests {
             assert!(
                 e.to_string()
                     .contains("is to be executed only on read-only queries"),
-                "Unexpected error message: {}",
-                e
+                "Unexpected error message: {e}"
             );
         }
 
@@ -341,6 +342,7 @@ mod tests {
             .query("MATCH (p:Document) RETURN p")
             .execute()
             .expect("Could not get document");
+        #[allow(clippy::while_let_on_iterator)]
         while let Some(falkor_value) = res.data.next() {
             // iterate on a node value
             for value in falkor_value {
@@ -407,7 +409,7 @@ mod tests {
                 .expect("Could not get actors from unmodified graph")
                 .data
                 .collect::<Vec<_>>()
-        )
+        );
     }
 
     #[test]
@@ -432,7 +434,7 @@ mod tests {
         let configuration = client.config_get("*").expect("Could not get configuration");
         assert_eq!(
             configuration.get("THREAD_COUNT").cloned().unwrap(),
-            ConfigValue::Int64(thread::available_parallelism().unwrap().get() as i64)
+            ConfigValue::Int64(i64::try_from(thread::available_parallelism().unwrap().get()).ok().unwrap())
         );
     }
 

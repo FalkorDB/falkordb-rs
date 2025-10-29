@@ -27,6 +27,7 @@ impl<const R: char> FalkorClientBuilder<R> {
     ///
     /// # Returns
     /// The consumed and modified self.
+	#[must_use]
     pub fn with_connection_info(
         self,
         falkor_connection_info: FalkorConnectionInfo,
@@ -44,6 +45,7 @@ impl<const R: char> FalkorClientBuilder<R> {
     ///
     /// # Returns
     /// The consumed and modified self.
+	#[must_use]
     pub fn with_num_connections(
         self,
         num_connections: NonZeroU8,
@@ -62,7 +64,7 @@ impl<const R: char> FalkorClientBuilder<R> {
             .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
         Ok(match connection_info {
             FalkorConnectionInfo::Redis(connection_info) => FalkorClientProvider::Redis {
-                client: redis::Client::open(connection_info.clone())
+                client: redis::Client::open(connection_info)
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
                 sentinel: None,
             },
@@ -76,8 +78,9 @@ impl FalkorClientBuilder<'S'> {
     /// # Returns
     /// The new [`FalkorClientBuilder`]
     #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        FalkorClientBuilder {
+	#[must_use]
+    pub const fn new() -> Self {
+        Self {
             connection_info: None,
             num_connections: NonZeroU8::new(8).expect("Error creating perfectly valid u8"),
         }

@@ -13,14 +13,14 @@ use std::collections::HashMap;
 #[cfg(feature = "tokio")]
 use crate::connection::asynchronous::FalkorAsyncConnection;
 
-pub(crate) mod blocking;
-pub(crate) mod builder;
+pub mod blocking;
+pub mod builder;
 
 #[cfg(feature = "tokio")]
 pub(crate) mod asynchronous;
 
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum FalkorClientProvider {
+pub enum FalkorClientProvider {
     #[cfg(test)]
     None,
 
@@ -33,7 +33,7 @@ pub(crate) enum FalkorClientProvider {
 impl FalkorClientProvider {
     pub(crate) fn get_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
         Ok(match self {
-            FalkorClientProvider::Redis {
+            Self::Redis {
                 sentinel: Some(sentinel),
                 ..
             } => FalkorSyncConnection::Redis(
@@ -42,13 +42,13 @@ impl FalkorClientProvider {
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
 
-            FalkorClientProvider::Redis { client, .. } => FalkorSyncConnection::Redis(
+            Self::Redis { client, .. } => FalkorSyncConnection::Redis(
                 client
                     .get_connection()
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
             #[cfg(test)]
-            FalkorClientProvider::None => Err(FalkorDBError::UnavailableProvider)?,
+            Self::None => Err(FalkorDBError::UnavailableProvider)?,
         })
     }
 
@@ -80,9 +80,9 @@ impl FalkorClientProvider {
         sentinel_client: redis::sentinel::SentinelClient,
     ) {
         match self {
-            FalkorClientProvider::Redis { sentinel, .. } => *sentinel = Some(sentinel_client),
+            Self::Redis { sentinel, .. } => *sentinel = Some(sentinel_client),
             #[cfg(test)]
-            FalkorClientProvider::None => {}
+            Self::None => {}
         }
     }
 

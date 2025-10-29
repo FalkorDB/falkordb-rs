@@ -15,7 +15,7 @@ use std::{collections::HashMap, fmt::Display, sync::Arc};
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
 /// # Thread Safety
 /// This struct is NOT thread safe, and synchronization is up to the user.
-/// Graph schema is not shared between instances of SyncGraph, even with the same name, but cloning will maintain the current schema
+/// Graph schema is not shared between instances of `SyncGraph`, even with the same name, but cloning will maintain the current schema
 #[derive(Clone)]
 pub struct SyncGraph {
     client: Arc<FalkorSyncClientInner>,
@@ -140,7 +140,7 @@ impl SyncGraph {
     pub fn query<T: Display>(
         &mut self,
         query_string: T,
-    ) -> QueryBuilder<QueryResult<LazyResultSet>, T, Self> {
+    ) -> QueryBuilder<'_, QueryResult<LazyResultSet<'_>>, T, Self> {
         QueryBuilder::new(self, "GRAPH.QUERY", query_string)
     }
 
@@ -227,7 +227,7 @@ impl SyncGraph {
         label: &str,
         properties: &[P],
         options: Option<&HashMap<String, String>>,
-    ) -> FalkorResult<QueryResult<LazyResultSet>> {
+    ) -> FalkorResult<QueryResult<LazyResultSet<'_>>> {
         // Create index from these properties
 
         let query_str =
@@ -255,7 +255,7 @@ impl SyncGraph {
         entity_type: EntityType,
         label: &str,
         properties: &[P],
-    ) -> FalkorResult<QueryResult<LazyResultSet>> {
+    ) -> FalkorResult<QueryResult<LazyResultSet<'_>>> {
         let query_str = generate_drop_index_query(index_field_type, entity_type, label, properties);
         self.query(query_str).execute()
     }

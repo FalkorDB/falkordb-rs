@@ -8,7 +8,7 @@ use crate::{parser::parse_type, FalkorValue, GraphSchema};
 use std::collections::VecDeque;
 
 /// A wrapper around the returned raw data, allowing parsing on demand of each result
-/// This implements Iterator, so can simply be collect()'ed into any desired container
+/// This implements Iterator, so can simply be `collect()`'ed into any desired container
 pub struct LazyResultSet<'a> {
     data: VecDeque<redis::Value>,
     graph_schema: &'a mut GraphSchema,
@@ -26,11 +26,13 @@ impl<'a> LazyResultSet<'a> {
     }
 
     /// Returns the remaining rows in the result set.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
     /// Returns whether this result set is empty or depleted
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
@@ -74,7 +76,7 @@ mod tests {
                         redis::Value::Array(vec![redis::Value::Array(vec![
                             redis::Value::Int(1),
                             redis::Value::Int(2),
-                            redis::Value::BulkString("FirstNode".to_string().into_bytes()),
+                            redis::Value::BulkString(b"FirstNode".to_vec()),
                         ])]),
                     ]),
                 ])]),
@@ -86,7 +88,7 @@ mod tests {
                         redis::Value::Array(vec![redis::Value::Array(vec![
                             redis::Value::Int(1),
                             redis::Value::Int(2),
-                            redis::Value::BulkString("FirstNode".to_string().into_bytes()),
+                            redis::Value::BulkString(b"FirstNode".to_vec()),
                         ])]),
                     ]),
                 ])]),
@@ -100,7 +102,7 @@ mod tests {
                         redis::Value::Array(vec![redis::Value::Array(vec![
                             redis::Value::Int(1),
                             redis::Value::Int(2),
-                            redis::Value::BulkString("Edge".to_string().into_bytes()),
+                            redis::Value::BulkString(b"Edge".to_vec()),
                         ])]),
                     ]),
                 ])]),

@@ -39,7 +39,7 @@ impl FalkorAsyncConnection {
                 redis_conn
                     .send_packed_command(&cmd)
                     .await
-                    .map_err(map_redis_err)
+                    .map_err(|e| map_redis_err(&e))
             }
         }
     }

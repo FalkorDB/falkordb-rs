@@ -18,7 +18,7 @@ pub struct Point {
 }
 
 impl Point {
-    /// Parses a point from a redis::Value::Array,
+    /// Parses a point from a `redis::Value::Array`,
     /// taking the first element as an f64 latitude, and second element as an f64 longitude
     ///
     /// # Arguments
@@ -30,7 +30,7 @@ impl Point {
         feature = "tracing",
         tracing::instrument(name = "Parse Point", skip_all, level = "trace")
     )]
-    pub fn parse(value: redis::Value) -> FalkorResult<Point> {
+    pub fn parse(value: redis::Value) -> FalkorResult<Self> {
         let [lat, long]: [redis::Value; 2] = redis_value_as_vec(value).and_then(|val_vec| {
             val_vec.try_into().map_err(|_| {
                 FalkorDBError::ParsingArrayToStructElementCount(
@@ -39,7 +39,7 @@ impl Point {
             })
         })?;
 
-        Ok(Point {
+        Ok(Self {
             latitude: redis_value_as_double(lat)?,
             longitude: redis_value_as_double(long)?,
         })
@@ -52,6 +52,7 @@ mod tests {
 
     #[test]
     fn test_parse_valid_point() {
+        use approx::assert_relative_eq;
         let value = redis::Value::Array(vec![
             redis::Value::SimpleString("45.0".to_string()),
             redis::Value::SimpleString("90.0".to_string()),
@@ -59,8 +60,8 @@ mod tests {
         let result = Point::parse(value);
         assert!(result.is_ok());
         let point = result.unwrap();
-        assert_eq!(point.latitude, 45.0);
-        assert_eq!(point.longitude, 90.0);
+        assert_relative_eq!(point.latitude, 45.0);
+        assert_relative_eq!(point.longitude, 90.0);
     }
 
     #[test]

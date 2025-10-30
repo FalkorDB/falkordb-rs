@@ -36,7 +36,7 @@ pub enum ConstraintStatus {
 }
 
 /// A constraint applied on all 'properties' of the graph entity 'label' in this graph
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Constraint {
     /// Is this constraint applies the 'unique' modifier or the 'mandatory' modifier
     pub constraint_type: ConstraintType,

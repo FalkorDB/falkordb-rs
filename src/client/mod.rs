@@ -171,7 +171,7 @@ impl FalkorClientProvider {
             .await
             .and_then(redis_value_as_vec)
             .and_then(|sentinel_masters| {
-                self.get_sentinel_client_common(connection_info, sentinel_masters)
+                Self::get_sentinel_client_common(connection_info, sentinel_masters)
             })
     }
 }

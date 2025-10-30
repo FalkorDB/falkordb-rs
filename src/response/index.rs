@@ -135,8 +135,9 @@ impl SchemaParsable for FalkorIndex {
             field_types: parse_types_map(field_types)?,
             language: redis_value_as_typed_string(language)?,
             stopwords: parse_string_array(stopwords, graph_schema)?,
-            info: parse_raw_redis_value(info, graph_schema).and_then(|val| val.into_map())?,
-            options: parse_raw_redis_value(options, graph_schema).and_then(|val| val.into_map())?,
+            info: parse_raw_redis_value(info, graph_schema).and_then(FalkorValue::into_map)?,
+            options: parse_raw_redis_value(options, graph_schema)
+                .and_then(FalkorValue::into_map)?,
         })
     }
 }

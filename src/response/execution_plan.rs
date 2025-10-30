@@ -34,7 +34,7 @@ impl IntermediateOperation {
     fn new(
         depth: usize,
         operation_string: &str,
-    ) -> FalkorResult<IntermediateOperation> {
+    ) -> FalkorResult<Self> {
         let mut args = operation_string.split('|').collect::<VecDeque<_>>();
         let name = args
             .pop_front()
@@ -106,22 +106,26 @@ pub struct ExecutionPlan {
 
 impl ExecutionPlan {
     /// Returns the plan as a slice of human-readable strings
-    pub fn plan(&self) -> &[String] {
+    #[must_use]
+    pub const fn plan(&self) -> &[String] {
         self.plan.as_slice()
     }
 
     /// Returns a slice of strings representing each step in the execution plan, which can be iterated.
-    pub fn operations(&self) -> &HashMap<String, Vec<Rc<Operation>>> {
+    #[must_use]
+    pub const fn operations(&self) -> &HashMap<String, Vec<Rc<Operation>>> {
         &self.operations
     }
 
     /// Returns a shared pointer to the operation tree, allowing easy immutable traversal
-    pub fn operation_tree(&self) -> &Rc<Operation> {
+    #[must_use]
+    pub const fn operation_tree(&self) -> &Rc<Operation> {
         &self.operation_tree
     }
 
     /// Returns a string representation of the entire execution plan
-    pub fn string_representation(&self) -> &str {
+    #[must_use]
+    pub const fn string_representation(&self) -> &str {
         self.string_representation.as_str()
     }
 
@@ -203,15 +207,12 @@ impl ExecutionPlan {
             let depth = node_string.matches("    ").count();
             let node = node_string.trim();
 
-            let current_node = match current_traversal_stack.last().cloned() {
-                None => {
-                    current_traversal_stack.push(Rc::new(RefCell::new(
-                        IntermediateOperation::new(depth, node)?,
-                    )));
-                    string_representation.push(node_string);
-                    continue;
-                }
-                Some(current_node) => current_node,
+            let Some(current_node) = current_traversal_stack.last().cloned() else {
+                current_traversal_stack.push(Rc::new(RefCell::new(IntermediateOperation::new(
+                    depth, node,
+                )?)));
+                string_representation.push(node_string);
+                continue;
             };
 
             let current_depth = current_node.borrow().depth;
@@ -260,7 +261,7 @@ impl ExecutionPlan {
         let mut operations = HashMap::new();
         Self::operations_map_from_tree(&operation_tree, &mut operations);
 
-        Ok(ExecutionPlan {
+        Ok(Self {
             string_representation: format!("\n{}", string_representation.join("\n")),
             plan: string_representation,
             operations,

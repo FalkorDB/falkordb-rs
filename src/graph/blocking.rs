@@ -108,7 +108,7 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryBuilder`] object, which when performed will return an [`ExecutionPlan`]
-    pub fn profile<'a>(
+    pub const fn profile<'a>(
         &'a mut self,
         query_string: &'a str,
     ) -> QueryBuilder<'a, ExecutionPlan, &'a str, Self> {
@@ -123,7 +123,7 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryBuilder`] object, which when performed will return an [`ExecutionPlan`]
-    pub fn explain<'a>(
+    pub const fn explain<'a>(
         &'a mut self,
         query_string: &'a str,
     ) -> QueryBuilder<'a, ExecutionPlan, &'a str, Self> {
@@ -138,7 +138,7 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryBuilder`] object, which when performed will return a [`QueryResult<FalkorResultSet>`]
-    pub fn query<T: Display>(
+    pub const fn query<T: Display>(
         &mut self,
         query_string: T,
     ) -> QueryBuilder<'_, QueryResult<LazyResultSet<'_>>, T, Self> {
@@ -154,7 +154,7 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`QueryBuilder`] object
-    pub fn ro_query<'a>(
+    pub const fn ro_query<'a>(
         &'a mut self,
         query_string: &'a str,
     ) -> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, &'a str, Self> {
@@ -170,7 +170,7 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`ProcedureQueryBuilder`] object
-    pub fn call_procedure<'a, P>(
+    pub const fn call_procedure<'a, P>(
         &'a mut self,
         procedure_name: &'a str,
     ) -> ProcedureQueryBuilder<'a, P, Self> {
@@ -186,7 +186,7 @@ impl SyncGraph {
     ///
     /// # Returns
     /// A [`ProcedureQueryBuilder`] object
-    pub fn call_procedure_ro<'a, P>(
+    pub const fn call_procedure_ro<'a, P>(
         &'a mut self,
         procedure_name: &'a str,
     ) -> ProcedureQueryBuilder<'a, P, Self> {
@@ -316,6 +316,7 @@ impl SyncGraph {
         feature = "tracing",
         tracing::instrument(name = "Create Graph Unique Constraint", skip_all, level = "info")
     )]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn create_unique_constraint(
         &mut self,
         entity_type: EntityType,

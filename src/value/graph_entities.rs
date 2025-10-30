@@ -49,7 +49,7 @@ impl Node {
                 })
             })?;
 
-        Ok(Node {
+        Ok(Self {
             entity_id: redis_value_as_int(entity_id)?,
             labels: graph_schema.parse_id_vec(redis_value_as_vec(labels)?, SchemaType::Labels)?,
             properties: graph_schema.parse_properties_map(properties)?,
@@ -90,7 +90,7 @@ impl Edge {
             })
         })?;
 
-        Ok(Edge {
+        Ok(Self {
             entity_id: redis_value_as_int(entity_id)?,
             relationship_type: redis_value_as_int(relationship_id_raw)
                 .and_then(|id| graph_schema.parse_single_id(id, SchemaType::Relationships))?,

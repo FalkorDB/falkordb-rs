@@ -16,7 +16,7 @@ pub struct Vec32 {
 }
 
 impl Vec32 {
-    /// Parses a Vec32 from a redis::Value::Array,
+    /// Parses a Vec32 from a `redis::Value::Array`,
     /// # Arguments
     /// * `value`: The value to parse
     ///
@@ -26,7 +26,7 @@ impl Vec32 {
         feature = "tracing",
         tracing::instrument(name = "Parse Vec32", skip_all, level = "trace")
     )]
-    pub fn parse(value: redis::Value) -> FalkorResult<Vec32> {
+    pub fn parse(value: redis::Value) -> FalkorResult<Self> {
         let values: Vec<redis::Value> =
             redis_value_as_vec(value).map_err(|e| ParsingVec32(e.to_string()))?;
 
@@ -34,7 +34,7 @@ impl Vec32 {
             .into_iter()
             .map(redis_value_as_float)
             .collect::<Result<_, _>>()?;
-        let vec32 = Vec32 {
+        let vec32 = Self {
             values: parsed_values,
         };
 
@@ -48,6 +48,7 @@ mod tests {
 
     #[test]
     fn test_parse_valid_vec32() {
+        use approx::assert_relative_eq;
         let value = redis::Value::Array(vec![
             redis::Value::SimpleString("45.0".to_string()),
             redis::Value::SimpleString("90.0".to_string()),
@@ -56,8 +57,8 @@ mod tests {
         assert!(result.is_ok());
         let vec = result.unwrap().values;
         assert_eq!(vec.len(), 2);
-        assert_eq!(vec[0], 45.0);
-        assert_eq!(vec[1], 90.0);
+        assert_relative_eq!(vec[0], 45.0);
+        assert_relative_eq!(vec[1], 90.0);
     }
 
     #[test]

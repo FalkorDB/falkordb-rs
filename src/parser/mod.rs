@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
-pub(crate) enum ParserTypeMarker {
+pub enum ParserTypeMarker {
     None = 1,
     String = 2,
     I64 = 3,
@@ -48,7 +48,7 @@ impl TryFrom<i64> for ParserTypeMarker {
     }
 }
 
-pub(crate) fn redis_value_as_string(value: redis::Value) -> FalkorResult<String> {
+pub fn redis_value_as_string(value: redis::Value) -> FalkorResult<String> {
     match value {
         redis::Value::BulkString(data) => {
             String::from_utf8(data).map_err(|_| FalkorDBError::ParsingString)
@@ -59,14 +59,15 @@ pub(crate) fn redis_value_as_string(value: redis::Value) -> FalkorResult<String>
     }
 }
 
-pub(crate) fn redis_value_as_int(value: redis::Value) -> FalkorResult<i64> {
+#[allow(clippy::needless_pass_by_value)]
+pub fn redis_value_as_int(value: redis::Value) -> FalkorResult<i64> {
     match value {
         redis::Value::Int(int_val) => Ok(int_val),
         _ => Err(FalkorDBError::ParsingI64),
     }
 }
 
-pub(crate) fn redis_value_as_bool(value: redis::Value) -> FalkorResult<bool> {
+pub fn redis_value_as_bool(value: redis::Value) -> FalkorResult<bool> {
     redis_value_as_string(value).and_then(|string_val| match string_val.as_str() {
         "true" => Ok(true),
         "false" => Ok(false),
@@ -74,17 +75,17 @@ pub(crate) fn redis_value_as_bool(value: redis::Value) -> FalkorResult<bool> {
     })
 }
 
-pub(crate) fn redis_value_as_double(value: redis::Value) -> FalkorResult<f64> {
+pub fn redis_value_as_double(value: redis::Value) -> FalkorResult<f64> {
     redis_value_as_string(value)
         .and_then(|string_val| string_val.parse().map_err(|_| FalkorDBError::ParsingF64))
 }
 
-pub(crate) fn redis_value_as_float(value: redis::Value) -> FalkorResult<f32> {
+pub fn redis_value_as_float(value: redis::Value) -> FalkorResult<f32> {
     redis_value_as_string(value)
         .and_then(|string_val| string_val.parse().map_err(|_| FalkorDBError::ParsingF32))
 }
 
-pub(crate) fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
+pub fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
     match value {
         redis::Value::Array(bulk_val) => Ok(bulk_val),
         _ => Err(FalkorDBError::ParsingArray),
@@ -95,7 +96,7 @@ pub(crate) fn redis_value_as_vec(value: redis::Value) -> FalkorResult<Vec<redis:
     feature = "tracing",
     tracing::instrument(name = "Parse Redis Info", skip_all, level = "info")
 )]
-pub(crate) fn parse_redis_info(res: redis::Value) -> FalkorResult<HashMap<String, String>> {
+pub fn parse_redis_info(res: redis::Value) -> FalkorResult<HashMap<String, String>> {
     redis_value_as_string(res)
         .map(|info| {
             info.split("\r\n")
@@ -111,9 +112,7 @@ pub(crate) fn parse_redis_info(res: redis::Value) -> FalkorResult<HashMap<String
     feature = "tracing",
     tracing::instrument(name = "Parse Config Hashmap", skip_all, level = "info")
 )]
-pub(crate) fn parse_config_hashmap(
-    value: redis::Value
-) -> FalkorResult<HashMap<String, ConfigValue>> {
+pub fn parse_config_hashmap(value: redis::Value) -> FalkorResult<HashMap<String, ConfigValue>> {
     let config = redis_value_as_vec(value)?;
 
     if config.len() == 2 {
@@ -150,7 +149,7 @@ pub(crate) fn parse_config_hashmap(
     feature = "tracing",
     tracing::instrument(name = "Parse Falkor Enum", skip_all, level = "trace")
 )]
-pub(crate) fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToString>>(
+pub fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToString>>(
     value: redis::Value
 ) -> FalkorResult<T> {
     type_val_from_value(value)
@@ -175,7 +174,7 @@ pub(crate) fn parse_falkor_enum<T: for<'a> TryFrom<&'a str, Error = impl ToStrin
         level = "trace"
     )
 )]
-pub(crate) fn redis_value_as_typed_string(value: redis::Value) -> FalkorResult<String> {
+pub fn redis_value_as_typed_string(value: redis::Value) -> FalkorResult<String> {
     type_val_from_value(value).and_then(|(type_marker, val)| {
         if type_marker == ParserTypeMarker::String {
             redis_value_as_string(val)
@@ -189,7 +188,7 @@ pub(crate) fn redis_value_as_typed_string(value: redis::Value) -> FalkorResult<S
     feature = "tracing",
     tracing::instrument(name = "String Vec From Redis Value", skip_all, level = "debug")
 )]
-pub(crate) fn redis_value_as_typed_string_vec(value: redis::Value) -> FalkorResult<Vec<String>> {
+pub fn redis_value_as_typed_string_vec(value: redis::Value) -> FalkorResult<Vec<String>> {
     type_val_from_value(value)
         .and_then(|(type_marker, val)| {
             if type_marker == ParserTypeMarker::Array {
@@ -210,7 +209,7 @@ pub(crate) fn redis_value_as_typed_string_vec(value: redis::Value) -> FalkorResu
     feature = "tracing",
     tracing::instrument(name = "String Vec From Untyped Value", skip_all, level = "trace")
 )]
-pub(crate) fn redis_value_as_untyped_string_vec(value: redis::Value) -> FalkorResult<Vec<String>> {
+pub fn redis_value_as_untyped_string_vec(value: redis::Value) -> FalkorResult<Vec<String>> {
     redis_value_as_vec(value)
         .map(|as_vec| as_vec.into_iter().flat_map(redis_value_as_string).collect())
 }
@@ -219,7 +218,7 @@ pub(crate) fn redis_value_as_untyped_string_vec(value: redis::Value) -> FalkorRe
     feature = "tracing",
     tracing::instrument(name = "Parse Header", skip_all, level = "info")
 )]
-pub(crate) fn parse_header(header: redis::Value) -> FalkorResult<Vec<String>> {
+pub fn parse_header(header: redis::Value) -> FalkorResult<Vec<String>> {
     // Convert the header into a sequence
     let header_sequence = redis_value_as_vec(header)?;
 
@@ -258,7 +257,7 @@ pub(crate) fn parse_header(header: redis::Value) -> FalkorResult<Vec<String>> {
     feature = "tracing",
     tracing::instrument(name = "Parse Raw Redis Value", skip_all, level = "debug")
 )]
-pub(crate) fn parse_raw_redis_value(
+pub fn parse_raw_redis_value(
     value: redis::Value,
     graph_schema: &mut GraphSchema,
 ) -> FalkorResult<FalkorValue> {
@@ -270,7 +269,7 @@ pub(crate) fn parse_raw_redis_value(
     feature = "tracing",
     tracing::instrument(name = "TypeVal From Value", skip_all, level = "trace")
 )]
-pub(crate) fn type_val_from_value(
+pub fn type_val_from_value(
     value: redis::Value
 ) -> Result<(ParserTypeMarker, redis::Value), FalkorDBError> {
     redis_value_as_vec(value).and_then(|val_vec| {
@@ -313,7 +312,7 @@ fn parse_regular_falkor_map(
     feature = "tracing",
     tracing::instrument(name = "Parse Element With Type Marker", skip_all, level = "trace")
 )]
-pub(crate) fn parse_type(
+pub fn parse_type(
     type_marker: ParserTypeMarker,
     val: redis::Value,
     graph_schema: &mut GraphSchema,
@@ -346,7 +345,7 @@ pub(crate) fn parse_type(
     Ok(res)
 }
 
-pub(crate) trait SchemaParsable: Sized {
+pub trait SchemaParsable: Sized {
     fn parse(
         value: redis::Value,
         graph_schema: &mut GraphSchema,
@@ -365,7 +364,7 @@ mod tests {
     fn test_parse_header_valid_single_key() {
         let header =
             redis::Value::Array(vec![redis::Value::Array(vec![redis::Value::BulkString(
-                "key1".as_bytes().to_vec(),
+                b"key1".to_vec(),
             )])]);
         let result = parse_header(header);
         assert!(result.is_ok());
@@ -376,10 +375,10 @@ mod tests {
     fn test_parse_header_valid_multiple_keys() {
         let header = redis::Value::Array(vec![
             redis::Value::Array(vec![
-                redis::Value::BulkString("type".as_bytes().to_vec()),
-                redis::Value::BulkString("header1".as_bytes().to_vec()),
+                redis::Value::BulkString(b"type".to_vec()),
+                redis::Value::BulkString(b"header1".to_vec()),
             ]),
-            redis::Value::Array(vec![redis::Value::BulkString("key2".as_bytes().to_vec())]),
+            redis::Value::Array(vec![redis::Value::BulkString(b"key2".to_vec())]),
         ]);
         let result = parse_header(header);
         assert!(result.is_ok());
@@ -411,9 +410,9 @@ mod tests {
     #[test]
     fn test_parse_header_many_elements() {
         let header = redis::Value::Array(vec![redis::Value::Array(vec![
-            redis::Value::BulkString("just_some_header".as_bytes().to_vec()),
-            redis::Value::BulkString("header1".as_bytes().to_vec()),
-            redis::Value::BulkString("extra".as_bytes().to_vec()),
+            redis::Value::BulkString(b"just_some_header".to_vec()),
+            redis::Value::BulkString(b"header1".to_vec()),
+            redis::Value::BulkString(b"extra".to_vec()),
         ])]);
         let result = parse_header(header);
         assert!(result.is_ok());
@@ -621,6 +620,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn test_parse_point() {
         let mut graph = open_readonly_graph_with_modified_schema();
 
@@ -651,7 +651,7 @@ mod tests {
             &mut graph_schema,
         );
 
-        assert!(res.is_err())
+        assert!(res.is_err());
     }
 
     #[test]
@@ -663,7 +663,7 @@ mod tests {
             &mut graph_schema,
         );
 
-        assert!(res.is_err())
+        assert!(res.is_err());
     }
 
     #[test]
@@ -678,7 +678,7 @@ mod tests {
             &mut graph_schema,
         );
 
-        assert!(res.is_err())
+        assert!(res.is_err());
     }
 
     #[test]
@@ -693,7 +693,7 @@ mod tests {
             &mut graph_schema,
         );
 
-        assert!(res.is_err())
+        assert!(res.is_err());
     }
 
     #[test]
@@ -708,7 +708,7 @@ mod tests {
             &mut graph_schema,
         );
 
-        assert!(res.is_err())
+        assert!(res.is_err());
     }
 
     #[test]
@@ -726,7 +726,7 @@ mod tests {
             &mut graph_schema,
         );
 
-        assert!(res.is_err())
+        assert!(res.is_err());
     }
 
     #[test]

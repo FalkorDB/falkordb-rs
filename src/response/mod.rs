@@ -9,11 +9,11 @@ use crate::{
 };
 use std::str::FromStr;
 
-pub(crate) mod constraint;
-pub(crate) mod execution_plan;
-pub(crate) mod index;
-pub(crate) mod lazy_result_set;
-pub(crate) mod slowlog_entry;
+pub mod constraint;
+pub mod execution_plan;
+pub mod index;
+pub mod lazy_result_set;
+pub mod slowlog_entry;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, strum::IntoStaticStr)]
 enum StatisticType {
@@ -87,7 +87,7 @@ impl<T> QueryResult<T> {
     where
         S: FromStr,
     {
-        for stat in self.stats.iter() {
+        for stat in &self.stats {
             if stat.contains(Into::<&'static str>::into(stat_type)) {
                 // Splits the statistic string by ': ', then retrieves and parses the statistic value.
                 return stat

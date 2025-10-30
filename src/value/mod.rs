@@ -10,11 +10,11 @@ use point::Point;
 use std::{collections::HashMap, fmt::Debug};
 use vec32::Vec32;
 
-pub(crate) mod config;
-pub(crate) mod graph_entities;
-pub(crate) mod path;
-pub(crate) mod point;
-pub(crate) mod vec32;
+pub mod config;
+pub mod graph_entities;
+pub mod path;
+pub mod point;
+pub mod vec32;
 
 /// An enum of all the supported Falkor types
 #[derive(Clone, Debug, PartialEq)]
@@ -50,6 +50,7 @@ pub enum FalkorValue {
 macro_rules! impl_to_falkordb_value {
     ($t:ty, $falkordbtype:expr) => {
         impl From<$t> for FalkorValue {
+            #[allow(clippy::cast_lossless, clippy::cast_possible_wrap)]
             fn from(value: $t) -> Self {
                 $falkordbtype(value as _)
             }
@@ -81,9 +82,10 @@ impl FalkorValue {
     ///
     /// # Returns
     /// A reference to the internal [`Vec`]
-    pub fn as_vec(&self) -> Option<&Vec<Self>> {
+    #[must_use]
+    pub const fn as_vec(&self) -> Option<&Vec<Self>> {
         match self {
-            FalkorValue::Array(val) => Some(val),
+            Self::Array(val) => Some(val),
             _ => None,
         }
     }
@@ -92,31 +94,34 @@ impl FalkorValue {
     ///
     /// # Returns
     /// A reference to the internal [`String`]
-    pub fn as_string(&self) -> Option<&String> {
+    #[must_use]
+    pub const fn as_string(&self) -> Option<&String> {
         match self {
-            FalkorValue::String(val) => Some(val),
+            Self::String(val) => Some(val),
             _ => None,
         }
     }
 
-    /// Returns a reference to the internal [`Edge`] if this is an FEdge variant.
+    /// Returns a reference to the internal [`Edge`] if this is an `FEdge` variant.
     ///
     /// # Returns
     /// A reference to the internal [`Edge`]
-    pub fn as_edge(&self) -> Option<&Edge> {
+    #[must_use]
+    pub const fn as_edge(&self) -> Option<&Edge> {
         match self {
-            FalkorValue::Edge(val) => Some(val),
+            Self::Edge(val) => Some(val),
             _ => None,
         }
     }
 
-    /// Returns a reference to the internal [`Node`] if this is an FNode variant.
+    /// Returns a reference to the internal [`Node`] if this is an `FNode` variant.
     ///
     /// # Returns
     /// A reference to the internal [`Node`]
-    pub fn as_node(&self) -> Option<&Node> {
+    #[must_use]
+    pub const fn as_node(&self) -> Option<&Node> {
         match self {
-            FalkorValue::Node(val) => Some(val),
+            Self::Node(val) => Some(val),
             _ => None,
         }
     }
@@ -125,9 +130,10 @@ impl FalkorValue {
     ///
     /// # Returns
     /// A reference to the internal [`Path`]
-    pub fn as_path(&self) -> Option<&Path> {
+    #[must_use]
+    pub const fn as_path(&self) -> Option<&Path> {
         match self {
-            FalkorValue::Path(val) => Some(val),
+            Self::Path(val) => Some(val),
             _ => None,
         }
     }
@@ -136,20 +142,22 @@ impl FalkorValue {
     ///
     /// # Returns
     /// A reference to the internal [`HashMap`]
-    pub fn as_map(&self) -> Option<&HashMap<String, FalkorValue>> {
+    #[must_use]
+    pub const fn as_map(&self) -> Option<&HashMap<String, Self>> {
         match self {
-            FalkorValue::Map(val) => Some(val),
+            Self::Map(val) => Some(val),
             _ => None,
         }
     }
 
-    /// Returns a reference to the internal [`Point`] if this is an FPoint variant.
+    /// Returns a reference to the internal [`Point`] if this is an `FPoint` variant.
     ///
     /// # Returns
     /// A reference to the internal [`Point`]
-    pub fn as_point(&self) -> Option<&Point> {
+    #[must_use]
+    pub const fn as_point(&self) -> Option<&Point> {
         match self {
-            FalkorValue::Point(val) => Some(val),
+            Self::Point(val) => Some(val),
             _ => None,
         }
     }
@@ -158,21 +166,23 @@ impl FalkorValue {
     ///
     /// # Returns
     /// A copy of the inner [`i64`]
-    pub fn to_i64(&self) -> Option<i64> {
+    #[must_use]
+    pub const fn to_i64(&self) -> Option<i64> {
         match self {
-            FalkorValue::I64(val) => Some(*val),
+            Self::I64(val) => Some(*val),
             _ => None,
         }
     }
 
-    /// Returns a Copy of the inner [`bool`] if this is an FBool variant
+    /// Returns a Copy of the inner [`bool`] if this is an `FBool` variant
     ///
     /// # Returns
     /// A copy of the inner [`bool`]
+    #[must_use]
     pub fn to_bool(&self) -> Option<bool> {
         match self {
-            FalkorValue::Bool(val) => Some(*val),
-            FalkorValue::String(bool_str) => match bool_str.as_str() {
+            Self::Bool(val) => Some(*val),
+            Self::String(bool_str) => match bool_str.as_str() {
                 "true" => Some(true),
                 "false" => Some(false),
                 _ => None,
@@ -185,9 +195,10 @@ impl FalkorValue {
     ///
     /// # Returns
     /// A copy of the inner [`f64`]
-    pub fn to_f64(&self) -> Option<f64> {
+    #[must_use]
+    pub const fn to_f64(&self) -> Option<f64> {
         match self {
-            FalkorValue::F64(val) => Some(*val),
+            Self::F64(val) => Some(*val),
             _ => None,
         }
     }
@@ -198,7 +209,7 @@ impl FalkorValue {
     /// The inner [`Vec`]
     pub fn into_vec(self) -> FalkorResult<Vec<Self>> {
         match self {
-            FalkorValue::Array(array) => Ok(array),
+            Self::Array(array) => Ok(array),
             _ => Err(FalkorDBError::ParsingArray),
         }
     }
@@ -209,7 +220,7 @@ impl FalkorValue {
     /// The inner [`String`]
     pub fn into_string(self) -> FalkorResult<String> {
         match self {
-            FalkorValue::String(string) => Ok(string),
+            Self::String(string) => Ok(string),
             _ => Err(FalkorDBError::ParsingString),
         }
     }
@@ -217,9 +228,9 @@ impl FalkorValue {
     ///
     /// # Returns
     /// The inner [`HashMap`]
-    pub fn into_map(self) -> FalkorResult<HashMap<String, FalkorValue>> {
+    pub fn into_map(self) -> FalkorResult<HashMap<String, Self>> {
         match self {
-            FalkorValue::Map(map) => Ok(map),
+            Self::Map(map) => Ok(map),
             _ => Err(FalkorDBError::ParsingMap),
         }
     }
@@ -325,8 +336,9 @@ mod tests {
 
     #[test]
     fn test_to_f64() {
+        use approx::assert_relative_eq;
         let float_val = FalkorValue::F64(PI);
-        assert_eq!(float_val.to_f64().unwrap(), PI);
+        assert_relative_eq!(float_val.to_f64().unwrap(), PI);
 
         let non_float_val = FalkorValue::String(String::from("hello"));
         assert!(non_float_val.to_f64().is_none());

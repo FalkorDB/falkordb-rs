@@ -18,7 +18,7 @@ use crate::AsyncGraph;
     feature = "tracing",
     tracing::instrument(name = "Construct Query", skip_all, level = "trace")
 )]
-pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
+pub fn construct_query<Q: Display, T: Display, Z: Display>(
     query_str: Q,
     params: Option<&HashMap<T, Z>>,
 ) -> String {
@@ -50,7 +50,7 @@ pub struct QueryBuilder<'a, Output, T: Display, G: HasGraphSchema> {
 }
 
 impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         graph: &'a mut G,
         command: &'a str,
         query_string: T,
@@ -65,10 +65,11 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
         }
     }
 
-    /// Pass the following params to the query as "CYPHER {param_key}={param_val}"
+    /// Pass the following params to the query as "CYPHER `{param_key}={param_val}`"
     ///
     /// # Arguments
     /// * `params`: A [`HashMap`] of params in key-val format
+    #[must_use]
     pub fn with_params(
         self,
         params: &'a HashMap<String, String>,
@@ -83,7 +84,8 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
     ///
     /// # Arguments
     /// * `timeout`: the timeout after which the server is allowed to abort or throw this request,
-    ///    in milliseconds, when that happens the server will return a timeout error
+    ///   in milliseconds, when that happens the server will return a timeout error
+    #[must_use]
     pub fn with_timeout(
         self,
         timeout: i64,
@@ -116,7 +118,7 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
 
                 QueryResult::from_response(
                     None,
-                    LazyResultSet::new(Default::default(), self.graph.get_graph_schema_mut()),
+                    LazyResultSet::new(Vec::default(), self.graph.get_graph_schema_mut()),
                     stats,
                 )
             }
@@ -129,7 +131,7 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
 
                 QueryResult::from_response(
                     Some(header),
-                    LazyResultSet::new(Default::default(), self.graph.get_graph_schema_mut()),
+                    LazyResultSet::new(Vec::default(), self.graph.get_graph_schema_mut()),
                     stats,
                 )
             }
@@ -161,7 +163,7 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         feature = "tracing",
         tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
     )]
-    fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
+    fn common_execute_steps(&self) -> FalkorResult<redis::Value> {
         let query = construct_query(&self.query_string, self.params);
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
@@ -215,7 +217,7 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, SyncGra
         feature = "tracing",
         tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
     )]
-    pub fn execute(mut self) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
+    pub fn execute(self) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
         self.common_execute_steps()
             .and_then(|res| self.generate_query_result_set(res))
     }
@@ -237,7 +239,7 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, AsyncGr
 
 impl<T: Display> QueryBuilder<'_, ExecutionPlan, T, SyncGraph> {
     /// Executes the query, returning an [`ExecutionPlan`] from the data returned
-    pub fn execute(mut self) -> FalkorResult<ExecutionPlan> {
+    pub fn execute(self) -> FalkorResult<ExecutionPlan> {
         self.common_execute_steps().and_then(ExecutionPlan::parse)
     }
 }
@@ -256,7 +258,7 @@ impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T, AsyncGraph> {
     feature = "tracing",
     tracing::instrument(name = "Generate Procedure Call", skip_all, level = "trace")
 )]
-pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
+pub fn generate_procedure_call<P: Display, T: Display, Z: Display>(
     procedure: P,
     args: Option<&[T]>,
     yields: Option<&[Z]>,
@@ -264,10 +266,10 @@ pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
     let args_str = args
         .unwrap_or_default()
         .iter()
-        .map(|e| format!("${}", e))
+        .map(|e| format!("${e}"))
         .collect::<Vec<_>>()
         .join(",");
-    let mut query_string = format!("CALL {}({})", procedure, args_str);
+    let mut query_string = format!("CALL {procedure}({args_str})");
 
     let params = args.map(|args| {
         args.iter()
@@ -283,7 +285,7 @@ pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
             " YIELD {}",
             yields
                 .iter()
-                .map(|element| element.to_string())
+                .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(",")
         )
@@ -304,7 +306,7 @@ pub struct ProcedureQueryBuilder<'a, Output, G: HasGraphSchema> {
 }
 
 impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         graph: &'a mut G,
         procedure_name: &'a str,
     ) -> Self {
@@ -319,7 +321,7 @@ impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
         }
     }
 
-    pub(crate) fn new_readonly(
+    pub(crate) const fn new_readonly(
         graph: &'a mut G,
         procedure_name: &'a str,
     ) -> Self {
@@ -337,7 +339,8 @@ impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
     ///
     /// # Arguments
     /// * `args`: The arguments to pass
-    pub fn with_args(
+    #[must_use]
+    pub const fn with_args(
         self,
         args: &'a [&str],
     ) -> Self {
@@ -351,7 +354,8 @@ impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
     ///
     /// # Arguments
     /// * `yields`: The values to yield
-    pub fn with_yields(
+    #[must_use]
+    pub const fn with_yields(
         self,
         yields: &'a [&str],
     ) -> Self {
@@ -396,10 +400,11 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
             level = "trace"
         )
     )]
-    fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        let command = match self.readonly {
-            true => "GRAPH.RO_QUERY",
-            false => "GRAPH.QUERY",
+    fn common_execute_steps(&self) -> FalkorResult<redis::Value> {
+        let command = if self.readonly {
+            "GRAPH.RO_QUERY"
+        } else {
+            "GRAPH.QUERY"
         };
 
         let (query_string, params) =

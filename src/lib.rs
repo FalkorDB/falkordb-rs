@@ -5,6 +5,7 @@
 
 #![allow(private_interfaces)]
 #![allow(private_bounds)]
+#![allow(clippy::multiple_crate_versions)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!("../README.md")]
@@ -55,7 +56,7 @@ pub use graph::asynchronous::AsyncGraph;
 pub(crate) mod test_utils {
     use super::*;
 
-    pub(crate) struct TestSyncGraphHandle {
+    pub struct TestSyncGraphHandle {
         pub(crate) inner: SyncGraph,
     }
 
@@ -84,7 +85,7 @@ pub(crate) mod test_utils {
         }
     }
 
-    pub(crate) fn create_test_client() -> FalkorSyncClient {
+    pub fn create_test_client() -> FalkorSyncClient {
         FalkorClientBuilder::new()
             .build()
             .expect("Could not create client")
@@ -98,7 +99,7 @@ pub(crate) mod test_utils {
             .expect("Could not create client")
     }
 
-    pub(crate) fn open_empty_test_graph(graph_name: &str) -> TestSyncGraphHandle {
+    pub fn open_empty_test_graph(graph_name: &str) -> TestSyncGraphHandle {
         let client = create_test_client();
 
         TestSyncGraphHandle {

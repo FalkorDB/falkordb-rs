@@ -15,8 +15,6 @@ all-features = true
 
 [lib]
 
-[lints.clippy]
-multiple_crate_versions = "allow"
 
 [dependencies]
 parking_lot = { version = "0.12.5", default-features = false, features = ["deadlock_detection"] }

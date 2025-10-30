@@ -9,6 +9,10 @@ use crate::{
     FalkorResult,
 };
 
+/// A vector of 32-bit floating-point values used for vector search operations.
+///
+/// This type represents embeddings or feature vectors in `FalkorDB`,
+/// commonly used in similarity search and machine learning applications.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Vec32 {
     /// The values of the vector

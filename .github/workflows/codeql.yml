@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [ 'rust' ]
+        language: [ 'javascript-typescript' ]
 
     steps:
     - name: Checkout repository
@@ -33,9 +33,8 @@ jobs:
       env:
         CODEQL_ENABLE_EXPERIMENTAL_FEATURES: true
 
-    - name: Build Rust project
-      run: |
-        cargo build --all
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v3
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3

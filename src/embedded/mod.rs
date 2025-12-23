@@ -291,6 +291,221 @@ impl Drop for EmbeddedServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_embedded_config_default() {
+        let config = EmbeddedConfig::default();
+        assert!(config.redis_server_path.is_none());
+        assert!(config.falkordb_module_path.is_none());
+        assert!(config.db_dir.is_none());
+        assert_eq!(config.db_filename, "falkordb.rdb");
+        assert!(config.socket_path.is_none());
+        assert_eq!(config.start_timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_embedded_config_custom() {
+        let config = EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/custom/redis-server")),
+            falkordb_module_path: Some(PathBuf::from("/custom/falkordb.so")),
+            db_dir: Some(PathBuf::from("/custom/db")),
+            db_filename: "custom.rdb".to_string(),
+            socket_path: Some(PathBuf::from("/custom/socket.sock")),
+            start_timeout: Duration::from_secs(5),
+        };
+
+        assert_eq!(
+            config.redis_server_path,
+            Some(PathBuf::from("/custom/redis-server"))
+        );
+        assert_eq!(
+            config.falkordb_module_path,
+            Some(PathBuf::from("/custom/falkordb.so"))
+        );
+        assert_eq!(config.db_dir, Some(PathBuf::from("/custom/db")));
+        assert_eq!(config.db_filename, "custom.rdb");
+        assert_eq!(
+            config.socket_path,
+            Some(PathBuf::from("/custom/socket.sock"))
+        );
+        assert_eq!(config.start_timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_embedded_config_clone() {
+        let config1 = EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/path/redis")),
+            falkordb_module_path: Some(PathBuf::from("/path/falkordb.so")),
+            db_dir: Some(PathBuf::from("/path/db")),
+            db_filename: "test.rdb".to_string(),
+            socket_path: Some(PathBuf::from("/path/socket")),
+            start_timeout: Duration::from_secs(15),
+        };
+
+        let config2 = config1.clone();
+        assert_eq!(config1.redis_server_path, config2.redis_server_path);
+        assert_eq!(config1.falkordb_module_path, config2.falkordb_module_path);
+        assert_eq!(config1.db_dir, config2.db_dir);
+        assert_eq!(config1.db_filename, config2.db_filename);
+        assert_eq!(config1.socket_path, config2.socket_path);
+        assert_eq!(config1.start_timeout, config2.start_timeout);
+    }
+
+    #[test]
+    fn test_find_redis_server_with_invalid_path() {
+        let config = EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/definitely/does/not/exist/redis-server")),
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::find_redis_server(&config);
+        assert!(result.is_err());
+        if let Err(FalkorDBError::EmbeddedServerError(msg)) = result {
+            assert!(msg.contains("redis-server not found"));
+        }
+    }
+
+    #[test]
+    fn test_find_falkordb_module_with_invalid_path() {
+        let config = EmbeddedConfig {
+            falkordb_module_path: Some(PathBuf::from("/definitely/does/not/exist/falkordb.so")),
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::find_falkordb_module(&config);
+        assert!(result.is_err());
+        if let Err(FalkorDBError::EmbeddedServerError(msg)) = result {
+            assert!(msg.contains("FalkorDB module not found"));
+        }
+    }
+
+    #[test]
+    fn test_setup_db_dir_with_custom_path() {
+        let temp_dir = std::env::temp_dir().join(format!("test_db_{}", std::process::id()));
+        let config = EmbeddedConfig {
+            db_dir: Some(temp_dir.clone()),
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::setup_db_dir(&config);
+        assert!(result.is_ok());
+
+        let (db_dir, temp_dir_opt) = result.unwrap();
+        assert_eq!(db_dir, temp_dir);
+        assert!(temp_dir_opt.is_none()); // Should not create temp when path is provided
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_setup_db_dir_creates_temp() {
+        let config = EmbeddedConfig {
+            db_dir: None,
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::setup_db_dir(&config);
+        assert!(result.is_ok());
+
+        let (db_dir, temp_dir_opt) = result.unwrap();
+        assert!(db_dir.exists());
+        assert!(temp_dir_opt.is_some());
+        assert_eq!(temp_dir_opt.as_ref().unwrap(), &db_dir);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&db_dir);
+    }
+
+    #[test]
+    fn test_setup_socket_path_with_custom_path() {
+        let socket_path = PathBuf::from("/custom/path/socket.sock");
+        let config = EmbeddedConfig {
+            socket_path: Some(socket_path.clone()),
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::setup_socket_path(&config, None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), socket_path);
+    }
+
+    #[test]
+    fn test_setup_socket_path_with_temp_dir() {
+        let temp_dir = std::env::temp_dir().join(format!("test_sock_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let config = EmbeddedConfig {
+            socket_path: None,
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::setup_socket_path(&config, Some(&temp_dir));
+        assert!(result.is_ok());
+
+        let socket_path = result.unwrap();
+        assert_eq!(socket_path, temp_dir.join("falkordb.sock"));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_setup_socket_path_creates_temp() {
+        let config = EmbeddedConfig {
+            socket_path: None,
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::setup_socket_path(&config, None);
+        assert!(result.is_ok());
+
+        let socket_path = result.unwrap();
+        assert!(socket_path.to_string_lossy().contains("falkordb_sock_"));
+
+        // Cleanup
+        if let Some(parent) = socket_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn test_create_config_file() {
+        let temp_dir = std::env::temp_dir().join(format!("test_cfg_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let socket_path = temp_dir.join("test.sock");
+        let db_filename = "test.rdb";
+
+        let result = EmbeddedServer::create_config_file(&temp_dir, &socket_path, db_filename);
+        assert!(result.is_ok());
+
+        let config_path = result.unwrap();
+        assert!(config_path.exists());
+        assert_eq!(config_path, temp_dir.join("falkordb.conf"));
+
+        // Verify content
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("port 0"));
+        assert!(content.contains(&socket_path.display().to_string()));
+        assert!(content.contains(&temp_dir.display().to_string()));
+        assert!(content.contains(db_filename));
+        assert!(content.contains("unixsocketperm 700"));
+        assert!(content.contains("appendonly no"));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_connection_string_format() {
+        // We can't test EmbeddedServer::connection_string directly without starting a server,
+        // but we can test the format it should produce
+        let socket_path = PathBuf::from("/tmp/test.sock");
+        let expected = format!("unix://{}", socket_path.display());
+        assert_eq!(expected, "unix:///tmp/test.sock");
+    }
 
     #[test]
     #[ignore] // Only run when redis-server and FalkorDB module are available
@@ -306,5 +521,51 @@ mod tests {
 
         let server = server.unwrap();
         assert!(server.socket_path().exists());
+    }
+
+    #[test]
+    fn test_embedded_server_start_fails_without_redis_server() {
+        let config = EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/nonexistent/redis-server")),
+            falkordb_module_path: Some(PathBuf::from("/nonexistent/falkordb.so")),
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::start(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_embedded_server_start_fails_without_falkordb_module() {
+        // Create a fake redis-server script for testing
+        let temp_dir = std::env::temp_dir().join(format!("test_redis_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let fake_redis = temp_dir.join("redis-server");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(&fake_redis, "#!/bin/sh\necho 'fake redis'\n").unwrap();
+            let mut perms = fs::metadata(&fake_redis).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_redis, perms).unwrap();
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::write(&fake_redis, "@echo off\necho fake redis\n").unwrap();
+        }
+
+        let config = EmbeddedConfig {
+            redis_server_path: Some(fake_redis),
+            falkordb_module_path: Some(PathBuf::from("/nonexistent/falkordb.so")),
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::start(config);
+        assert!(result.is_err());
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

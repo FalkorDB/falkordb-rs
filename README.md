@@ -208,3 +208,44 @@ The embedded server:
 - Uses Unix socket for communication (no network port)
 - Automatically cleans up when the client is dropped
 - Can be configured with custom paths, database directory, and socket location
+
+## Testing
+
+### Running Tests
+
+This project includes both unit tests and integration tests.
+
+#### Unit Tests
+
+Unit tests don't require a running FalkorDB instance:
+
+```bash
+# Run all unit tests
+cargo test --lib
+
+# Run unit tests with embedded feature
+cargo test --lib --features embedded
+```
+
+#### Integration Tests
+
+Integration tests require a running FalkorDB instance. The easiest way to run them is using Docker:
+
+```bash
+# Using the provided script (requires Docker)
+./run_integration_tests.sh
+
+# Or manually start FalkorDB and run tests
+docker run -d --name falkordb-test -p 6379:6379 falkordb/falkordb:latest
+cargo test --test integration_tests
+
+# With async support
+cargo test --test integration_tests --features tokio
+
+# Clean up
+docker stop falkordb-test && docker rm falkordb-test
+```
+
+#### CI Integration Tests
+
+Integration tests are automatically run in GitHub Actions using Docker services. See `.github/workflows/integration-tests.yml` for the CI configuration.

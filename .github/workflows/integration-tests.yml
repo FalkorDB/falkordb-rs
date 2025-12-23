@@ -1,0 +1,100 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  FALKORDB_HOST: 127.0.0.1
+  FALKORDB_PORT: 6379
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Wait for FalkorDB to be ready
+        run: |
+          echo "Waiting for FalkorDB to be ready..."
+          for i in {1..30}; do
+            if redis-cli -h 127.0.0.1 -p 6379 ping > /dev/null 2>&1; then
+              echo "FalkorDB is ready!"
+              break
+            fi
+            echo "Attempt $i: FalkorDB not ready yet..."
+            sleep 2
+          done
+          redis-cli -h 127.0.0.1 -p 6379 ping
+
+      - name: Run integration tests
+        run: cargo test --test integration_tests --verbose
+
+      - name: Run integration tests with all features
+        run: cargo test --test integration_tests --all-features --verbose
+
+  integration-tests-tokio:
+    runs-on: ubuntu-latest
+    
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Wait for FalkorDB to be ready
+        run: |
+          echo "Waiting for FalkorDB to be ready..."
+          for i in {1..30}; do
+            if redis-cli -h 127.0.0.1 -p 6379 ping > /dev/null 2>&1; then
+              echo "FalkorDB is ready!"
+              break
+            fi
+            echo "Attempt $i: FalkorDB not ready yet..."
+            sleep 2
+          done
+
+      - name: Run async integration tests
+        run: cargo test --test integration_tests --features tokio --verbose

@@ -214,7 +214,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "native-tls", feature = "rustls", feature = "tokio-native-tls", feature = "tokio-rustls"))]
+    #[cfg(any(
+        feature = "native-tls",
+        feature = "rustls",
+        feature = "tokio-native-tls",
+        feature = "tokio-rustls"
+    ))]
     fn test_falkors_scheme() {
         let result = FalkorConnectionInfo::try_from("falkors://secure.example.com:6379");
         assert!(result.is_ok());

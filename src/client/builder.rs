@@ -294,12 +294,8 @@ mod tests {
     #[test]
     #[cfg(feature = "tokio")]
     fn test_async_builder_creation() {
-        let builder = FalkorClientBuilder::new_async();
-        // Just verify we can create an async builder
-        assert_eq!(
-            std::mem::discriminant(&builder),
-            std::mem::discriminant(&FalkorClientBuilder::new_async())
-        );
+        let _builder = FalkorClientBuilder::new_async();
+        // Just verify we can create an async builder without panicking
     }
 
     #[test]
@@ -314,14 +310,10 @@ mod tests {
         };
 
         // Just verify we can create an async builder with embedded config
-        let builder = FalkorClientBuilder::new_async()
+        let _builder = FalkorClientBuilder::new_async()
             .with_connection_info(crate::FalkorConnectionInfo::Embedded(config));
 
         // Can't easily test async build without tokio runtime in tests
         // but creation should work
-        assert_eq!(
-            std::mem::discriminant(&builder),
-            std::mem::discriminant(&FalkorClientBuilder::new_async())
-        );
     }
 }

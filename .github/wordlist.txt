@@ -52,3 +52,4 @@ FalkorResult
 FalkorClientBuilder
 FalkorConnectionInfo
 EmbeddedServer
+Alice

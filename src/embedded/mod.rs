@@ -7,13 +7,30 @@
 //!
 //! This module provides functionality to spawn and manage an embedded Redis server
 //! with the FalkorDB module loaded, allowing for in-process graph database operations.
+//!
+//! **Note**: This embedded server uses Unix domain sockets and is only supported on
+//! Unix-like operating systems (Linux, macOS, BSD). Windows is not currently supported
+//! due to limited Unix socket support.
+
+#[cfg(windows)]
+compile_error!(
+    "The `embedded` feature is only supported on Unix-like systems \
+     because it relies on Unix domain sockets. Windows is not supported."
+);
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::{fs, thread};
 
 use crate::{FalkorDBError, FalkorResult};
+
+// Maximum length for Unix socket paths (typically 104-108 bytes on most Unix systems)
+const MAX_SOCKET_PATH_LENGTH: usize = 104;
+
+// Counter for ensuring unique temp directories across multiple instances
+static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Configuration for an embedded FalkorDB server instance.
 #[derive(Debug, Clone)]
@@ -85,18 +102,28 @@ impl EmbeddedServer {
         // Set up directories and paths
         let (db_dir, temp_dir) = Self::setup_db_dir(&config)?;
         let socket_path = Self::setup_socket_path(&config, temp_dir.as_deref())?;
+
+        // Validate socket path length
+        if socket_path.as_os_str().len() > MAX_SOCKET_PATH_LENGTH {
+            return Err(FalkorDBError::EmbeddedServerError(format!(
+                "Socket path is too long ({} bytes, max {}). Please specify a shorter path in EmbeddedConfig.",
+                socket_path.as_os_str().len(),
+                MAX_SOCKET_PATH_LENGTH
+            )));
+        }
+
         let config_file = Self::create_config_file(&db_dir, &socket_path, &config.db_filename)?;
 
-        // Start redis-server with FalkorDB module
+        // Start redis-server with FalkorDB module (no daemonize to keep process handle valid)
         let mut command = Command::new(&redis_server);
         command
             .arg(&config_file)
             .arg("--loadmodule")
             .arg(&falkordb_module)
-            .arg("--daemonize")
-            .arg("yes");
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
 
-        let process = command.spawn().map_err(|e| {
+        let mut process = command.spawn().map_err(|e| {
             FalkorDBError::EmbeddedServerError(format!("Failed to start redis-server: {}", e))
         })?;
 
@@ -104,6 +131,14 @@ impl EmbeddedServer {
         let start_time = std::time::Instant::now();
         while !socket_path.exists() {
             if start_time.elapsed() > config.start_timeout {
+                // Clean up the process before returning timeout error
+                let _ = process.kill();
+                let _ = process.wait();
+                // Clean up temporary files
+                let _ = fs::remove_file(&config_file);
+                if let Some(ref temp_dir) = temp_dir {
+                    let _ = fs::remove_dir_all(temp_dir);
+                }
                 return Err(FalkorDBError::EmbeddedServerError(
                     "Timed out waiting for server to start".to_string(),
                 ));
@@ -189,18 +224,66 @@ impl EmbeddedServer {
                         e
                     ))
                 })?;
+                // Set restrictive permissions on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = fs::metadata(dir)
+                        .map_err(|e| {
+                            FalkorDBError::EmbeddedServerError(format!(
+                                "Failed to get directory metadata: {}",
+                                e
+                            ))
+                        })?
+                        .permissions();
+                    perms.set_mode(0o700);
+                    fs::set_permissions(dir, perms).map_err(|e| {
+                        FalkorDBError::EmbeddedServerError(format!(
+                            "Failed to set directory permissions: {}",
+                            e
+                        ))
+                    })?;
+                }
             }
             Ok((dir.clone(), None))
         } else {
-            // Create a temporary directory in the system temp
+            // Create a temporary directory with unique name using counter and timestamp
             let temp_base = std::env::temp_dir();
-            let temp_name = format!("falkordb_{}", std::process::id());
+            let instance_id = INSTANCE_COUNTER.fetch_add(1, Ordering::SeqCst);
+            let temp_name = format!(
+                "falkordb_{}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                instance_id
+            );
             let temp_dir = temp_base.join(temp_name);
 
-            if !temp_dir.exists() {
-                fs::create_dir_all(&temp_dir).map_err(|e| {
+            fs::create_dir_all(&temp_dir).map_err(|e| {
+                FalkorDBError::EmbeddedServerError(format!(
+                    "Failed to create temp directory: {}",
+                    e
+                ))
+            })?;
+
+            // Set restrictive permissions
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&temp_dir)
+                    .map_err(|e| {
+                        FalkorDBError::EmbeddedServerError(format!(
+                            "Failed to get directory metadata: {}",
+                            e
+                        ))
+                    })?
+                    .permissions();
+                perms.set_mode(0o700);
+                fs::set_permissions(&temp_dir, perms).map_err(|e| {
                     FalkorDBError::EmbeddedServerError(format!(
-                        "Failed to create temp directory: {}",
+                        "Failed to set directory permissions: {}",
                         e
                     ))
                 })?;
@@ -219,15 +302,43 @@ impl EmbeddedServer {
         } else if let Some(temp_dir) = temp_dir {
             Ok(temp_dir.join("falkordb.sock"))
         } else {
-            // Use the system temp directory for the socket
+            // Use the system temp directory for the socket with unique name
             let temp_base = std::env::temp_dir();
-            let temp_name = format!("falkordb_sock_{}", std::process::id());
+            let instance_id = INSTANCE_COUNTER.fetch_add(1, Ordering::SeqCst);
+            let temp_name = format!(
+                "falkordb_sock_{}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                instance_id
+            );
             let temp_dir = temp_base.join(temp_name);
 
-            if !temp_dir.exists() {
-                fs::create_dir_all(&temp_dir).map_err(|e| {
+            fs::create_dir_all(&temp_dir).map_err(|e| {
+                FalkorDBError::EmbeddedServerError(format!(
+                    "Failed to create temp directory: {}",
+                    e
+                ))
+            })?;
+
+            // Set restrictive permissions
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&temp_dir)
+                    .map_err(|e| {
+                        FalkorDBError::EmbeddedServerError(format!(
+                            "Failed to get directory metadata: {}",
+                            e
+                        ))
+                    })?
+                    .permissions();
+                perms.set_mode(0o700);
+                fs::set_permissions(&temp_dir, perms).map_err(|e| {
                     FalkorDBError::EmbeddedServerError(format!(
-                        "Failed to create temp directory: {}",
+                        "Failed to set directory permissions: {}",
                         e
                     ))
                 })?;
@@ -273,17 +384,17 @@ impl Drop for EmbeddedServer {
         let _ = self.process.kill();
         let _ = self.process.wait();
 
-        // Clean up temporary files
-        if let Some(ref temp_dir) = self.temp_dir {
-            let _ = fs::remove_dir_all(temp_dir);
-        }
-
-        // Remove the config file
+        // Remove the config file first
         let _ = fs::remove_file(&self.config_file);
 
         // Remove the socket file if it exists
         if self.socket_path.exists() {
             let _ = fs::remove_file(&self.socket_path);
+        }
+
+        // Finally, clean up the temporary directory (which may contain config and socket)
+        if let Some(ref temp_dir) = self.temp_dir {
+            let _ = fs::remove_dir_all(temp_dir);
         }
     }
 }
@@ -505,6 +616,79 @@ mod tests {
         let socket_path = PathBuf::from("/tmp/test.sock");
         let expected = format!("unix://{}", socket_path.display());
         assert_eq!(expected, "unix:///tmp/test.sock");
+    }
+
+    #[test]
+    fn test_socket_path_length_validation() {
+        // Test that overly long socket paths are rejected
+        let very_long_path = "/".to_string() + &"a".repeat(MAX_SOCKET_PATH_LENGTH + 10);
+        let config = EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/bin/true")), // Use a valid executable
+            falkordb_module_path: Some(PathBuf::from("/dev/null")), // Won't actually use this
+            socket_path: Some(PathBuf::from(very_long_path)),
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::start(config);
+        assert!(result.is_err());
+        if let Err(FalkorDBError::EmbeddedServerError(msg)) = result {
+            assert!(msg.contains("Socket path is too long"));
+        }
+    }
+
+    #[test]
+    fn test_unique_temp_directories() {
+        // Test that multiple instances with default config get unique temp directories
+        let config1 = EmbeddedConfig {
+            db_dir: None,
+            ..Default::default()
+        };
+        let config2 = EmbeddedConfig {
+            db_dir: None,
+            ..Default::default()
+        };
+
+        let result1 = EmbeddedServer::setup_db_dir(&config1);
+        let result2 = EmbeddedServer::setup_db_dir(&config2);
+
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        let (dir1, _) = result1.unwrap();
+        let (dir2, _) = result2.unwrap();
+
+        // Directories should be different
+        assert_ne!(dir1, dir2);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&dir1);
+        let _ = fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn test_directory_permissions() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let config = EmbeddedConfig {
+                db_dir: None,
+                ..Default::default()
+            };
+
+            let result = EmbeddedServer::setup_db_dir(&config);
+            assert!(result.is_ok());
+
+            let (dir, _) = result.unwrap();
+            let metadata = fs::metadata(&dir).unwrap();
+            let permissions = metadata.permissions();
+
+            // Verify restrictive permissions (0o700)
+            assert_eq!(permissions.mode() & 0o777, 0o700);
+
+            // Cleanup
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

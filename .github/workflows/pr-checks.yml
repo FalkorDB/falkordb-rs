@@ -25,6 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
 
   check-doc:
     runs-on: ubuntu-latest

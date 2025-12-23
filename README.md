@@ -34,7 +34,7 @@ docker run --rm -p 6379:6379 falkordb/falkordb
 
 ### Code Example
 
-```rust
+```rust,no_run
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
@@ -78,7 +78,7 @@ does not support the `current_thread` one, but this will probably be supported i
 
 The API uses an almost identical API, but the various functions need to be awaited:
 
-```rust
+```rust,ignore
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
@@ -176,7 +176,7 @@ You can install these from:
 
 #### Usage Example
 
-```rust
+```rust,no_run
 use falkordb::{EmbeddedConfig, FalkorClientBuilder, FalkorConnectionInfo};
 
 // Create an embedded configuration with defaults
@@ -198,7 +198,7 @@ let client = FalkorClientBuilder::new()
 
 // Use the client normally
 let mut graph = client.select_graph("social");
-graph.query("CREATE (:Person {name: 'Alice', age: 30})").execute()?;
+graph.query("CREATE (:Person {name: 'Alice', age: 30})").execute().expect("Failed to execute query");
 
 // The embedded server will be automatically shut down when the client is dropped
 ```

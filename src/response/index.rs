@@ -140,3 +140,161 @@ impl SchemaParsable for FalkorIndex {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_index_status_active() {
+        assert_eq!(IndexStatus::Active.to_string(), "OPERATIONAL");
+    }
+
+    #[test]
+    fn test_index_status_pending() {
+        assert_eq!(IndexStatus::Pending.to_string(), "UNDER CONSTRUCTION");
+    }
+
+    #[test]
+    fn test_index_status_from_string() {
+        use std::str::FromStr;
+        assert_eq!(
+            IndexStatus::from_str("OPERATIONAL").unwrap(),
+            IndexStatus::Active
+        );
+        assert_eq!(
+            IndexStatus::from_str("UNDER CONSTRUCTION").unwrap(),
+            IndexStatus::Pending
+        );
+    }
+
+    #[test]
+    fn test_index_status_clone() {
+        let status = IndexStatus::Active;
+        let status_clone = status.clone();
+        assert_eq!(status, status_clone);
+    }
+
+    #[test]
+    fn test_index_status_debug() {
+        assert!(format!("{:?}", IndexStatus::Active).contains("Active"));
+        assert!(format!("{:?}", IndexStatus::Pending).contains("Pending"));
+    }
+
+    #[test]
+    fn test_index_type_range() {
+        assert_eq!(IndexType::Range.to_string(), "RANGE");
+    }
+
+    #[test]
+    fn test_index_type_vector() {
+        assert_eq!(IndexType::Vector.to_string(), "VECTOR");
+    }
+
+    #[test]
+    fn test_index_type_fulltext() {
+        assert_eq!(IndexType::Fulltext.to_string(), "FULLTEXT");
+    }
+
+    #[test]
+    fn test_index_type_from_string() {
+        use std::str::FromStr;
+        assert_eq!(IndexType::from_str("RANGE").unwrap(), IndexType::Range);
+        assert_eq!(IndexType::from_str("VECTOR").unwrap(), IndexType::Vector);
+        assert_eq!(
+            IndexType::from_str("FULLTEXT").unwrap(),
+            IndexType::Fulltext
+        );
+    }
+
+    #[test]
+    fn test_index_type_clone() {
+        let it = IndexType::Range;
+        let it_clone = it.clone();
+        assert_eq!(it, it_clone);
+    }
+
+    #[test]
+    fn test_index_type_debug() {
+        assert!(format!("{:?}", IndexType::Range).contains("Range"));
+        assert!(format!("{:?}", IndexType::Vector).contains("Vector"));
+        assert!(format!("{:?}", IndexType::Fulltext).contains("Fulltext"));
+    }
+
+    #[test]
+    fn test_falkor_index_clone() {
+        let mut field_types = HashMap::new();
+        field_types.insert("field1".to_string(), vec![IndexType::Range]);
+
+        let index = FalkorIndex {
+            entity_type: EntityType::Node,
+            status: IndexStatus::Active,
+            index_label: "Person".to_string(),
+            fields: vec!["name".to_string()],
+            field_types: field_types.clone(),
+            language: "english".to_string(),
+            stopwords: vec!["the".to_string()],
+            info: HashMap::new(),
+            options: HashMap::new(),
+        };
+
+        let index_clone = index.clone();
+        assert_eq!(index, index_clone);
+    }
+
+    #[test]
+    fn test_falkor_index_debug() {
+        let index = FalkorIndex {
+            entity_type: EntityType::Node,
+            status: IndexStatus::Pending,
+            index_label: "User".to_string(),
+            fields: vec!["email".to_string()],
+            field_types: HashMap::new(),
+            language: "english".to_string(),
+            stopwords: vec![],
+            info: HashMap::new(),
+            options: HashMap::new(),
+        };
+
+        let debug_str = format!("{:?}", index);
+        assert!(debug_str.contains("User"));
+        assert!(debug_str.contains("email"));
+        assert!(debug_str.contains("english"));
+    }
+
+    #[test]
+    fn test_falkor_index_fields() {
+        let mut field_types = HashMap::new();
+        field_types.insert("field1".to_string(), vec![IndexType::Fulltext]);
+
+        let mut info = HashMap::new();
+        info.insert(
+            "key1".to_string(),
+            FalkorValue::String("value1".to_string()),
+        );
+
+        let mut options = HashMap::new();
+        options.insert("opt1".to_string(), FalkorValue::I64(100));
+
+        let index = FalkorIndex {
+            entity_type: EntityType::Edge,
+            status: IndexStatus::Active,
+            index_label: "KNOWS".to_string(),
+            fields: vec!["description".to_string()],
+            field_types,
+            language: "french".to_string(),
+            stopwords: vec!["le".to_string(), "la".to_string()],
+            info,
+            options,
+        };
+
+        assert_eq!(index.entity_type, EntityType::Edge);
+        assert_eq!(index.status, IndexStatus::Active);
+        assert_eq!(index.index_label, "KNOWS");
+        assert_eq!(index.fields.len(), 1);
+        assert_eq!(index.language, "french");
+        assert_eq!(index.stopwords.len(), 2);
+        assert_eq!(index.info.len(), 1);
+        assert_eq!(index.options.len(), 1);
+    }
+}

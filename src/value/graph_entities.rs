@@ -119,7 +119,10 @@ mod tests {
     fn test_entity_type_from_string() {
         use std::str::FromStr;
         assert_eq!(EntityType::from_str("NODE").unwrap(), EntityType::Node);
-        assert_eq!(EntityType::from_str("RELATIONSHIP").unwrap(), EntityType::Edge);
+        assert_eq!(
+            EntityType::from_str("RELATIONSHIP").unwrap(),
+            EntityType::Edge
+        );
     }
 
     #[test]
@@ -147,13 +150,13 @@ mod tests {
     fn test_node_clone() {
         let mut properties = HashMap::new();
         properties.insert("name".to_string(), FalkorValue::String("Alice".to_string()));
-        
+
         let node = Node {
             entity_id: 1,
             labels: vec!["Person".to_string()],
             properties: properties.clone(),
         };
-        
+
         let node_clone = node.clone();
         assert_eq!(node, node_clone);
         assert_eq!(node.entity_id, node_clone.entity_id);
@@ -187,7 +190,7 @@ mod tests {
     fn test_edge_clone() {
         let mut properties = HashMap::new();
         properties.insert("since".to_string(), FalkorValue::I64(2020));
-        
+
         let edge = Edge {
             entity_id: 1,
             relationship_type: "KNOWS".to_string(),
@@ -195,7 +198,7 @@ mod tests {
             dst_node_id: 2,
             properties: properties.clone(),
         };
-        
+
         let edge_clone = edge.clone();
         assert_eq!(edge, edge_clone);
         assert_eq!(edge.entity_id, edge_clone.entity_id);

@@ -172,7 +172,10 @@ mod tests {
         let falkor_val = FalkorValue::Bool(true);
         let result = ConfigValue::try_from(falkor_val);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FalkorDBError::ParsingConfigValue));
+        assert!(matches!(
+            result.unwrap_err(),
+            FalkorDBError::ParsingConfigValue
+        ));
     }
 
     #[test]
@@ -204,7 +207,10 @@ mod tests {
         let redis_val = redis::Value::Nil;
         let result = ConfigValue::try_from(redis_val);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FalkorDBError::InvalidDataReceived));
+        assert!(matches!(
+            result.unwrap_err(),
+            FalkorDBError::InvalidDataReceived
+        ));
     }
 
     #[test]
@@ -236,7 +242,10 @@ mod tests {
         let redis_val = redis::Value::Nil;
         let result = ConfigValue::try_from(&redis_val);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FalkorDBError::InvalidDataReceived));
+        assert!(matches!(
+            result.unwrap_err(),
+            FalkorDBError::InvalidDataReceived
+        ));
     }
 
     #[test]
@@ -262,7 +271,7 @@ mod tests {
     #[test]
     fn test_config_value_to_redis_args() {
         use redis::ToRedisArgs;
-        
+
         let int_val = ConfigValue::Int64(42);
         let args = int_val.to_redis_args();
         assert!(!args.is_empty());

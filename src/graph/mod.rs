@@ -151,7 +151,7 @@ mod tests {
     fn test_generate_create_index_query_with_options() {
         let mut options = HashMap::new();
         options.insert("option1".to_string(), "value1".to_string());
-        
+
         let query = generate_create_index_query(
             IndexType::Range,
             EntityType::Node,
@@ -179,12 +179,8 @@ mod tests {
 
     #[test]
     fn test_generate_drop_index_query_range_node() {
-        let query = generate_drop_index_query(
-            IndexType::Range,
-            EntityType::Node,
-            "Person",
-            &["name"],
-        );
+        let query =
+            generate_drop_index_query(IndexType::Range, EntityType::Node, "Person", &["name"]);
         assert!(query.contains("DROP"));
         assert!(query.contains("INDEX"));
         assert!(query.contains("(e:Person)"));
@@ -193,12 +189,8 @@ mod tests {
 
     #[test]
     fn test_generate_drop_index_query_range_edge() {
-        let query = generate_drop_index_query(
-            IndexType::Range,
-            EntityType::Edge,
-            "KNOWS",
-            &["since"],
-        );
+        let query =
+            generate_drop_index_query(IndexType::Range, EntityType::Edge, "KNOWS", &["since"]);
         assert!(query.contains("DROP"));
         assert!(query.contains("INDEX"));
         assert!(query.contains("()-[e:KNOWS]->()"));
@@ -207,12 +199,8 @@ mod tests {
 
     #[test]
     fn test_generate_drop_index_query_vector() {
-        let query = generate_drop_index_query(
-            IndexType::Vector,
-            EntityType::Node,
-            "Item",
-            &["embedding"],
-        );
+        let query =
+            generate_drop_index_query(IndexType::Vector, EntityType::Node, "Item", &["embedding"]);
         assert!(query.contains("DROP VECTOR INDEX"));
         assert!(query.contains("(e:Item)"));
         assert!(query.contains("e.embedding"));

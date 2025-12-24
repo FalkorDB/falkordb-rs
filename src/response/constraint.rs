@@ -90,8 +90,14 @@ mod tests {
     #[test]
     fn test_constraint_type_from_string() {
         use std::str::FromStr;
-        assert_eq!(ConstraintType::from_str("UNIQUE").unwrap(), ConstraintType::Unique);
-        assert_eq!(ConstraintType::from_str("MANDATORY").unwrap(), ConstraintType::Mandatory);
+        assert_eq!(
+            ConstraintType::from_str("UNIQUE").unwrap(),
+            ConstraintType::Unique
+        );
+        assert_eq!(
+            ConstraintType::from_str("MANDATORY").unwrap(),
+            ConstraintType::Mandatory
+        );
     }
 
     #[test]

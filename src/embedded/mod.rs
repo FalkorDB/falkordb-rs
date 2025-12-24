@@ -16,8 +16,16 @@
 compile_error!(
     "The `embedded` feature is only supported on Unix-like systems \
      because it relies on Unix domain sockets. Windows is not supported."
-);
+//! with the FalkorDB module loaded, allowing for in-process graph database operations.
+//!
+//! Note: This embedded server uses Unix domain sockets and is only supported on
+//! Unix-like operating systems. It does not currently support Windows.
 
+#[cfg(windows)]
+compile_error!(
+    "The `embedded` feature of FalkorDB is only supported on Unix-like systems \
+     because it relies on Unix domain sockets. Windows is not supported."
+);
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};

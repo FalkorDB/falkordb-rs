@@ -49,7 +49,7 @@ impl TryFrom<&str> for FalkorConnectionInfo {
     type Error = FalkorDBError;
 
     fn try_from(value: &str) -> FalkorResult<Self> {
-        let (url, url_schema) = regex::Regex::new(r"^(?P<schema>[a-zA-Z][a-zA-Z0-9+\-.]*):")
+        let (url, url_schema) = regex::Regex::new(r"^(?P<schema>[a-zA-Z][a-zA-Z0-9+\-.]*)://")
             .map_err(|err| FalkorDBError::ParsingError(format!("Error constructing regex: {err}")))?
             .captures(value)
             .and_then(|cap| cap.get(1))

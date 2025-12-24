@@ -41,6 +41,11 @@ jobs:
           toolchain: stable
           override: true
 
+      - name: Install redis-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-tools
+
       - name: Wait for FalkorDB to be ready
         run: |
           echo "Waiting for FalkorDB to be ready..."
@@ -84,6 +89,11 @@ jobs:
           toolchain: stable
           override: true
 
+      - name: Install redis-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-tools
+
       - name: Wait for FalkorDB to be ready
         run: |
           echo "Waiting for FalkorDB to be ready..."
@@ -95,6 +105,7 @@ jobs:
             echo "Attempt $i: FalkorDB not ready yet..."
             sleep 2
           done
+          redis-cli -h 127.0.0.1 -p 6379 ping
 
       - name: Run async integration tests
         run: cargo test --test integration_tests --features tokio --verbose

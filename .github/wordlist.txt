@@ -53,3 +53,8 @@ FalkorClientBuilder
 FalkorConnectionInfo
 EmbeddedServer
 Alice
+falkor
+println
+config
+dir
+tmp

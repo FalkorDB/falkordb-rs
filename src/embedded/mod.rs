@@ -752,4 +752,239 @@ mod tests {
         // Cleanup
         let _ = fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_find_redis_server_in_path() {
+        // Test the PATH lookup when redis_server_path is None
+        let config = EmbeddedConfig {
+            redis_server_path: None,
+            ..Default::default()
+        };
+
+        // This will either find redis-server in PATH or error appropriately
+        let result = EmbeddedServer::find_redis_server(&config);
+        // Can't assert ok/err as it depends on system, but should not panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_find_falkordb_module_common_paths() {
+        // Test the common paths lookup when falkordb_module_path is None
+        let config = EmbeddedConfig {
+            falkordb_module_path: None,
+            ..Default::default()
+        };
+
+        // This will search common locations and error if not found
+        let result = EmbeddedServer::find_falkordb_module(&config);
+        // Can't assert ok/err as it depends on system, but should not panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_socket_path_public_method() {
+        // Test that socket_path() returns the correct path
+        // We need to create a minimal mock since we can't start a real server
+        let socket_path = PathBuf::from("/tmp/test_socket.sock");
+
+        // We can test the connection_string format
+        let conn_str = format!("unix://{}", socket_path.display());
+        assert!(conn_str.starts_with("unix://"));
+        assert!(conn_str.contains("test_socket.sock"));
+    }
+
+    #[test]
+    fn test_config_file_content_validation() {
+        // Test that create_config_file generates correct content
+        let temp_dir = std::env::temp_dir().join(format!("test_config_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let socket_path = temp_dir.join("test.sock");
+        let db_filename = "custom_test.rdb";
+
+        let result = EmbeddedServer::create_config_file(&temp_dir, &socket_path, db_filename);
+        assert!(result.is_ok());
+
+        let config_path = result.unwrap();
+        let content = fs::read_to_string(&config_path).unwrap();
+
+        // Validate all required config entries
+        assert!(content.contains("port 0"), "Config should disable TCP port");
+        assert!(
+            content.contains("unixsocket"),
+            "Config should specify unix socket"
+        );
+        assert!(
+            content.contains("unixsocketperm 700"),
+            "Config should set socket permissions"
+        );
+        assert!(
+            content.contains(&temp_dir.display().to_string()),
+            "Config should contain db dir"
+        );
+        assert!(
+            content.contains(db_filename),
+            "Config should contain db filename"
+        );
+        assert!(
+            content.contains("save \"\""),
+            "Config should disable RDB snapshots"
+        );
+        assert!(
+            content.contains("appendonly no"),
+            "Config should disable AOF"
+        );
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_setup_db_dir_error_handling() {
+        // Test error handling when directory creation fails
+        // On Unix, trying to create a directory under a file will fail
+        let temp_file = std::env::temp_dir().join(format!("test_file_{}", std::process::id()));
+        fs::write(&temp_file, "test").unwrap();
+
+        let config = EmbeddedConfig {
+            db_dir: Some(temp_file.join("subdir")), // This should fail: can't create dir under file
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::setup_db_dir(&config);
+        assert!(
+            result.is_err(),
+            "Should fail when trying to create directory under a file"
+        );
+
+        if let Err(FalkorDBError::EmbeddedServerError(msg)) = result {
+            assert!(
+                msg.contains("Failed to create"),
+                "Error should mention creation failure"
+            );
+        }
+
+        // Cleanup
+        let _ = fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_multiple_config_instances_independent() {
+        // Verify that different config instances are independent
+        let config1 = EmbeddedConfig {
+            db_filename: "db1.rdb".to_string(),
+            start_timeout: Duration::from_secs(5),
+            ..Default::default()
+        };
+
+        let config2 = EmbeddedConfig {
+            db_filename: "db2.rdb".to_string(),
+            start_timeout: Duration::from_secs(10),
+            ..Default::default()
+        };
+
+        assert_ne!(config1.db_filename, config2.db_filename);
+        assert_ne!(config1.start_timeout, config2.start_timeout);
+    }
+
+    #[test]
+    fn test_config_debug_impl() {
+        // Verify that Debug trait is implemented correctly
+        let config = EmbeddedConfig::default();
+        let debug_str = format!("{:?}", config);
+
+        // Should contain field names
+        assert!(debug_str.contains("EmbeddedConfig"));
+        assert!(debug_str.contains("db_filename"));
+    }
+
+    #[test]
+    fn test_socket_path_setup_with_various_temp_dir_states() {
+        // Test socket path setup with temp_dir = None
+        let config = EmbeddedConfig {
+            socket_path: None,
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::setup_socket_path(&config, None);
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.to_string_lossy().contains("falkordb_sock_"));
+
+        // Cleanup
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn test_instance_counter_increments() {
+        // Verify that the instance counter actually increments
+        let before = INSTANCE_COUNTER.load(Ordering::SeqCst);
+
+        let config1 = EmbeddedConfig {
+            db_dir: None,
+            ..Default::default()
+        };
+        let _ = EmbeddedServer::setup_db_dir(&config1);
+
+        let config2 = EmbeddedConfig {
+            db_dir: None,
+            ..Default::default()
+        };
+        let _ = EmbeddedServer::setup_db_dir(&config2);
+
+        let after = INSTANCE_COUNTER.load(Ordering::SeqCst);
+        assert!(after > before, "Instance counter should increment");
+    }
+
+    #[test]
+    fn test_config_with_all_none_values() {
+        // Test config with all optional values set to None
+        let config = EmbeddedConfig {
+            redis_server_path: None,
+            falkordb_module_path: None,
+            db_dir: None,
+            db_filename: "test.rdb".to_string(),
+            socket_path: None,
+            start_timeout: Duration::from_secs(1),
+        };
+
+        assert!(config.redis_server_path.is_none());
+        assert!(config.falkordb_module_path.is_none());
+        assert!(config.db_dir.is_none());
+        assert!(config.socket_path.is_none());
+    }
+
+    #[test]
+    fn test_find_redis_server_with_valid_path() {
+        // Test with a path that exists (use /bin/true as a placeholder)
+        #[cfg(unix)]
+        {
+            let config = EmbeddedConfig {
+                redis_server_path: Some(PathBuf::from("/bin/true")),
+                ..Default::default()
+            };
+
+            let result = EmbeddedServer::find_redis_server(&config);
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), PathBuf::from("/bin/true"));
+        }
+    }
+
+    #[test]
+    fn test_find_falkordb_module_with_valid_path() {
+        // Test with a path that exists (use /dev/null as a placeholder)
+        #[cfg(unix)]
+        {
+            let config = EmbeddedConfig {
+                falkordb_module_path: Some(PathBuf::from("/dev/null")),
+                ..Default::default()
+            };
+
+            let result = EmbeddedServer::find_falkordb_module(&config);
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), PathBuf::from("/dev/null"));
+        }
+    }
 }

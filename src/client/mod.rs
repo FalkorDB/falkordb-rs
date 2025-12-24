@@ -27,6 +27,9 @@ pub(crate) enum FalkorClientProvider {
     Redis {
         client: redis::Client,
         sentinel: Option<redis::sentinel::SentinelClient>,
+        #[cfg(feature = "embedded")]
+        #[allow(dead_code)]
+        embedded_server: Option<std::sync::Arc<crate::embedded::EmbeddedServer>>,
     },
 }
 
@@ -179,4 +182,104 @@ impl FalkorClientProvider {
 
 pub(crate) trait ProvidesSyncConnections: Sync + Send {
     fn get_connection(&self) -> FalkorResult<FalkorSyncConnection>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_falkor_client_provider_none_connection() {
+        let mut provider = FalkorClientProvider::None;
+        let result = provider.get_connection();
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(matches!(e, FalkorDBError::UnavailableProvider));
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_falkor_client_provider_none_async_connection() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut provider = FalkorClientProvider::None;
+            let result = provider.get_async_connection().await;
+            assert!(result.is_err());
+            if let Err(e) = result {
+                assert!(matches!(e, FalkorDBError::UnavailableProvider));
+            }
+        });
+    }
+
+    #[test]
+    fn test_falkor_client_provider_set_sentinel() {
+        let mut provider = FalkorClientProvider::None;
+        // Just test that set_sentinel doesn't panic with None provider
+        let connection_info = redis::ConnectionInfo {
+            addr: redis::ConnectionAddr::Tcp("127.0.0.1".to_string(), 26379),
+            redis: redis::RedisConnectionInfo::default(),
+        };
+        let sentinel = redis::sentinel::SentinelClient::build(
+            vec![connection_info],
+            "master".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Master,
+        )
+        .unwrap();
+        provider.set_sentinel(sentinel);
+    }
+
+    #[test]
+    fn test_get_sentinel_client_common_invalid_count() {
+        let provider = FalkorClientProvider::None;
+        let connection_info = redis::ConnectionInfo {
+            addr: redis::ConnectionAddr::Tcp("127.0.0.1".to_string(), 6379),
+            redis: redis::RedisConnectionInfo::default(),
+        };
+
+        // Test with empty vector
+        let result = provider.get_sentinel_client_common(&connection_info, vec![]);
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(matches!(e, FalkorDBError::SentinelMastersCount));
+        }
+
+        // Test with multiple masters
+        let result = provider.get_sentinel_client_common(
+            &connection_info,
+            vec![redis::Value::Nil, redis::Value::Nil],
+        );
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(matches!(e, FalkorDBError::SentinelMastersCount));
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "embedded")]
+    fn test_falkor_client_provider_with_embedded_server() {
+        // Test that FalkorClientProvider::Redis can hold an embedded server
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let _provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            embedded_server: None,
+        };
+        // Just verify the structure can be created
+    }
+
+    #[test]
+    fn test_falkor_client_provider_redis_without_sentinel() {
+        // Test creating a Redis provider without sentinel
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let _provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        // Just verify the structure can be created
+    }
 }

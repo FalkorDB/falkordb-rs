@@ -514,6 +514,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Requires running FalkorDB server with slowlog configured
     fn test_slowlog() {
         let mut graph = open_empty_test_graph("test_slowlog");
 

@@ -165,6 +165,7 @@ impl<T> QueryResult<T> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::test_utils::open_empty_test_graph;
 
     #[test]
@@ -211,5 +212,184 @@ mod tests {
                 .expect("Could not run query");
             assert_eq!(query_result.get_cached_execution(), Some(true));
         }
+    }
+
+    #[test]
+    fn test_query_result_default() {
+        let result: QueryResult<Vec<String>> = QueryResult::default();
+        assert!(result.header.is_empty());
+        assert!(result.data.is_empty());
+        assert!(result.stats.is_empty());
+    }
+
+    #[test]
+    fn test_query_result_clone() {
+        let result = QueryResult {
+            header: vec!["col1".to_string()],
+            data: vec!["value1".to_string()],
+            stats: vec!["Nodes created: 5".to_string()],
+        };
+
+        let result_clone = result.clone();
+        assert_eq!(result.header, result_clone.header);
+        assert_eq!(result.data, result_clone.data);
+        assert_eq!(result.stats, result_clone.stats);
+    }
+
+    #[test]
+    fn test_query_result_debug() {
+        let result = QueryResult {
+            header: vec!["name".to_string()],
+            data: vec!["Alice".to_string()],
+            stats: vec!["Query internal execution time: 0.5 milliseconds".to_string()],
+        };
+
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("name"));
+        assert!(debug_str.contains("Alice"));
+    }
+
+    #[test]
+    fn test_get_labels_added() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Labels added: 10".to_string()],
+        };
+        assert_eq!(result.get_labels_added(), Some(10));
+    }
+
+    #[test]
+    fn test_get_labels_removed() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Labels removed: 5".to_string()],
+        };
+        assert_eq!(result.get_labels_removed(), Some(5));
+    }
+
+    #[test]
+    fn test_get_nodes_created() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Nodes created: 20".to_string()],
+        };
+        assert_eq!(result.get_nodes_created(), Some(20));
+    }
+
+    #[test]
+    fn test_get_nodes_deleted() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Nodes deleted: 8".to_string()],
+        };
+        assert_eq!(result.get_nodes_deleted(), Some(8));
+    }
+
+    #[test]
+    fn test_get_properties_set() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Properties set: 15".to_string()],
+        };
+        assert_eq!(result.get_properties_set(), Some(15));
+    }
+
+    #[test]
+    fn test_get_properties_removed() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Properties removed: 3".to_string()],
+        };
+        assert_eq!(result.get_properties_removed(), Some(3));
+    }
+
+    #[test]
+    fn test_get_indices_created() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Indices created: 2".to_string()],
+        };
+        assert_eq!(result.get_indices_created(), Some(2));
+    }
+
+    #[test]
+    fn test_get_indices_deleted() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Indices deleted: 1".to_string()],
+        };
+        assert_eq!(result.get_indices_deleted(), Some(1));
+    }
+
+    #[test]
+    fn test_get_relationship_created() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Relationships created: 12".to_string()],
+        };
+        assert_eq!(result.get_relationship_created(), Some(12));
+    }
+
+    #[test]
+    fn test_get_relationship_deleted() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Relationships deleted: 7".to_string()],
+        };
+        assert_eq!(result.get_relationship_deleted(), Some(7));
+    }
+
+    #[test]
+    fn test_get_internal_execution_time() {
+        let result = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Query internal execution time: 1.234 milliseconds".to_string()],
+        };
+        assert_eq!(result.get_internal_execution_time(), Some(1.234));
+    }
+
+    #[test]
+    fn test_get_statistics_none() {
+        let result: QueryResult<()> = QueryResult {
+            header: vec![],
+            data: (),
+            stats: vec!["Some other stat: 100".to_string()],
+        };
+        assert_eq!(result.get_nodes_created(), None);
+    }
+
+    #[test]
+    fn test_statistic_type_clone() {
+        let stat = StatisticType::NodesCreated;
+        let stat_clone = stat;
+        assert_eq!(stat, stat_clone);
+    }
+
+    #[test]
+    fn test_statistic_type_debug() {
+        assert!(format!("{:?}", StatisticType::NodesCreated).contains("NodesCreated"));
+    }
+
+    #[test]
+    fn test_statistic_type_into_static_str() {
+        let s: &'static str = StatisticType::NodesCreated.into();
+        assert_eq!(s, "Nodes created");
+
+        let s: &'static str = StatisticType::LabelsAdded.into();
+        assert_eq!(s, "Labels added");
+
+        let s: &'static str = StatisticType::RelationshipsDeleted.into();
+        assert_eq!(s, "Relationships deleted");
     }
 }

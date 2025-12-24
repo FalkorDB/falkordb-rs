@@ -534,6 +534,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[ignore] // Requires running FalkorDB server with slowlog configured
     async fn test_slowlog() {
         let mut graph = open_empty_async_test_graph("test_slowlog_async").await;
 

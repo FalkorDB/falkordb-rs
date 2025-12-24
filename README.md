@@ -34,7 +34,7 @@ docker run --rm -p 6379:6379 falkordb/falkordb
 
 ### Code Example
 
-```rust
+```rust,no_run
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
@@ -78,7 +78,7 @@ does not support the `current_thread` one, but this will probably be supported i
 
 The API uses an almost identical API, but the various functions need to be awaited:
 
-```rust
+```rust,ignore
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
@@ -151,3 +151,101 @@ falkordb = { version = "0.1.10", features = ["tracing"] }
 
 Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the
 correct level as you desire it.
+
+### Embedded FalkorDB Server
+
+This client supports running an embedded FalkorDB server, which is useful for:
+- Testing without external dependencies
+- Embedded applications
+- Quick prototyping and development
+
+To use the embedded feature, enable it in your `Cargo.toml`:
+
+```toml
+falkordb = { version = "0.1.10", features = ["embedded"] }
+```
+
+#### Requirements
+
+- `redis-server` must be installed and available in PATH (or you can specify a custom path)
+- `falkordb.so` module must be installed (or you can specify a custom path)
+
+You can install these from:
+- Redis: https://github.com/redis/redis
+- FalkorDB: https://github.com/falkordb/falkordb
+
+#### Usage Example
+
+```rust,no_run
+use falkordb::{EmbeddedConfig, FalkorClientBuilder, FalkorConnectionInfo};
+
+// Create an embedded configuration with defaults
+let embedded_config = EmbeddedConfig::default();
+
+// Or customize the configuration:
+// let embedded_config = EmbeddedConfig {
+//     redis_server_path: Some(PathBuf::from("/path/to/redis-server")),
+//     falkordb_module_path: Some(PathBuf::from("/path/to/falkordb.so")),
+//     db_dir: Some(PathBuf::from("/tmp/my_falkordb")),
+//     ..Default::default()
+// };
+
+// Build a client with embedded FalkorDB
+let client = FalkorClientBuilder::new()
+    .with_connection_info(FalkorConnectionInfo::Embedded(embedded_config))
+    .build()
+    .expect("Failed to build client");
+
+// Use the client normally
+let mut graph = client.select_graph("social");
+graph.query("CREATE (:Person {name: 'Alice', age: 30})").execute().expect("Failed to execute query");
+
+// The embedded server will be automatically shut down when the client is dropped
+```
+
+The embedded server:
+- Spawns a `redis-server` process with the FalkorDB module loaded
+- Uses Unix socket for communication (no network port)
+- Automatically cleans up when the client is dropped
+- Can be configured with custom paths, database directory, and socket location
+
+## Testing
+
+### Running Tests
+
+This project includes both unit tests and integration tests.
+
+#### Unit Tests
+
+Unit tests don't require a running FalkorDB instance:
+
+```bash
+# Run all unit tests
+cargo test --lib
+
+# Run unit tests with embedded feature
+cargo test --lib --features embedded
+```
+
+#### Integration Tests
+
+Integration tests require a running FalkorDB instance. The easiest way to run them is using Docker:
+
+```bash
+# Using the provided script (requires Docker)
+./run_integration_tests.sh
+
+# Or manually start FalkorDB and run tests
+docker run -d --name falkordb-test -p 6379:6379 falkordb/falkordb:latest
+cargo test --test integration_tests
+
+# With async support
+cargo test --test integration_tests --features tokio
+
+# Clean up
+docker stop falkordb-test && docker rm falkordb-test
+```
+
+#### CI Integration Tests
+
+Integration tests are automatically run in GitHub Actions using Docker services. See `.github/workflows/integration-tests.yml` for the CI configuration.

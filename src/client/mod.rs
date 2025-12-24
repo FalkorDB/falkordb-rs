@@ -28,6 +28,7 @@ pub(crate) enum FalkorClientProvider {
         client: redis::Client,
         sentinel: Option<redis::sentinel::SentinelClient>,
         #[cfg(feature = "embedded")]
+        #[allow(dead_code)]
         embedded_server: Option<std::sync::Arc<crate::embedded::EmbeddedServer>>,
     },
 }

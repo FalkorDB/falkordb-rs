@@ -5,6 +5,7 @@
 
 #![allow(private_interfaces)]
 #![allow(private_bounds)]
+#![allow(mismatched_lifetime_syntaxes)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!("../README.md")]

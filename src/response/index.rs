@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn test_index_status_clone() {
         let status = IndexStatus::Active;
-        let status_clone = status.clone();
+        let status_clone = status;
         assert_eq!(status, status_clone);
     }
 
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn test_index_type_clone() {
         let it = IndexType::Range;
-        let it_clone = it.clone();
+        let it_clone = it;
         assert_eq!(it, it_clone);
     }
 

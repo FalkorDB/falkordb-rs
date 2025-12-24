@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn test_entity_type_clone() {
         let node = EntityType::Node;
-        let node_clone = node.clone();
+        let node_clone = node;
         assert_eq!(node, node_clone);
     }
 

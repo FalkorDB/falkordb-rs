@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn test_statistic_type_clone() {
         let stat = StatisticType::NodesCreated;
-        let stat_clone = stat.clone();
+        let stat_clone = stat;
         assert_eq!(stat, stat_clone);
     }
 

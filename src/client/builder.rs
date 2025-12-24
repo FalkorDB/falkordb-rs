@@ -263,8 +263,8 @@ mod tests {
                 .with_num_connections(NonZeroU8::new(size).expect("Could not create non-zero u8"))
                 .build();
 
-            if client.is_ok() {
-                assert_eq!(client.unwrap().connection_pool_size(), size);
+            if let Ok(client) = client {
+                assert_eq!(client.connection_pool_size(), size);
             }
         }
     }

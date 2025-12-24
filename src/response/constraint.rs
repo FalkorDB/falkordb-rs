@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn test_constraint_type_clone() {
         let ct = ConstraintType::Unique;
-        let ct_clone = ct.clone();
+        let ct_clone = ct;
         assert_eq!(ct, ct_clone);
     }
 
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn test_constraint_status_clone() {
         let status = ConstraintStatus::Active;
-        let status_clone = status.clone();
+        let status_clone = status;
         assert_eq!(status, status_clone);
     }
 

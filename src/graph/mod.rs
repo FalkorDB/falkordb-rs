@@ -86,3 +86,160 @@ pub(crate) fn generate_drop_index_query<P: Display>(
         properties_string
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_create_index_query_range_node() {
+        let query = generate_create_index_query(
+            IndexType::Range,
+            EntityType::Node,
+            "Person",
+            &["name"],
+            None,
+        );
+        assert!(query.contains("CREATE INDEX"));
+        assert!(query.contains("(l:Person)"));
+        assert!(query.contains("l.name"));
+    }
+
+    #[test]
+    fn test_generate_create_index_query_range_edge() {
+        let query = generate_create_index_query(
+            IndexType::Range,
+            EntityType::Edge,
+            "KNOWS",
+            &["since"],
+            None,
+        );
+        assert!(query.contains("CREATE INDEX"));
+        assert!(query.contains("()-[l:KNOWS]->()"));
+        assert!(query.contains("l.since"));
+    }
+
+    #[test]
+    fn test_generate_create_index_query_vector() {
+        let query = generate_create_index_query(
+            IndexType::Vector,
+            EntityType::Node,
+            "Item",
+            &["embedding"],
+            None,
+        );
+        assert!(query.contains("CREATE VECTOR INDEX"));
+        assert!(query.contains("(l:Item)"));
+        assert!(query.contains("l.embedding"));
+    }
+
+    #[test]
+    fn test_generate_create_index_query_fulltext() {
+        let query = generate_create_index_query(
+            IndexType::Fulltext,
+            EntityType::Node,
+            "Document",
+            &["content"],
+            None,
+        );
+        assert!(query.contains("CREATE FULLTEXT INDEX"));
+        assert!(query.contains("(l:Document)"));
+        assert!(query.contains("l.content"));
+    }
+
+    #[test]
+    fn test_generate_create_index_query_with_options() {
+        let mut options = HashMap::new();
+        options.insert("option1".to_string(), "value1".to_string());
+        
+        let query = generate_create_index_query(
+            IndexType::Range,
+            EntityType::Node,
+            "Test",
+            &["field"],
+            Some(&options),
+        );
+        assert!(query.contains("OPTIONS"));
+        assert!(query.contains("option1"));
+        assert!(query.contains("value1"));
+    }
+
+    #[test]
+    fn test_generate_create_index_query_multiple_properties() {
+        let query = generate_create_index_query(
+            IndexType::Range,
+            EntityType::Node,
+            "Person",
+            &["firstName", "lastName"],
+            None,
+        );
+        assert!(query.contains("l.firstName"));
+        assert!(query.contains("l.lastName"));
+    }
+
+    #[test]
+    fn test_generate_drop_index_query_range_node() {
+        let query = generate_drop_index_query(
+            IndexType::Range,
+            EntityType::Node,
+            "Person",
+            &["name"],
+        );
+        assert!(query.contains("DROP"));
+        assert!(query.contains("INDEX"));
+        assert!(query.contains("(e:Person)"));
+        assert!(query.contains("e.name"));
+    }
+
+    #[test]
+    fn test_generate_drop_index_query_range_edge() {
+        let query = generate_drop_index_query(
+            IndexType::Range,
+            EntityType::Edge,
+            "KNOWS",
+            &["since"],
+        );
+        assert!(query.contains("DROP"));
+        assert!(query.contains("INDEX"));
+        assert!(query.contains("()-[e:KNOWS]->()"));
+        assert!(query.contains("e.since"));
+    }
+
+    #[test]
+    fn test_generate_drop_index_query_vector() {
+        let query = generate_drop_index_query(
+            IndexType::Vector,
+            EntityType::Node,
+            "Item",
+            &["embedding"],
+        );
+        assert!(query.contains("DROP VECTOR INDEX"));
+        assert!(query.contains("(e:Item)"));
+        assert!(query.contains("e.embedding"));
+    }
+
+    #[test]
+    fn test_generate_drop_index_query_fulltext() {
+        let query = generate_drop_index_query(
+            IndexType::Fulltext,
+            EntityType::Node,
+            "Document",
+            &["content"],
+        );
+        assert!(query.contains("DROP FULLTEXT INDEX"));
+        assert!(query.contains("(e:Document)"));
+        assert!(query.contains("e.content"));
+    }
+
+    #[test]
+    fn test_generate_drop_index_query_multiple_properties() {
+        let query = generate_drop_index_query(
+            IndexType::Range,
+            EntityType::Node,
+            "Person",
+            &["firstName", "lastName"],
+        );
+        assert!(query.contains("e.firstName"));
+        assert!(query.contains("e.lastName"));
+    }
+}

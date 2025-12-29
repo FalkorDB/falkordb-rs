@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.11...v0.1.12) - 2025-12-29
+
+### Other
+
+- Merge branch 'main' into dependabot/cargo/main/thiserror-2.0.17
+- Merge branch 'main' into dependabot/github_actions/main/actions/checkout-6
+- *(deps)* bump actions/checkout from 4 to 6
+- Fix cargo-deny action to skip advisory database check ([#146](https://github.com/FalkorDB/falkordb-rs/pull/146))
+- Add support for embedded FalkorDB server with comprehensive test coverage ([#135](https://github.com/FalkorDB/falkordb-rs/pull/135))
+- Update wordlist.txt
+- Create spellcheck.yml ([#107](https://github.com/FalkorDB/falkordb-rs/pull/107))
+- clean deny errors
+- update deps
+
 ## [0.1.11](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.10...v0.1.11) - 2025-02-13
 
 ### Fixed

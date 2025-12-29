@@ -44,3 +44,91 @@ impl Path {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_default() {
+        let path = Path::default();
+        assert!(path.nodes.is_empty());
+        assert!(path.relationships.is_empty());
+    }
+
+    #[test]
+    fn test_path_clone() {
+        let node1 = Node {
+            entity_id: 1,
+            labels: vec!["Person".to_string()],
+            properties: std::collections::HashMap::new(),
+        };
+        let node2 = Node {
+            entity_id: 2,
+            labels: vec!["Person".to_string()],
+            properties: std::collections::HashMap::new(),
+        };
+        let edge = Edge {
+            entity_id: 1,
+            relationship_type: "KNOWS".to_string(),
+            src_node_id: 1,
+            dst_node_id: 2,
+            properties: std::collections::HashMap::new(),
+        };
+
+        let path = Path {
+            nodes: vec![node1, node2],
+            relationships: vec![edge],
+        };
+
+        let path_clone = path.clone();
+        assert_eq!(path, path_clone);
+        assert_eq!(path.nodes.len(), path_clone.nodes.len());
+        assert_eq!(path.relationships.len(), path_clone.relationships.len());
+    }
+
+    #[test]
+    fn test_path_debug() {
+        let path = Path {
+            nodes: vec![],
+            relationships: vec![],
+        };
+        let debug_str = format!("{:?}", path);
+        assert!(debug_str.contains("Path"));
+        assert!(debug_str.contains("nodes"));
+        assert!(debug_str.contains("relationships"));
+    }
+
+    #[test]
+    fn test_path_equality() {
+        let path1 = Path::default();
+        let path2 = Path::default();
+        assert_eq!(path1, path2);
+    }
+
+    #[test]
+    fn test_path_with_nodes_and_edges() {
+        let node = Node {
+            entity_id: 1,
+            labels: vec!["Test".to_string()],
+            properties: std::collections::HashMap::new(),
+        };
+        let edge = Edge {
+            entity_id: 1,
+            relationship_type: "TEST_REL".to_string(),
+            src_node_id: 1,
+            dst_node_id: 2,
+            properties: std::collections::HashMap::new(),
+        };
+
+        let path = Path {
+            nodes: vec![node],
+            relationships: vec![edge],
+        };
+
+        assert_eq!(path.nodes.len(), 1);
+        assert_eq!(path.relationships.len(), 1);
+        assert_eq!(path.nodes[0].entity_id, 1);
+        assert_eq!(path.relationships[0].entity_id, 1);
+    }
+}

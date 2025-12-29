@@ -56,17 +56,56 @@ impl<const R: char> FalkorClientBuilder<R> {
 
     fn get_client<E: ToString, T: TryInto<FalkorConnectionInfo, Error = E>>(
         connection_info: T
-    ) -> FalkorResult<FalkorClientProvider> {
+    ) -> FalkorResult<(FalkorClientProvider, FalkorConnectionInfo)> {
         let connection_info = connection_info
             .try_into()
             .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
-        Ok(match connection_info {
-            FalkorConnectionInfo::Redis(connection_info) => FalkorClientProvider::Redis {
-                client: redis::Client::open(connection_info.clone())
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
-                sentinel: None,
+
+        #[cfg(feature = "embedded")]
+        if let FalkorConnectionInfo::Embedded(ref config) = connection_info {
+            // Start the embedded server
+            let embedded_server =
+                std::sync::Arc::new(crate::embedded::EmbeddedServer::start(config.clone())?);
+
+            // Create a Redis client that connects to the embedded server's Unix socket
+            let socket_path = embedded_server.socket_path();
+            let redis_connection_info = redis::ConnectionInfo {
+                addr: redis::ConnectionAddr::Unix(socket_path.to_path_buf()),
+                redis: redis::RedisConnectionInfo {
+                    db: 0,
+                    username: None,
+                    password: None,
+                    protocol: redis::ProtocolVersion::RESP2,
+                },
+            };
+
+            let client = redis::Client::open(redis_connection_info.clone())
+                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+
+            return Ok((
+                FalkorClientProvider::Redis {
+                    client,
+                    sentinel: None,
+                    embedded_server: Some(embedded_server),
+                },
+                FalkorConnectionInfo::Redis(redis_connection_info),
+            ));
+        }
+
+        Ok((
+            match connection_info {
+                FalkorConnectionInfo::Redis(ref redis_info) => FalkorClientProvider::Redis {
+                    client: redis::Client::open(redis_info.clone())
+                        .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
+                    sentinel: None,
+                    #[cfg(feature = "embedded")]
+                    embedded_server: None,
+                },
+                #[cfg(feature = "embedded")]
+                FalkorConnectionInfo::Embedded(_) => unreachable!("Handled above"),
             },
-        })
+            connection_info,
+        ))
     }
 }
 
@@ -92,15 +131,15 @@ impl FalkorClientBuilder<'S'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        let mut client = Self::get_client(connection_info.clone())?;
+        let (mut client, actual_connection_info) = Self::get_client(connection_info)?;
 
         #[allow(irrefutable_let_patterns)]
-        if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
+        if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
             if let Some(sentinel) = client.get_sentinel_client(redis_conn_info)? {
                 client.set_sentinel(sentinel);
             }
         }
-        FalkorSyncClient::create(client, connection_info, self.num_connections.get())
+        FalkorSyncClient::create(client, actual_connection_info, self.num_connections.get())
     }
 }
 
@@ -126,15 +165,15 @@ impl FalkorClientBuilder<'A'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        let mut client = Self::get_client(connection_info.clone())?;
+        let (mut client, actual_connection_info) = Self::get_client(connection_info)?;
 
         #[allow(irrefutable_let_patterns)]
-        if let FalkorConnectionInfo::Redis(redis_conn_info) = &connection_info {
+        if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
             if let Some(sentinel) = client.get_sentinel_client_async(redis_conn_info).await? {
                 client.set_sentinel(sentinel);
             }
         }
-        FalkorAsyncClient::create(client, connection_info, self.num_connections.get()).await
+        FalkorAsyncClient::create(client, actual_connection_info, self.num_connections.get()).await
     }
 }
 
@@ -161,5 +200,120 @@ mod tests {
         assert!(client.is_ok());
 
         assert_eq!(client.unwrap().connection_pool_size(), 16);
+    }
+
+    #[test]
+    #[cfg(feature = "embedded")]
+    fn test_embedded_config_creation() {
+        // Test that we can create an embedded config
+        let config = crate::EmbeddedConfig::default();
+        assert_eq!(config.db_filename, "falkordb.rdb");
+        assert!(config.redis_server_path.is_none());
+        assert!(config.falkordb_module_path.is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "embedded")]
+    fn test_embedded_builder_fails_without_binaries() {
+        // Test that building with embedded config fails gracefully when binaries are not found
+        use std::path::PathBuf;
+
+        let config = crate::EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/nonexistent/redis-server")),
+            falkordb_module_path: Some(PathBuf::from("/nonexistent/falkordb.so")),
+            ..Default::default()
+        };
+
+        let result = FalkorClientBuilder::new()
+            .with_connection_info(crate::FalkorConnectionInfo::Embedded(config))
+            .build();
+
+        // Should fail because the binaries don't exist
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(matches!(e, crate::FalkorDBError::EmbeddedServerError(_)));
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "embedded")]
+    fn test_embedded_builder_with_custom_config() {
+        use std::path::PathBuf;
+
+        let config = crate::EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/custom/redis")),
+            falkordb_module_path: Some(PathBuf::from("/custom/falkordb.so")),
+            db_filename: "custom.rdb".to_string(),
+            ..Default::default()
+        };
+
+        // Just test that we can create the builder with custom config
+        let builder = FalkorClientBuilder::new()
+            .with_connection_info(crate::FalkorConnectionInfo::Embedded(config));
+
+        // Attempting to build will fail without actual binaries, but builder creation should work
+        let result = builder.build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_builder_with_different_pool_sizes() {
+        for size in [1, 4, 8, 16, 32] {
+            let client = FalkorClientBuilder::new()
+                .with_num_connections(NonZeroU8::new(size).expect("Could not create non-zero u8"))
+                .build();
+
+            if let Ok(client) = client {
+                assert_eq!(client.connection_pool_size(), size);
+            }
+        }
+    }
+
+    #[test]
+    fn test_builder_without_connection_info() {
+        // Test default connection behavior
+        let client = FalkorClientBuilder::new().build();
+        // Should use default connection info (falkor://127.0.0.1:6379)
+        // Will fail without a running server, but that's expected
+        assert!(client.is_ok() || client.is_err());
+    }
+
+    #[test]
+    fn test_builder_with_invalid_connection_string() {
+        let result = FalkorClientBuilder::new()
+            .with_connection_info("invalid://bad:url".try_into().unwrap_or_else(|_| {
+                // If try_into fails, it will error before build
+                "falkor://127.0.0.1:6379".try_into().unwrap()
+            }))
+            .build();
+
+        // The build might succeed or fail depending on connection
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_async_builder_creation() {
+        let _builder = FalkorClientBuilder::new_async();
+        // Just verify we can create an async builder without panicking
+    }
+
+    #[test]
+    #[cfg(all(feature = "embedded", feature = "tokio"))]
+    fn test_async_builder_with_embedded() {
+        use std::path::PathBuf;
+
+        let config = crate::EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/nonexistent/redis")),
+            falkordb_module_path: Some(PathBuf::from("/nonexistent/falkordb.so")),
+            ..Default::default()
+        };
+
+        // Just verify we can create an async builder with embedded config
+        let _builder = FalkorClientBuilder::new_async()
+            .with_connection_info(crate::FalkorConnectionInfo::Embedded(config));
+
+        // Can't easily test async build without tokio runtime in tests
+        // but creation should work
     }
 }

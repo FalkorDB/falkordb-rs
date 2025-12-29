@@ -72,3 +72,103 @@ impl SchemaParsable for Constraint {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_constraint_type_unique() {
+        assert_eq!(ConstraintType::Unique.to_string(), "UNIQUE");
+    }
+
+    #[test]
+    fn test_constraint_type_mandatory() {
+        assert_eq!(ConstraintType::Mandatory.to_string(), "MANDATORY");
+    }
+
+    #[test]
+    fn test_constraint_type_from_string() {
+        use std::str::FromStr;
+        assert_eq!(
+            ConstraintType::from_str("UNIQUE").unwrap(),
+            ConstraintType::Unique
+        );
+        assert_eq!(
+            ConstraintType::from_str("MANDATORY").unwrap(),
+            ConstraintType::Mandatory
+        );
+    }
+
+    #[test]
+    fn test_constraint_type_clone() {
+        let ct = ConstraintType::Unique;
+        let ct_clone = ct;
+        assert_eq!(ct, ct_clone);
+    }
+
+    #[test]
+    fn test_constraint_type_debug() {
+        assert!(format!("{:?}", ConstraintType::Unique).contains("Unique"));
+        assert!(format!("{:?}", ConstraintType::Mandatory).contains("Mandatory"));
+    }
+
+    #[test]
+    fn test_constraint_status_active() {
+        assert_eq!(ConstraintStatus::Active.to_string(), "OPERATIONAL");
+    }
+
+    #[test]
+    fn test_constraint_status_pending() {
+        assert_eq!(ConstraintStatus::Pending.to_string(), "UNDER CONSTRUCTION");
+    }
+
+    #[test]
+    fn test_constraint_status_failed() {
+        assert_eq!(ConstraintStatus::Failed.to_string(), "Failed");
+    }
+
+    #[test]
+    fn test_constraint_status_clone() {
+        let status = ConstraintStatus::Active;
+        let status_clone = status;
+        assert_eq!(status, status_clone);
+    }
+
+    #[test]
+    fn test_constraint_status_debug() {
+        assert!(format!("{:?}", ConstraintStatus::Active).contains("Active"));
+        assert!(format!("{:?}", ConstraintStatus::Pending).contains("Pending"));
+        assert!(format!("{:?}", ConstraintStatus::Failed).contains("Failed"));
+    }
+
+    #[test]
+    fn test_constraint_clone() {
+        let constraint = Constraint {
+            constraint_type: ConstraintType::Unique,
+            label: "Person".to_string(),
+            properties: vec!["id".to_string()],
+            entity_type: EntityType::Node,
+            status: ConstraintStatus::Active,
+        };
+
+        let constraint_clone = constraint.clone();
+        assert_eq!(constraint, constraint_clone);
+    }
+
+    #[test]
+    fn test_constraint_debug() {
+        let constraint = Constraint {
+            constraint_type: ConstraintType::Mandatory,
+            label: "User".to_string(),
+            properties: vec!["email".to_string()],
+            entity_type: EntityType::Node,
+            status: ConstraintStatus::Pending,
+        };
+
+        let debug_str = format!("{:?}", constraint);
+        assert!(debug_str.contains("Mandatory"));
+        assert!(debug_str.contains("User"));
+        assert!(debug_str.contains("email"));
+    }
+}

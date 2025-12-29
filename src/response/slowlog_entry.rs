@@ -47,3 +47,75 @@ impl SlowlogEntry {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slowlog_entry_clone() {
+        let entry = SlowlogEntry {
+            timestamp: 1234567890,
+            command: "GRAPH.QUERY".to_string(),
+            arguments: "MATCH (n) RETURN n".to_string(),
+            time_taken: 123.456,
+        };
+
+        let entry_clone = entry.clone();
+        assert_eq!(entry, entry_clone);
+        assert_eq!(entry.timestamp, entry_clone.timestamp);
+        assert_eq!(entry.command, entry_clone.command);
+        assert_eq!(entry.arguments, entry_clone.arguments);
+        assert_eq!(entry.time_taken, entry_clone.time_taken);
+    }
+
+    #[test]
+    fn test_slowlog_entry_debug() {
+        let entry = SlowlogEntry {
+            timestamp: 1234567890,
+            command: "GRAPH.QUERY".to_string(),
+            arguments: "MATCH (n) RETURN n".to_string(),
+            time_taken: 123.456,
+        };
+
+        let debug_str = format!("{:?}", entry);
+        assert!(debug_str.contains("1234567890"));
+        assert!(debug_str.contains("GRAPH.QUERY"));
+        assert!(debug_str.contains("MATCH"));
+        assert!(debug_str.contains("123.456"));
+    }
+
+    #[test]
+    fn test_slowlog_entry_equality() {
+        let entry1 = SlowlogEntry {
+            timestamp: 100,
+            command: "CMD".to_string(),
+            arguments: "args".to_string(),
+            time_taken: 1.0,
+        };
+
+        let entry2 = SlowlogEntry {
+            timestamp: 100,
+            command: "CMD".to_string(),
+            arguments: "args".to_string(),
+            time_taken: 1.0,
+        };
+
+        assert_eq!(entry1, entry2);
+    }
+
+    #[test]
+    fn test_slowlog_entry_fields() {
+        let entry = SlowlogEntry {
+            timestamp: 999,
+            command: "TEST".to_string(),
+            arguments: "test args".to_string(),
+            time_taken: 0.5,
+        };
+
+        assert_eq!(entry.timestamp, 999);
+        assert_eq!(entry.command, "TEST");
+        assert_eq!(entry.arguments, "test args");
+        assert_eq!(entry.time_taken, 0.5);
+    }
+}

@@ -17,27 +17,58 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  FALKORDB_HOST: 127.0.0.1
+  FALKORDB_PORT: 6379
 
 # Generate code coverage using llvm cov
 jobs:
   coverage:
     runs-on: ubuntu-latest
+    
+    services:
+      falkordb:
+        image: falkordb/falkordb:edge
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Install redis-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-tools
+      
+      - name: Wait for FalkorDB to be ready
+        run: |
+          echo "Waiting for FalkorDB to be ready..."
+          for i in {1..30}; do
+            if redis-cli -h 127.0.0.1 -p 6379 ping > /dev/null 2>&1; then
+              echo "FalkorDB is ready!"
+              break
+            fi
+            echo "Attempt $i: FalkorDB not ready yet..."
+            sleep 2
+          done
+          redis-cli -h 127.0.0.1 -p 6379 ping
+      
       - name: Populate test graph
-        run:  pip install falkordb && ./resources/populate_graph.py
+        run: pip install falkordb && ./resources/populate_graph.py
+      
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
+      
       - name: Generate Code Coverage
-        run:  cargo llvm-cov nextest --all --features tokio --codecov --output-path codecov.json
+        run: cargo llvm-cov nextest --all --features tokio,embedded --codecov --output-path codecov.json
+      
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
           files: codecov.json
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
-    services:
-      falkordb:
-        image: falkordb/falkordb:edge
-        ports:
-          - 6379:6379

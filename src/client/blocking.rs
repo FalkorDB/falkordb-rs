@@ -341,7 +341,7 @@ mod tests {
             .query("MATCH (p:Document) RETURN p")
             .execute()
             .expect("Could not get document");
-        while let Some(falkor_value) = res.data.next() {
+        for falkor_value in res.data.by_ref() {
             // iterate on a node value
             for value in falkor_value {
                 if let Node(node) = value {

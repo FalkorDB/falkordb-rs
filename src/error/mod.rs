@@ -124,10 +124,74 @@ pub enum FalkorDBError {
     /// No runtime detected, you are trying to run an async operation from a sync context
     #[error("No runtime detected, you are trying to run an async operation from a sync context")]
     NoRuntime,
+    /// An error occurred with the embedded FalkorDB server
+    #[error("Embedded server error: {0}")]
+    EmbeddedServerError(String),
 }
 
 impl From<strum::ParseError> for FalkorDBError {
     fn from(value: strum::ParseError) -> Self {
         FalkorDBError::InvalidEnumType(value.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_embedded_server_error_display() {
+        let error = FalkorDBError::EmbeddedServerError("test error".to_string());
+        assert_eq!(error.to_string(), "Embedded server error: test error");
+    }
+
+    #[test]
+    fn test_embedded_server_error_debug() {
+        let error = FalkorDBError::EmbeddedServerError("debug test".to_string());
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("EmbeddedServerError"));
+        assert!(debug_str.contains("debug test"));
+    }
+
+    #[test]
+    fn test_embedded_server_error_equality() {
+        let error1 = FalkorDBError::EmbeddedServerError("same".to_string());
+        let error2 = FalkorDBError::EmbeddedServerError("same".to_string());
+        let error3 = FalkorDBError::EmbeddedServerError("different".to_string());
+
+        assert_eq!(error1, error2);
+        assert_ne!(error1, error3);
+    }
+
+    #[test]
+    fn test_invalid_connection_info_error() {
+        let error = FalkorDBError::InvalidConnectionInfo("bad connection".to_string());
+        assert!(error.to_string().contains("bad connection"));
+    }
+
+    #[test]
+    fn test_redis_error() {
+        let error = FalkorDBError::RedisError("connection failed".to_string());
+        assert!(error.to_string().contains("connection failed"));
+    }
+
+    #[test]
+    fn test_error_from_strum() {
+        // Test the From impl for strum::ParseError
+        let parse_error = strum::ParseError::VariantNotFound;
+        let falkor_error: FalkorDBError = parse_error.into();
+        assert!(matches!(falkor_error, FalkorDBError::InvalidEnumType(_)));
+    }
+
+    #[test]
+    fn test_unavailable_provider_error() {
+        let error = FalkorDBError::UnavailableProvider;
+        assert!(error.to_string().contains("unavailable"));
+    }
+
+    #[test]
+    fn test_no_connection_error() {
+        let error = FalkorDBError::NoConnection;
+        assert!(error.to_string().contains("Could not connect"));
     }
 }

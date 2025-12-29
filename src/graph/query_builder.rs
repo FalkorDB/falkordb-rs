@@ -83,7 +83,7 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
     ///
     /// # Arguments
     /// * `timeout`: the timeout after which the server is allowed to abort or throw this request,
-    ///    in milliseconds, when that happens the server will return a timeout error
+    ///   in milliseconds, when that happens the server will return a timeout error
     pub fn with_timeout(
         self,
         timeout: i64,

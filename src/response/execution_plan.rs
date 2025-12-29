@@ -268,3 +268,162 @@ impl ExecutionPlan {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_operation_default() {
+        let op = Operation::default();
+        assert_eq!(op.name, "");
+        assert!(op.args.is_none());
+        assert!(op.records_produced.is_none());
+        assert!(op.execution_time.is_none());
+        assert!(op.children.is_empty());
+    }
+
+    #[test]
+    fn test_operation_clone() {
+        let op = Operation {
+            name: "Scan".to_string(),
+            args: Some(vec!["arg1".to_string()]),
+            records_produced: Some(100),
+            execution_time: Some(1.5),
+            children: vec![],
+            depth: 0,
+        };
+
+        let op_clone = op.clone();
+        assert_eq!(op, op_clone);
+    }
+
+    #[test]
+    fn test_operation_debug() {
+        let op = Operation {
+            name: "Filter".to_string(),
+            args: None,
+            records_produced: Some(50),
+            execution_time: Some(0.5),
+            children: vec![],
+            depth: 1,
+        };
+
+        let debug_str = format!("{:?}", op);
+        assert!(debug_str.contains("Filter"));
+        assert!(debug_str.contains("50"));
+    }
+
+    #[test]
+    fn test_operation_with_children() {
+        let child = Rc::new(Operation {
+            name: "Child".to_string(),
+            args: None,
+            records_produced: None,
+            execution_time: None,
+            children: vec![],
+            depth: 1,
+        });
+
+        let parent = Operation {
+            name: "Parent".to_string(),
+            args: None,
+            records_produced: None,
+            execution_time: None,
+            children: vec![child],
+            depth: 0,
+        };
+
+        assert_eq!(parent.children.len(), 1);
+        assert_eq!(parent.children[0].name, "Child");
+    }
+
+    #[test]
+    fn test_execution_plan_methods() {
+        let op = Rc::new(Operation::default());
+        let plan = ExecutionPlan {
+            string_representation: "Test Plan".to_string(),
+            plan: vec!["Step 1".to_string(), "Step 2".to_string()],
+            operations: HashMap::new(),
+            operation_tree: op.clone(),
+        };
+
+        assert_eq!(plan.string_representation(), "Test Plan");
+        assert_eq!(plan.plan().len(), 2);
+        assert_eq!(plan.plan()[0], "Step 1");
+        assert_eq!(plan.operations().len(), 0);
+        assert_eq!(plan.operation_tree().name, "");
+    }
+
+    #[test]
+    fn test_execution_plan_clone() {
+        let op = Rc::new(Operation {
+            name: "Root".to_string(),
+            args: None,
+            records_produced: None,
+            execution_time: None,
+            children: vec![],
+            depth: 0,
+        });
+
+        let plan = ExecutionPlan {
+            string_representation: "Plan".to_string(),
+            plan: vec!["Step".to_string()],
+            operations: HashMap::new(),
+            operation_tree: op,
+        };
+
+        let plan_clone = plan.clone();
+        assert_eq!(plan, plan_clone);
+    }
+
+    #[test]
+    fn test_execution_plan_debug() {
+        let op = Rc::new(Operation::default());
+        let plan = ExecutionPlan {
+            string_representation: "Debug Test".to_string(),
+            plan: vec![],
+            operations: HashMap::new(),
+            operation_tree: op,
+        };
+
+        let debug_str = format!("{:?}", plan);
+        assert!(debug_str.contains("ExecutionPlan"));
+    }
+
+    #[test]
+    fn test_execution_plan_with_operations_map() {
+        let op1 = Rc::new(Operation {
+            name: "Scan".to_string(),
+            args: None,
+            records_produced: Some(100),
+            execution_time: None,
+            children: vec![],
+            depth: 0,
+        });
+
+        let op2 = Rc::new(Operation {
+            name: "Filter".to_string(),
+            args: None,
+            records_produced: Some(50),
+            execution_time: None,
+            children: vec![],
+            depth: 1,
+        });
+
+        let mut operations = HashMap::new();
+        operations.insert("Scan".to_string(), vec![op1.clone()]);
+        operations.insert("Filter".to_string(), vec![op2.clone()]);
+
+        let plan = ExecutionPlan {
+            string_representation: "Complex Plan".to_string(),
+            plan: vec!["Scan".to_string(), "    Filter".to_string()],
+            operations,
+            operation_tree: op1,
+        };
+
+        assert_eq!(plan.operations().len(), 2);
+        assert!(plan.operations().contains_key("Scan"));
+        assert!(plan.operations().contains_key("Filter"));
+    }
+}

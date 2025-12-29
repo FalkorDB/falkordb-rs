@@ -5,6 +5,7 @@
 
 #![allow(private_interfaces)]
 #![allow(private_bounds)]
+#![allow(mismatched_lifetime_syntaxes)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![doc = include_str!("../README.md")]
@@ -12,6 +13,8 @@
 mod client;
 mod connection;
 mod connection_info;
+#[cfg(feature = "embedded")]
+mod embedded;
 mod error;
 mod graph;
 mod graph_schema;
@@ -50,6 +53,9 @@ pub use value::{
 pub use client::asynchronous::FalkorAsyncClient;
 #[cfg(feature = "tokio")]
 pub use graph::asynchronous::AsyncGraph;
+
+#[cfg(feature = "embedded")]
+pub use embedded::{EmbeddedConfig, EmbeddedServer};
 
 #[cfg(test)]
 pub(crate) mod test_utils {

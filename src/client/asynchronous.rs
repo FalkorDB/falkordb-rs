@@ -320,13 +320,13 @@ impl FalkorAsyncClient {
         if with_code {
             params.push("WITHCODE");
         }
-        
+
         let params_slice = if params.is_empty() {
             None
         } else {
             Some(params.as_slice())
         };
-        
+
         self.borrow_connection()
             .await?
             .execute_command(None, "GRAPH.UDF", Some("LIST"), params_slice)
@@ -359,7 +359,10 @@ impl FalkorAsyncClient {
         feature = "tracing",
         tracing::instrument(name = "Delete UDF Library", skip_all, level = "info")
     )]
-    pub async fn udf_delete(&self, lib: &str) -> FalkorResult<redis::Value> {
+    pub async fn udf_delete(
+        &self,
+        lib: &str,
+    ) -> FalkorResult<redis::Value> {
         self.borrow_connection()
             .await?
             .execute_command(None, "GRAPH.UDF", Some("DELETE"), Some(&[lib]))
@@ -566,7 +569,10 @@ redis.registerFunction('my_func', function(a, b) {
 
         // List specific library with code
         let list_with_code = client.udf_list(Some("mylib_async"), true).await;
-        assert!(list_with_code.is_ok(), "Failed to list UDF library with code");
+        assert!(
+            list_with_code.is_ok(),
+            "Failed to list UDF library with code"
+        );
 
         // Delete the UDF library
         let delete_result = client.udf_delete("mylib_async").await;
@@ -574,7 +580,10 @@ redis.registerFunction('my_func', function(a, b) {
 
         // Verify library was deleted
         let list_after_delete = client.udf_list(None, false).await;
-        assert!(list_after_delete.is_ok(), "Failed to list UDF libraries after delete");
+        assert!(
+            list_after_delete.is_ok(),
+            "Failed to list UDF libraries after delete"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -602,7 +611,9 @@ redis.registerFunction('func1', function(x) {
 "#;
 
         // Replace the library
-        let replace_result = client.udf_load("replacelib_async", updated_script, true).await;
+        let replace_result = client
+            .udf_load("replacelib_async", updated_script, true)
+            .await;
         assert!(replace_result.is_ok(), "Failed to replace UDF library");
 
         // Clean up
@@ -630,6 +641,9 @@ redis.registerFunction('test_func', function() {
 
         // Verify all libraries were flushed
         let list_after_flush = client.udf_list(None, false).await;
-        assert!(list_after_flush.is_ok(), "Failed to list UDF libraries after flush");
+        assert!(
+            list_after_flush.is_ok(),
+            "Failed to list UDF libraries after flush"
+        );
     }
 }

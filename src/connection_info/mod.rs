@@ -5,12 +5,18 @@
 
 use crate::{FalkorDBError, FalkorResult};
 
+#[cfg(feature = "embedded")]
+use crate::embedded::EmbeddedConfig;
+
 /// An agnostic container which allows maintaining of various connection details.
 /// The different enum variants are enabled based on compilation features
 #[derive(Clone, Debug)]
 pub enum FalkorConnectionInfo {
     /// A Redis database connection
     Redis(redis::ConnectionInfo),
+    /// An embedded FalkorDB server (requires the "embedded" feature)
+    #[cfg(feature = "embedded")]
+    Embedded(EmbeddedConfig),
 }
 
 impl FalkorConnectionInfo {
@@ -33,6 +39,8 @@ impl FalkorConnectionInfo {
     pub fn address(&self) -> String {
         match self {
             FalkorConnectionInfo::Redis(redis_info) => redis_info.addr.to_string(),
+            #[cfg(feature = "embedded")]
+            FalkorConnectionInfo::Embedded(_) => "embedded".to_string(),
         }
     }
 }
@@ -41,7 +49,7 @@ impl TryFrom<&str> for FalkorConnectionInfo {
     type Error = FalkorDBError;
 
     fn try_from(value: &str) -> FalkorResult<Self> {
-        let (url, url_schema) = regex::Regex::new(r"^(?P<schema>[a-zA-Z][a-zA-Z0-9+\-.]*):")
+        let (url, url_schema) = regex::Regex::new(r"^(?P<schema>[a-zA-Z][a-zA-Z0-9+\-.]*)://")
             .map_err(|err| FalkorDBError::ParsingError(format!("Error constructing regex: {err}")))?
             .captures(value)
             .and_then(|cap| cap.get(1))
@@ -83,10 +91,15 @@ mod tests {
 
     #[test]
     fn test_redis_fallback_provider() {
-        let FalkorConnectionInfo::Redis(redis) =
+        let result =
             FalkorConnectionInfo::fallback_provider("redis://127.0.0.1:6379".to_string()).unwrap();
-
-        assert_eq!(redis.addr.to_string(), "127.0.0.1:6379".to_string());
+        match result {
+            FalkorConnectionInfo::Redis(redis) => {
+                assert_eq!(redis.addr.to_string(), "127.0.0.1:6379".to_string());
+            }
+            #[cfg(feature = "embedded")]
+            _ => panic!("Expected Redis connection info"),
+        }
     }
 
     #[test]
@@ -101,8 +114,13 @@ mod tests {
             mem::discriminant(&FalkorConnectionInfo::Redis(raw_redis_conn.clone()))
         );
 
-        let FalkorConnectionInfo::Redis(conn) = redis_conn;
-        assert_eq!(conn.addr, raw_redis_conn.addr);
+        match redis_conn {
+            FalkorConnectionInfo::Redis(conn) => {
+                assert_eq!(conn.addr, raw_redis_conn.addr);
+            }
+            #[cfg(feature = "embedded")]
+            _ => panic!("Expected Redis connection info"),
+        }
     }
 
     #[test]
@@ -140,5 +158,81 @@ mod tests {
     fn test_missing_scheme() {
         let result = FalkorConnectionInfo::try_from("127.0.0.1:6379");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "embedded")]
+    fn test_embedded_connection_info_address() {
+        use crate::EmbeddedConfig;
+        let config = EmbeddedConfig::default();
+        let conn_info = FalkorConnectionInfo::Embedded(config);
+        assert_eq!(conn_info.address(), "embedded");
+    }
+
+    #[test]
+    #[cfg(feature = "embedded")]
+    fn test_embedded_connection_info_clone() {
+        use crate::EmbeddedConfig;
+        use std::path::PathBuf;
+
+        let config = EmbeddedConfig {
+            redis_server_path: Some(PathBuf::from("/path/redis")),
+            falkordb_module_path: Some(PathBuf::from("/path/falkordb.so")),
+            ..Default::default()
+        };
+        let conn_info1 = FalkorConnectionInfo::Embedded(config);
+        let conn_info2 = conn_info1.clone();
+
+        // Both should have the same address
+        assert_eq!(conn_info1.address(), conn_info2.address());
+    }
+
+    #[test]
+    fn test_redis_connection_info_debug() {
+        let conn_info = FalkorConnectionInfo::try_from("redis://127.0.0.1:6379").unwrap();
+        let debug_str = format!("{:?}", conn_info);
+        assert!(debug_str.contains("Redis"));
+    }
+
+    #[test]
+    #[cfg(feature = "embedded")]
+    fn test_embedded_connection_info_debug() {
+        use crate::EmbeddedConfig;
+        let config = EmbeddedConfig::default();
+        let conn_info = FalkorConnectionInfo::Embedded(config);
+        let debug_str = format!("{:?}", conn_info);
+        assert!(debug_str.contains("Embedded"));
+    }
+
+    #[test]
+    fn test_falkor_scheme_with_port() {
+        let result = FalkorConnectionInfo::try_from("falkor://192.168.1.1:7000");
+        assert!(result.is_ok());
+        if let Ok(FalkorConnectionInfo::Redis(info)) = result {
+            assert_eq!(info.addr.to_string(), "192.168.1.1:7000");
+        }
+    }
+
+    #[test]
+    #[cfg(any(
+        feature = "native-tls",
+        feature = "rustls",
+        feature = "tokio-native-tls",
+        feature = "tokio-rustls"
+    ))]
+    fn test_falkors_scheme() {
+        let result = FalkorConnectionInfo::try_from("falkors://secure.example.com:6379");
+        assert!(result.is_ok());
+        // Should be converted to rediss://
+    }
+
+    #[test]
+    fn test_from_tuple_different_ports() {
+        let result1 = FalkorConnectionInfo::try_from(("localhost", 6379));
+        let result2 = FalkorConnectionInfo::try_from(("localhost", 7000));
+
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+        assert_ne!(result1.unwrap().address(), result2.unwrap().address());
     }
 }

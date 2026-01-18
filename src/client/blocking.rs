@@ -235,6 +235,101 @@ impl FalkorSyncClient {
             .as_inner()?
             .get_redis_info(section)
     }
+
+    /// Load a User Defined Function (UDF) library.
+    ///
+    /// # Arguments
+    /// * `name`: The name of the library to load.
+    /// * `script`: The UDF script contents.
+    /// * `replace`: If true, replace an existing library with the same name.
+    ///
+    /// # Returns
+    /// A [`redis::Value`] indicating the result of the operation.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Load UDF Library", skip_all, level = "info")
+    )]
+    pub fn udf_load(
+        &self,
+        name: &str,
+        script: &str,
+        replace: bool,
+    ) -> FalkorResult<redis::Value> {
+        let params = if replace {
+            vec!["REPLACE", name, script]
+        } else {
+            vec![name, script]
+        };
+        self.borrow_connection()?
+            .execute_command(None, "GRAPH.UDF", Some("LOAD"), Some(&params))
+    }
+
+    /// List User Defined Function (UDF) libraries.
+    ///
+    /// # Arguments
+    /// * `lib`: If provided, filter the list to this specific library.
+    /// * `with_code`: If true, include the library source code in the result.
+    ///
+    /// # Returns
+    /// A [`redis::Value`] containing the list of UDF libraries and their metadata.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "List UDF Libraries", skip_all, level = "info")
+    )]
+    pub fn udf_list(
+        &self,
+        lib: Option<&str>,
+        with_code: bool,
+    ) -> FalkorResult<redis::Value> {
+        let mut params = Vec::new();
+        if let Some(library) = lib {
+            params.push(library);
+        }
+        if with_code {
+            params.push("WITHCODE");
+        }
+
+        let params_slice = if params.is_empty() {
+            None
+        } else {
+            Some(params.as_slice())
+        };
+
+        self.borrow_connection()?
+            .execute_command(None, "GRAPH.UDF", Some("LIST"), params_slice)
+    }
+
+    /// Flush (remove) all User Defined Function (UDF) libraries.
+    ///
+    /// # Returns
+    /// A [`redis::Value`] indicating the result of the operation.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Flush UDF Libraries", skip_all, level = "info")
+    )]
+    pub fn udf_flush(&self) -> FalkorResult<redis::Value> {
+        self.borrow_connection()?
+            .execute_command(None, "GRAPH.UDF", Some("FLUSH"), None)
+    }
+
+    /// Delete a User Defined Function (UDF) library.
+    ///
+    /// # Arguments
+    /// * `lib`: The name of the library to delete.
+    ///
+    /// # Returns
+    /// A [`redis::Value`] indicating the result of the operation.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Delete UDF Library", skip_all, level = "info")
+    )]
+    pub fn udf_delete(
+        &self,
+        lib: &str,
+    ) -> FalkorResult<redis::Value> {
+        self.borrow_connection()?
+            .execute_command(None, "GRAPH.UDF", Some("DELETE"), Some(&[lib]))
+    }
 }
 
 #[cfg(test)]
@@ -341,7 +436,7 @@ mod tests {
             .query("MATCH (p:Document) RETURN p")
             .execute()
             .expect("Could not get document");
-        while let Some(falkor_value) = res.data.next() {
+        for falkor_value in res.data.by_ref() {
             // iterate on a node value
             for value in falkor_value {
                 if let Node(node) = value {
@@ -474,5 +569,104 @@ mod tests {
         client
             .config_set("DELTA_MAX_PENDING_CHANGES", current_val)
             .ok();
+    }
+
+    #[test]
+    fn test_udf_operations() {
+        let client = create_test_client();
+
+        // Test UDF load
+        let script = r#"
+#!js api_version=1.0 name=mylib
+
+redis.registerFunction('my_func', function(a, b) {
+    return a + b;
+});
+"#;
+
+        // Load a UDF library
+        let result = client.udf_load("mylib", script, false);
+        assert!(result.is_ok(), "Failed to load UDF library: {:?}", result);
+
+        // List UDF libraries
+        let list_result = client.udf_list(None, false);
+        assert!(list_result.is_ok(), "Failed to list UDF libraries");
+
+        // List specific library with code
+        let list_with_code = client.udf_list(Some("mylib"), true);
+        assert!(
+            list_with_code.is_ok(),
+            "Failed to list UDF library with code"
+        );
+
+        // Delete the UDF library
+        let delete_result = client.udf_delete("mylib");
+        assert!(delete_result.is_ok(), "Failed to delete UDF library");
+
+        // Verify library was deleted
+        let list_after_delete = client.udf_list(None, false);
+        assert!(
+            list_after_delete.is_ok(),
+            "Failed to list UDF libraries after delete"
+        );
+    }
+
+    #[test]
+    fn test_udf_load_replace() {
+        let client = create_test_client();
+
+        let script = r#"
+#!js api_version=1.0 name=replacelib
+
+redis.registerFunction('func1', function(x) {
+    return x * 2;
+});
+"#;
+
+        // Load a UDF library
+        let result = client.udf_load("replacelib", script, false);
+        assert!(result.is_ok(), "Failed to load UDF library");
+
+        let updated_script = r#"
+#!js api_version=1.0 name=replacelib
+
+redis.registerFunction('func1', function(x) {
+    return x * 3;
+});
+"#;
+
+        // Replace the library
+        let replace_result = client.udf_load("replacelib", updated_script, true);
+        assert!(replace_result.is_ok(), "Failed to replace UDF library");
+
+        // Clean up
+        client.udf_delete("replacelib").ok();
+    }
+
+    #[test]
+    fn test_udf_flush() {
+        let client = create_test_client();
+
+        let script = r#"
+#!js api_version=1.0 name=flushlib
+
+redis.registerFunction('test_func', function() {
+    return 42;
+});
+"#;
+
+        // Load a UDF library
+        client.udf_load("flushlib", script, false).ok();
+
+        // Flush all UDF libraries
+        let flush_result = client.udf_flush();
+        assert!(flush_result.is_ok(), "Failed to flush UDF libraries");
+
+        // Verify all libraries were flushed
+        let list_after_flush = client.udf_list(None, false);
+        assert!(
+            list_after_flush.is_ok(),
+            "Failed to list UDF libraries after flush"
+        );
     }
 }

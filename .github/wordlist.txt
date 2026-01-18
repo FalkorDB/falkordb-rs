@@ -58,3 +58,6 @@ println
 config
 dir
 tmp
+UDF
+txt
+wordlist

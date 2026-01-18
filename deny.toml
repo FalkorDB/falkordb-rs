@@ -4,7 +4,7 @@
 multiple-versions = "deny"
 skip = [
     "wasi", 
-    "getrandom",
+    "socket2",
     "windows-sys", 
     "core-foundation", 
     "security-framework", 
@@ -24,9 +24,6 @@ unknown-registry = "deny"
 unknown-git = "deny"
 
 [licenses]
-exceptions = [
-    { name = "ring", allow = ["LicenseRef-ring"] } # ring uses a specific BoringSSL license that does not match the standard text so requires allowing the specific hash
-]
 unused-allowed-license = "allow"
 confidence-threshold = 0.93
 allow = [
@@ -37,12 +34,4 @@ allow = [
     "MIT",
     "ISC",
     "Unicode-3.0",
-]
-
-
-[[licenses.clarify]]
-name = "ring"
-expression = "LicenseRef-ring"
-license-files = [
-    { path = "LICENSE", hash = 0xbd0eed23 },
 ]

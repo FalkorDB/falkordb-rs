@@ -69,15 +69,10 @@ impl<const R: char> FalkorClientBuilder<R> {
 
             // Create a Redis client that connects to the embedded server's Unix socket
             let socket_path = embedded_server.socket_path();
-            let redis_connection_info = redis::ConnectionInfo {
-                addr: redis::ConnectionAddr::Unix(socket_path.to_path_buf()),
-                redis: redis::RedisConnectionInfo {
-                    db: 0,
-                    username: None,
-                    password: None,
-                    protocol: redis::ProtocolVersion::RESP2,
-                },
-            };
+            let redis_url = format!("unix://{}", socket_path.display());
+            let redis_connection_info: redis::ConnectionInfo =
+                redis::IntoConnectionInfo::into_connection_info(redis_url.as_str())
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
 
             let client = redis::Client::open(redis_connection_info.clone())
                 .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;

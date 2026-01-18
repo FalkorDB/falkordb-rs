@@ -69,7 +69,7 @@ impl FalkorClientProvider {
             ),
             FalkorClientProvider::Redis { client, .. } => FalkorAsyncConnection::Redis(
                 client
-                    .get_multiplexed_tokio_connection()
+                    .get_multiplexed_async_connection()
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),

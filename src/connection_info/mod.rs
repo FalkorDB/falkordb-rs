@@ -105,10 +105,7 @@ mod tests {
     #[test]
     fn test_try_from_redis() {
         let res = FalkorConnectionInfo::try_from("redis://127.0.0.1:1234");
-        if let Err(ref e) = res {
-            eprintln!("Error parsing redis URL: {:?}", e);
-        }
-        assert!(res.is_ok(), "Failed to parse redis URL: {:?}", res);
+        assert!(res.is_ok(), "Failed to parse redis URL");
 
         let redis_conn = res.unwrap();
         let raw_redis_conn = redis::ConnectionInfo::from_str("redis://127.0.0.1:1234").unwrap();

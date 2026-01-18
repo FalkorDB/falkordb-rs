@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.2.0...v0.2.1) - 2026-01-18
+
+### Other
+
+- Update wordlist.txt
+- release v0.2.0 ([#112](https://github.com/FalkorDB/falkordb-rs/pull/112))
+
 ## [0.2.0](https://github.com/FalkorDB/falkordb-rs/releases/tag/v0.2.0) - 2026-01-18
 
 ### Other

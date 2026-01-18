@@ -120,21 +120,17 @@ impl FalkorClientProvider {
                 vec![connection_info.to_owned()],
                 name.to_string(),
                 Some({
-                    let mut node_info = redis::sentinel::SentinelNodeConnectionInfo::default();
+                    let node_info = redis::sentinel::SentinelNodeConnectionInfo::default()
+                        .set_redis_connection_info(connection_info.redis_settings().clone());
                     match connection_info.addr() {
                         redis::ConnectionAddr::TcpTls { insecure: true, .. } => {
-                            node_info = node_info.set_tls_mode(redis::TlsMode::Insecure);
+                            node_info.set_tls_mode(redis::TlsMode::Insecure)
                         }
                         redis::ConnectionAddr::TcpTls {
                             insecure: false, ..
-                        } => {
-                            node_info = node_info.set_tls_mode(redis::TlsMode::Secure);
-                        }
-                        _ => {}
+                        } => node_info.set_tls_mode(redis::TlsMode::Secure),
+                        _ => node_info,
                     }
-                    node_info = node_info
-                        .set_redis_connection_info(connection_info.redis_settings().clone());
-                    node_info
                 }),
                 redis::sentinel::SentinelServerType::Master,
             )
@@ -223,8 +219,7 @@ mod tests {
     fn test_falkor_client_provider_set_sentinel() {
         let mut provider = FalkorClientProvider::None;
         // Just test that set_sentinel doesn't panic with None provider
-        let connection_info =
-            redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
         let sentinel = redis::sentinel::SentinelClient::build(
             vec![connection_info],
             "master".to_string(),

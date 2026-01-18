@@ -104,8 +104,9 @@ mod tests {
 
     #[test]
     fn test_try_from_redis() {
+        // Use 127.0.0.1 instead of 0.0.0.0: redis-rs 1.0.2 rejects wildcard addresses for security
         let res = FalkorConnectionInfo::try_from("redis://127.0.0.1:1234");
-        assert!(res.is_ok(), "Failed to parse redis URL");
+        assert!(res.is_ok(), "Failed to parse redis URL: {:?}", res.err());
 
         let redis_conn = res.unwrap();
         let raw_redis_conn = redis::ConnectionInfo::from_str("redis://127.0.0.1:1234").unwrap();

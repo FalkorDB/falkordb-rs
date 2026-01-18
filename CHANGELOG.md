@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/FalkorDB/falkordb-rs/releases/tag/v0.2.0) - 2026-01-18
+
+### Other
+
+- update cargo lock ([#154](https://github.com/FalkorDB/falkordb-rs/pull/154))
+- Expose UDF API for loading, listing, and managing user-defined functions ([#152](https://github.com/FalkorDB/falkordb-rs/pull/152))
+- *(deps)* bump strum from 0.27.1 to 0.27.2
+- Merge branch 'main' into dependabot/cargo/main/regex-1.12.2
+- *(deps)* bump which from 7.0.3 to 8.0.0
+- Merge branch 'main' into dependabot/cargo/main/thiserror-2.0.17
+- Merge branch 'main' into dependabot/github_actions/main/actions/checkout-6
+- *(deps)* bump actions/checkout from 4 to 6
+- Fix cargo-deny action to skip advisory database check ([#146](https://github.com/FalkorDB/falkordb-rs/pull/146))
+- Add support for embedded FalkorDB server with comprehensive test coverage ([#135](https://github.com/FalkorDB/falkordb-rs/pull/135))
+- Update wordlist.txt
+- Create spellcheck.yml ([#107](https://github.com/FalkorDB/falkordb-rs/pull/107))
+- clean deny errors
+- update deps
+
 ## [0.1.11](https://github.com/FalkorDB/falkordb-rs/compare/v0.1.10...v0.1.11) - 2025-02-13
 
 ### Fixed

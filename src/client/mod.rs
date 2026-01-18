@@ -69,7 +69,7 @@ impl FalkorClientProvider {
             ),
             FalkorClientProvider::Redis { client, .. } => FalkorAsyncConnection::Redis(
                 client
-                    .get_multiplexed_tokio_connection()
+                    .get_multiplexed_async_connection()
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
@@ -119,17 +119,18 @@ impl FalkorClientProvider {
             redis::sentinel::SentinelClient::build(
                 vec![connection_info.to_owned()],
                 name.to_string(),
-                Some(redis::sentinel::SentinelNodeConnectionInfo {
-                    tls_mode: match connection_info.addr {
+                Some({
+                    let node_info = redis::sentinel::SentinelNodeConnectionInfo::default()
+                        .set_redis_connection_info(connection_info.redis_settings().clone());
+                    match connection_info.addr() {
                         redis::ConnectionAddr::TcpTls { insecure: true, .. } => {
-                            Some(redis::TlsMode::Insecure)
+                            node_info.set_tls_mode(redis::TlsMode::Insecure)
                         }
                         redis::ConnectionAddr::TcpTls {
                             insecure: false, ..
-                        } => Some(redis::TlsMode::Secure),
-                        _ => None,
-                    },
-                    redis_connection_info: Some(connection_info.redis.clone()),
+                        } => node_info.set_tls_mode(redis::TlsMode::Secure),
+                        _ => node_info,
+                    }
                 }),
                 redis::sentinel::SentinelServerType::Master,
             )
@@ -187,6 +188,7 @@ pub(crate) trait ProvidesSyncConnections: Sync + Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_falkor_client_provider_none_connection() {
@@ -217,10 +219,7 @@ mod tests {
     fn test_falkor_client_provider_set_sentinel() {
         let mut provider = FalkorClientProvider::None;
         // Just test that set_sentinel doesn't panic with None provider
-        let connection_info = redis::ConnectionInfo {
-            addr: redis::ConnectionAddr::Tcp("127.0.0.1".to_string(), 26379),
-            redis: redis::RedisConnectionInfo::default(),
-        };
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
         let sentinel = redis::sentinel::SentinelClient::build(
             vec![connection_info],
             "master".to_string(),
@@ -234,10 +233,7 @@ mod tests {
     #[test]
     fn test_get_sentinel_client_common_invalid_count() {
         let provider = FalkorClientProvider::None;
-        let connection_info = redis::ConnectionInfo {
-            addr: redis::ConnectionAddr::Tcp("127.0.0.1".to_string(), 6379),
-            redis: redis::RedisConnectionInfo::default(),
-        };
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:6379").unwrap();
 
         // Test with empty vector
         let result = provider.get_sentinel_client_common(&connection_info, vec![]);

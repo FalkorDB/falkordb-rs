@@ -58,3 +58,15 @@ println
 config
 dir
 tmp
+FalkorDB
+tokio
+no_run
+UDF
+thiserror
+Falkor
+doctests
+falkordb
+println
+nonblocking
+Rustls
+rustls

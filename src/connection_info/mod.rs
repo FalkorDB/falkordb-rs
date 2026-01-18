@@ -38,7 +38,7 @@ impl FalkorConnectionInfo {
     /// A [`String`] representation of the address and port, or a UNIX socket path
     pub fn address(&self) -> String {
         match self {
-            FalkorConnectionInfo::Redis(redis_info) => redis_info.addr.to_string(),
+            FalkorConnectionInfo::Redis(redis_info) => redis_info.addr().to_string(),
             #[cfg(feature = "embedded")]
             FalkorConnectionInfo::Embedded(_) => "embedded".to_string(),
         }
@@ -95,7 +95,7 @@ mod tests {
             FalkorConnectionInfo::fallback_provider("redis://127.0.0.1:6379".to_string()).unwrap();
         match result {
             FalkorConnectionInfo::Redis(redis) => {
-                assert_eq!(redis.addr.to_string(), "127.0.0.1:6379".to_string());
+                assert_eq!(redis.addr().to_string(), "127.0.0.1:6379".to_string());
             }
             #[cfg(feature = "embedded")]
             _ => panic!("Expected Redis connection info"),
@@ -104,11 +104,14 @@ mod tests {
 
     #[test]
     fn test_try_from_redis() {
-        let res = FalkorConnectionInfo::try_from("redis://0.0.0.0:1234");
-        assert!(res.is_ok());
+        let res = FalkorConnectionInfo::try_from("redis://127.0.0.1:1234");
+        if let Err(ref e) = res {
+            eprintln!("Error parsing redis URL: {:?}", e);
+        }
+        assert!(res.is_ok(), "Failed to parse redis URL: {:?}", res);
 
         let redis_conn = res.unwrap();
-        let raw_redis_conn = redis::ConnectionInfo::from_str("redis://0.0.0.0:1234").unwrap();
+        let raw_redis_conn = redis::ConnectionInfo::from_str("redis://127.0.0.1:1234").unwrap();
         assert_eq!(
             mem::discriminant(&redis_conn),
             mem::discriminant(&FalkorConnectionInfo::Redis(raw_redis_conn.clone()))
@@ -116,7 +119,7 @@ mod tests {
 
         match redis_conn {
             FalkorConnectionInfo::Redis(conn) => {
-                assert_eq!(conn.addr, raw_redis_conn.addr);
+                assert_eq!(conn.addr(), raw_redis_conn.addr());
             }
             #[cfg(feature = "embedded")]
             _ => panic!("Expected Redis connection info"),
@@ -209,7 +212,7 @@ mod tests {
         let result = FalkorConnectionInfo::try_from("falkor://192.168.1.1:7000");
         assert!(result.is_ok());
         if let Ok(FalkorConnectionInfo::Redis(info)) = result {
-            assert_eq!(info.addr.to_string(), "192.168.1.1:7000");
+            assert_eq!(info.addr().to_string(), "192.168.1.1:7000");
         }
     }
 

@@ -119,8 +119,9 @@ impl FalkorClientProvider {
             redis::sentinel::SentinelClient::build(
                 vec![connection_info.to_owned()],
                 name.to_string(),
-                Some(redis::sentinel::SentinelNodeConnectionInfo {
-                    tls_mode: match connection_info.addr {
+                Some({
+                    let mut node_info = redis::sentinel::SentinelNodeConnectionInfo::default();
+                    if let Some(tls) = match connection_info.addr() {
                         redis::ConnectionAddr::TcpTls { insecure: true, .. } => {
                             Some(redis::TlsMode::Insecure)
                         }
@@ -128,8 +129,11 @@ impl FalkorClientProvider {
                             insecure: false, ..
                         } => Some(redis::TlsMode::Secure),
                         _ => None,
-                    },
-                    redis_connection_info: Some(connection_info.redis.clone()),
+                    } {
+                        node_info = node_info.set_tls_mode(tls);
+                    }
+                    node_info = node_info.set_redis_connection_info(connection_info.redis_settings().clone());
+                    node_info
                 }),
                 redis::sentinel::SentinelServerType::Master,
             )
@@ -217,10 +221,7 @@ mod tests {
     fn test_falkor_client_provider_set_sentinel() {
         let mut provider = FalkorClientProvider::None;
         // Just test that set_sentinel doesn't panic with None provider
-        let connection_info = redis::ConnectionInfo {
-            addr: redis::ConnectionAddr::Tcp("127.0.0.1".to_string(), 26379),
-            redis: redis::RedisConnectionInfo::default(),
-        };
+        let connection_info: redis::ConnectionInfo = "redis://127.0.0.1:26379".parse().unwrap();
         let sentinel = redis::sentinel::SentinelClient::build(
             vec![connection_info],
             "master".to_string(),
@@ -234,10 +235,7 @@ mod tests {
     #[test]
     fn test_get_sentinel_client_common_invalid_count() {
         let provider = FalkorClientProvider::None;
-        let connection_info = redis::ConnectionInfo {
-            addr: redis::ConnectionAddr::Tcp("127.0.0.1".to_string(), 6379),
-            redis: redis::RedisConnectionInfo::default(),
-        };
+        let connection_info: redis::ConnectionInfo = "redis://127.0.0.1:6379".parse().unwrap();
 
         // Test with empty vector
         let result = provider.get_sentinel_client_common(&connection_info, vec![]);

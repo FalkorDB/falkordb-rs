@@ -72,7 +72,7 @@ impl<const R: char> FalkorClientBuilder<R> {
             let socket_path = embedded_server.socket_path();
             let redis_connection_info = redis::ConnectionAddr::Unix(socket_path.to_path_buf())
                 .into_connection_info()
-                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+                .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
 
             let client = redis::Client::open(redis_connection_info.clone())
                 .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;

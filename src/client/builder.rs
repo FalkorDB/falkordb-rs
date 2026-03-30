@@ -7,6 +7,7 @@ use crate::{
     client::FalkorClientProvider, FalkorConnectionInfo, FalkorDBError, FalkorResult,
     FalkorSyncClient,
 };
+use redis::IntoConnectionInfo;
 use std::num::NonZeroU8;
 
 #[cfg(feature = "tokio")]
@@ -69,15 +70,9 @@ impl<const R: char> FalkorClientBuilder<R> {
 
             // Create a Redis client that connects to the embedded server's Unix socket
             let socket_path = embedded_server.socket_path();
-            let redis_connection_info = redis::ConnectionInfo {
-                addr: redis::ConnectionAddr::Unix(socket_path.to_path_buf()),
-                redis: redis::RedisConnectionInfo {
-                    db: 0,
-                    username: None,
-                    password: None,
-                    protocol: redis::ProtocolVersion::RESP2,
-                },
-            };
+            let redis_connection_info = redis::ConnectionAddr::Unix(socket_path.to_path_buf())
+                .into_connection_info()
+                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
 
             let client = redis::Client::open(redis_connection_info.clone())
                 .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;

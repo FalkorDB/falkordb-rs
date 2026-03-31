@@ -3,6 +3,7 @@
  * Licensed under the MIT License.
  */
 
+#![recursion_limit = "256"]
 #![allow(private_interfaces)]
 #![allow(private_bounds)]
 #![allow(mismatched_lifetime_syntaxes)]

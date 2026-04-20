@@ -67,3 +67,5 @@ keepalive
 TcpKeepalive
 TcpSettings
 nodelay
+NATs
+stateful

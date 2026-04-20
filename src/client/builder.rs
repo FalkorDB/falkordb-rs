@@ -57,8 +57,12 @@ impl<const R: char> FalkorClientBuilder<R> {
         }
     }
 
-    /// Configure TCP-level socket settings for every connection opened by this
-    /// client (keepalive, `TCP_NODELAY`, `TCP_USER_TIMEOUT` on Linux).
+    /// Configure TCP-level socket settings for direct Redis TCP connections
+    /// opened by this client (keepalive, `TCP_NODELAY`, `TCP_USER_TIMEOUT` on
+    /// Linux).
+    ///
+    /// Unix-domain socket / embedded connections ignore these settings, and the
+    /// Sentinel connection path is not affected by this option.
     ///
     /// Useful for long-lived clients sitting behind NATs, stateful firewalls,
     /// or idle-timeout-enforcing proxies that silently drop inactive TCP
@@ -82,7 +86,9 @@ impl<const R: char> FalkorClientBuilder<R> {
     }
 
     /// Convenience: enable TCP keepalive probes with the given idle time.
-    /// Sends keepalive probes after `idle` of inactivity.
+    /// Sends keepalive probes after `idle` of inactivity on direct Redis TCP
+    /// connections. See [`with_tcp_settings`](Self::with_tcp_settings) for
+    /// scope limitations.
     ///
     /// Equivalent to:
     /// ```ignore
@@ -267,27 +273,28 @@ mod tests {
 
     #[test]
     fn test_builder_with_tcp_keepalive() {
-        // Builder should accept the convenience helper and succeed even when
-        // no server is actually listening (the TCP settings are applied to
-        // every future connection — they don't trigger a probe at build time).
-        let result = FalkorClientBuilder::new()
-            .with_tcp_keepalive(Duration::from_secs(30))
-            .build();
-        assert!(result.is_ok() || result.is_err());
+        let builder = FalkorClientBuilder::new().with_tcp_keepalive(Duration::from_secs(30));
+        let settings = builder
+            .tcp_settings
+            .as_ref()
+            .expect("tcp_settings should be set after with_tcp_keepalive");
+        assert!(settings.keepalive().is_some());
     }
 
     #[test]
     fn test_builder_with_tcp_settings() {
-        // Same for the lower-level API.
         let settings = redis::io::tcp::TcpSettings::default()
             .set_nodelay(true)
             .set_keepalive(
                 redis::io::tcp::socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)),
             );
-        let result = FalkorClientBuilder::new()
-            .with_tcp_settings(settings)
-            .build();
-        assert!(result.is_ok() || result.is_err());
+        let builder = FalkorClientBuilder::new().with_tcp_settings(settings);
+        let applied = builder
+            .tcp_settings
+            .as_ref()
+            .expect("tcp_settings should be set after with_tcp_settings");
+        assert!(applied.nodelay());
+        assert!(applied.keepalive().is_some());
     }
 
     #[test]

@@ -140,6 +140,39 @@ falkordb = { version = "0.1.10", features = ["native-tls"] }
 falkordb = { version = "0.1.10", features = ["tokio-native-tls"] }
 ```
 
+### TCP Keepalive
+
+Long-lived clients behind NATs, stateful firewalls, or idle-timeout-enforcing
+proxies can silently lose their TCP sessions. The builder exposes TCP-level
+socket settings to prevent this:
+
+```rust,no_run
+use falkordb::FalkorClientBuilder;
+use std::time::Duration;
+
+// Convenience: just enable keepalive with a 30-second idle timeout
+let client = FalkorClientBuilder::new()
+    .with_tcp_keepalive(Duration::from_secs(30))
+    .build()
+    .expect("Failed to build client");
+
+// Or full control via redis::io::tcp::TcpSettings
+let settings = redis::io::tcp::TcpSettings::default()
+    .set_nodelay(true)
+    .set_keepalive(
+        redis::io::tcp::socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(60)),
+    );
+let client = FalkorClientBuilder::new()
+    .with_tcp_settings(settings)
+    .build()
+    .expect("Failed to build client");
+```
+
+> **Note:** TCP settings apply to direct Redis TCP connections only.
+> Unix-domain socket / embedded connections and the Sentinel connection path are
+> not affected.
+
 ### Tracing
 
 This crate fully supports instrumentation using the [`tracing`](https://docs.rs/tracing/latest/tracing/) crate, to use

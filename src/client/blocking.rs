@@ -138,7 +138,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    ///    The config key can also be "*", which will return ALL the configuration options.
+    ///   The config key can also be "*", which will return ALL the configuration options.
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
@@ -161,7 +161,7 @@ impl FalkorSyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    ///    The config key can also be "*", which will return ALL the configuration options.
+    ///   The config key can also be "*", which will return ALL the configuration options.
     /// * `value`: The new value to set, which is anything that can be converted into a [`ConfigValue`], namely string types and i64.
     #[cfg_attr(
         feature = "tracing",

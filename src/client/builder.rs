@@ -103,9 +103,8 @@ impl<const R: char> FalkorClientBuilder<R> {
         self,
         idle: Duration,
     ) -> Self {
-        let settings = redis::io::tcp::TcpSettings::default().set_keepalive(
-            redis::io::tcp::socket2::TcpKeepalive::new().with_time(idle),
-        );
+        let settings = redis::io::tcp::TcpSettings::default()
+            .set_keepalive(redis::io::tcp::socket2::TcpKeepalive::new().with_time(idle));
         self.with_tcp_settings(settings)
     }
 
@@ -285,7 +284,9 @@ mod tests {
             .set_keepalive(
                 redis::io::tcp::socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)),
             );
-        let result = FalkorClientBuilder::new().with_tcp_settings(settings).build();
+        let result = FalkorClientBuilder::new()
+            .with_tcp_settings(settings)
+            .build();
         assert!(result.is_ok() || result.is_err());
     }
 

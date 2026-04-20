@@ -61,3 +61,11 @@ tmp
 UDF
 txt
 wordlist
+tcp
+TCP
+keepalive
+TcpKeepalive
+TcpSettings
+nodelay
+NATs
+stateful

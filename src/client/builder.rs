@@ -9,6 +9,7 @@ use crate::{
 };
 use redis::IntoConnectionInfo;
 use std::num::NonZeroU8;
+use std::time::Duration;
 
 #[cfg(feature = "tokio")]
 use crate::FalkorAsyncClient;
@@ -17,6 +18,7 @@ use crate::FalkorAsyncClient;
 pub struct FalkorClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
     num_connections: NonZeroU8,
+    tcp_settings: Option<redis::io::tcp::TcpSettings>,
 }
 
 impl<const R: char> FalkorClientBuilder<R> {
@@ -55,8 +57,66 @@ impl<const R: char> FalkorClientBuilder<R> {
         }
     }
 
+    /// Configure TCP-level socket settings for direct Redis TCP connections
+    /// opened by this client (keepalive, `TCP_NODELAY`, `TCP_USER_TIMEOUT` on
+    /// Linux).
+    ///
+    /// Unix-domain socket / embedded connections ignore these settings, and the
+    /// Sentinel connection path is not affected by this option.
+    ///
+    /// Useful for long-lived clients sitting behind NATs, stateful firewalls,
+    /// or idle-timeout-enforcing proxies that silently drop inactive TCP
+    /// sessions.
+    ///
+    /// # Arguments
+    /// * `tcp_settings`: a [`redis::io::tcp::TcpSettings`] value — use
+    ///   `TcpSettings::default()` as the starting point and chain the
+    ///   `set_*` methods you need.
+    ///
+    /// # Returns
+    /// The consumed and modified self.
+    pub fn with_tcp_settings(
+        self,
+        tcp_settings: redis::io::tcp::TcpSettings,
+    ) -> Self {
+        Self {
+            tcp_settings: Some(tcp_settings),
+            ..self
+        }
+    }
+
+    /// Convenience: enable TCP keepalive probes with the given idle time.
+    /// Sends keepalive probes after `idle` of inactivity on direct Redis TCP
+    /// connections. See [`with_tcp_settings`](Self::with_tcp_settings) for
+    /// scope limitations.
+    ///
+    /// Equivalent to:
+    /// ```ignore
+    /// builder.with_tcp_settings(
+    ///     redis::io::tcp::TcpSettings::default()
+    ///         .set_keepalive(
+    ///             redis::io::tcp::socket2::TcpKeepalive::new().with_time(idle)
+    ///         )
+    /// )
+    /// ```
+    ///
+    /// # Arguments
+    /// * `idle`: connection idle time before the first keepalive probe is sent.
+    ///
+    /// # Returns
+    /// The consumed and modified self.
+    pub fn with_tcp_keepalive(
+        self,
+        idle: Duration,
+    ) -> Self {
+        let settings = redis::io::tcp::TcpSettings::default()
+            .set_keepalive(redis::io::tcp::socket2::TcpKeepalive::new().with_time(idle));
+        self.with_tcp_settings(settings)
+    }
+
     fn get_client<E: ToString, T: TryInto<FalkorConnectionInfo, Error = E>>(
-        connection_info: T
+        connection_info: T,
+        tcp_settings: Option<&redis::io::tcp::TcpSettings>,
     ) -> FalkorResult<(FalkorClientProvider, FalkorConnectionInfo)> {
         let connection_info = connection_info
             .try_into()
@@ -89,13 +149,23 @@ impl<const R: char> FalkorClientBuilder<R> {
 
         Ok((
             match connection_info {
-                FalkorConnectionInfo::Redis(ref redis_info) => FalkorClientProvider::Redis {
-                    client: redis::Client::open(redis_info.clone())
-                        .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
-                    sentinel: None,
-                    #[cfg(feature = "embedded")]
-                    embedded_server: None,
-                },
+                FalkorConnectionInfo::Redis(ref redis_info) => {
+                    // In redis 1.0+, TCP settings live on ConnectionInfo
+                    // itself. Clone the info, apply the settings (if any),
+                    // then open the client from it.
+                    let mut cfg = redis_info.clone();
+                    if let Some(settings) = tcp_settings {
+                        cfg = cfg.set_tcp_settings(settings.clone());
+                    }
+                    let client = redis::Client::open(cfg)
+                        .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+                    FalkorClientProvider::Redis {
+                        client,
+                        sentinel: None,
+                        #[cfg(feature = "embedded")]
+                        embedded_server: None,
+                    }
+                }
                 #[cfg(feature = "embedded")]
                 FalkorConnectionInfo::Embedded(_) => unreachable!("Handled above"),
             },
@@ -114,6 +184,7 @@ impl FalkorClientBuilder<'S'> {
         FalkorClientBuilder {
             connection_info: None,
             num_connections: NonZeroU8::new(8).expect("Error creating perfectly valid u8"),
+            tcp_settings: None,
         }
     }
 
@@ -126,7 +197,8 @@ impl FalkorClientBuilder<'S'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        let (mut client, actual_connection_info) = Self::get_client(connection_info)?;
+        let (mut client, actual_connection_info) =
+            Self::get_client(connection_info, self.tcp_settings.as_ref())?;
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
@@ -148,6 +220,7 @@ impl FalkorClientBuilder<'A'> {
         FalkorClientBuilder {
             connection_info: None,
             num_connections: NonZeroU8::new(8).expect("Error creating perfectly valid u8"),
+            tcp_settings: None,
         }
     }
 
@@ -160,7 +233,8 @@ impl FalkorClientBuilder<'A'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        let (mut client, actual_connection_info) = Self::get_client(connection_info)?;
+        let (mut client, actual_connection_info) =
+            Self::get_client(connection_info, self.tcp_settings.as_ref())?;
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
@@ -195,6 +269,32 @@ mod tests {
         assert!(client.is_ok());
 
         assert_eq!(client.unwrap().connection_pool_size(), 16);
+    }
+
+    #[test]
+    fn test_builder_with_tcp_keepalive() {
+        let builder = FalkorClientBuilder::new().with_tcp_keepalive(Duration::from_secs(30));
+        let settings = builder
+            .tcp_settings
+            .as_ref()
+            .expect("tcp_settings should be set after with_tcp_keepalive");
+        assert!(settings.keepalive().is_some());
+    }
+
+    #[test]
+    fn test_builder_with_tcp_settings() {
+        let settings = redis::io::tcp::TcpSettings::default()
+            .set_nodelay(true)
+            .set_keepalive(
+                redis::io::tcp::socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)),
+            );
+        let builder = FalkorClientBuilder::new().with_tcp_settings(settings);
+        let applied = builder
+            .tcp_settings
+            .as_ref()
+            .expect("tcp_settings should be set after with_tcp_settings");
+        assert!(applied.nodelay());
+        assert!(applied.keepalive().is_some());
     }
 
     #[test]

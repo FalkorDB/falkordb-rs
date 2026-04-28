@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.2.1...v0.2.2) - 2026-04-28
+
+### Added
+
+- *(builder)* expose TCP keepalive / TcpSettings ([#189](https://github.com/FalkorDB/falkordb-rs/pull/189))
+
+### Other
+
+- *(deps)* bump the cargo group across 1 directory with 2 updates
+- *(deps)* combine all dependency updates ([#190](https://github.com/FalkorDB/falkordb-rs/pull/190))
+- *(workflows)* pin GitHub Actions dependencies to commit SHAs ([#175](https://github.com/FalkorDB/falkordb-rs/pull/175))
+- *(deps)* bump codecov/codecov-action from 5 to 6 ([#176](https://github.com/FalkorDB/falkordb-rs/pull/176))
+- *(deps)* consolidate all dependency updates ([#177](https://github.com/FalkorDB/falkordb-rs/pull/177))
+
 ## [0.2.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.2.0...v0.2.1) - 2026-01-18
 
 ### Other

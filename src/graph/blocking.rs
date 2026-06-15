@@ -391,7 +391,7 @@ impl HasGraphSchema for SyncGraph {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_test_client, open_empty_test_graph},
+        test_utils::{create_test_client, open_empty_test_graph, retry_until},
         FalkorDBError, IndexType,
     };
 
@@ -411,7 +411,10 @@ mod tests {
             .expect("Could not create index");
         assert_eq!(indices.get_indices_created(), Some(1));
 
-        let indices = graph.inner.list_indices().expect("Could not list indices");
+        let indices = retry_until(
+            || graph.inner.list_indices().expect("Could not list indices"),
+            |indices| indices.data.len() == 1,
+        );
         assert_eq!(indices.data.len(), 1);
         assert_eq!(
             indices.data[0].field_types["Hello"],
@@ -506,10 +509,15 @@ mod tests {
             )
             .expect("Could not create constraint");
 
-        let res = graph
-            .inner
-            .list_constraints()
-            .expect("Could not list constraints");
+        let res = retry_until(
+            || {
+                graph
+                    .inner
+                    .list_constraints()
+                    .expect("Could not list constraints")
+            },
+            |res| res.data.len() == 1,
+        );
         assert_eq!(res.data.len(), 1);
     }
 

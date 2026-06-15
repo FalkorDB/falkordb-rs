@@ -121,4 +121,81 @@ pub(crate) mod test_utils {
             inner: client.select_graph(graph_name),
         }
     }
+
+    const RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+    /// FalkorDB builds indices and validates constraints asynchronously, so a freshly
+    /// created index/constraint may not be reported by the matching `list_*` call that
+    /// immediately follows creation, especially while the server is under load. Retry
+    /// `op` until `done` is satisfied or the timeout elapses, returning the last value.
+    pub(crate) fn retry_until<T>(
+        mut op: impl FnMut() -> T,
+        done: impl Fn(&T) -> bool,
+    ) -> T {
+        let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
+        loop {
+            let value = op();
+            if done(&value) || std::time::Instant::now() >= deadline {
+                return value;
+            }
+            std::thread::sleep(RETRY_INTERVAL);
+        }
+    }
+
+    /// Async counterpart of [`retry_until`]. Written with an explicit
+    /// `FnMut(&mut AsyncGraph) -> Pin<Box<dyn Future>>` bound (rather than an async
+    /// closure / `AsyncFnMut`) so it compiles on all stable toolchains.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn retry_until_async<T>(
+        graph: &mut AsyncGraph,
+        mut op: impl for<'a> FnMut(
+            &'a mut AsyncGraph,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>,
+        done: impl Fn(&T) -> bool,
+    ) -> T {
+        let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
+        loop {
+            let value = op(graph).await;
+            if done(&value) || std::time::Instant::now() >= deadline {
+                return value;
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::test_utils::retry_until;
+    use std::cell::Cell;
+
+    #[test]
+    fn retry_until_returns_immediately_when_already_done() {
+        let calls = Cell::new(0);
+        let value = retry_until(
+            || {
+                calls.set(calls.get() + 1);
+                calls.get()
+            },
+            |v| *v == 1,
+        );
+        assert_eq!(value, 1);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn retry_until_polls_until_condition_is_met() {
+        let calls = Cell::new(0);
+        let value = retry_until(
+            || {
+                calls.set(calls.get() + 1);
+                calls.get()
+            },
+            |v| *v == 3,
+        );
+        assert_eq!(value, 3);
+        assert_eq!(calls.get(), 3);
+    }
 }

@@ -391,44 +391,9 @@ impl HasGraphSchema for SyncGraph {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_test_client, open_empty_test_graph},
+        test_utils::{create_test_client, open_empty_test_graph, retry_until},
         FalkorDBError, IndexType,
     };
-
-    /// FalkorDB builds indices asynchronously, so a newly created index may not be
-    /// reported by `DB.INDEXES` immediately after `CREATE INDEX` returns, especially
-    /// when the server is under load. Poll until the expected count is observed.
-    fn wait_for_indices(
-        graph: &mut SyncGraph,
-        expected: usize,
-    ) -> crate::QueryResult<Vec<crate::FalkorIndex>> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let indices = graph.list_indices().expect("Could not list indices");
-            if indices.data.len() == expected || std::time::Instant::now() >= deadline {
-                return indices;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-
-    /// Constraints are likewise validated asynchronously; poll until the expected
-    /// count is reported.
-    fn wait_for_constraints(
-        graph: &mut SyncGraph,
-        expected: usize,
-    ) -> crate::QueryResult<Vec<crate::Constraint>> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let constraints = graph
-                .list_constraints()
-                .expect("Could not list constraints");
-            if constraints.data.len() == expected || std::time::Instant::now() >= deadline {
-                return constraints;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
 
     #[test]
     fn test_create_drop_index() {
@@ -446,7 +411,10 @@ mod tests {
             .expect("Could not create index");
         assert_eq!(indices.get_indices_created(), Some(1));
 
-        let indices = wait_for_indices(&mut graph.inner, 1);
+        let indices = retry_until(
+            || graph.inner.list_indices().expect("Could not list indices"),
+            |indices| indices.data.len() == 1,
+        );
         assert_eq!(indices.data.len(), 1);
         assert_eq!(
             indices.data[0].field_types["Hello"],
@@ -541,7 +509,15 @@ mod tests {
             )
             .expect("Could not create constraint");
 
-        let res = wait_for_constraints(&mut graph.inner, 1);
+        let res = retry_until(
+            || {
+                graph
+                    .inner
+                    .list_constraints()
+                    .expect("Could not list constraints")
+            },
+            |res| res.data.len() == 1,
+        );
         assert_eq!(res.data.len(), 1);
     }
 

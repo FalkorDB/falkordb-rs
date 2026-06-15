@@ -121,4 +121,41 @@ pub(crate) mod test_utils {
             inner: client.select_graph(graph_name),
         }
     }
+
+    const RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+    /// FalkorDB builds indices and validates constraints asynchronously, so a freshly
+    /// created index/constraint may not be reported by the matching `list_*` call that
+    /// immediately follows creation, especially while the server is under load. Retry
+    /// `op` until `done` is satisfied or the timeout elapses, returning the last value.
+    pub(crate) fn retry_until<T>(
+        mut op: impl FnMut() -> T,
+        done: impl Fn(&T) -> bool,
+    ) -> T {
+        let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
+        loop {
+            let value = op();
+            if done(&value) || std::time::Instant::now() >= deadline {
+                return value;
+            }
+            std::thread::sleep(RETRY_INTERVAL);
+        }
+    }
+
+    /// Async counterpart of [`retry_until`].
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn retry_until_async<T>(
+        mut op: impl AsyncFnMut() -> T,
+        done: impl Fn(&T) -> bool,
+    ) -> T {
+        let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
+        loop {
+            let value = op().await;
+            if done(&value) || std::time::Instant::now() >= deadline {
+                return value;
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+    }
 }

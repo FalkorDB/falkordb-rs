@@ -143,16 +143,37 @@ pub(crate) mod test_utils {
         }
     }
 
-    /// Async counterpart of [`retry_until`].
+    /// Async counterpart of [`retry_until`] for listing indices, written as a concrete
+    /// function (rather than a generic taking an async closure) to keep it compatible
+    /// with all stable toolchains.
     #[cfg(feature = "tokio")]
-    pub(crate) async fn retry_until_async<T>(
-        mut op: impl AsyncFnMut() -> T,
-        done: impl Fn(&T) -> bool,
-    ) -> T {
+    pub(crate) async fn retry_list_indices(
+        graph: &mut AsyncGraph,
+        expected: usize,
+    ) -> QueryResult<Vec<FalkorIndex>> {
         let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
         loop {
-            let value = op().await;
-            if done(&value) || std::time::Instant::now() >= deadline {
+            let value = graph.list_indices().await.expect("Could not list indices");
+            if value.data.len() == expected || std::time::Instant::now() >= deadline {
+                return value;
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+    }
+
+    /// Async counterpart of [`retry_until`] for listing constraints.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn retry_list_constraints(
+        graph: &mut AsyncGraph,
+        expected: usize,
+    ) -> QueryResult<Vec<Constraint>> {
+        let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
+        loop {
+            let value = graph
+                .list_constraints()
+                .await
+                .expect("Could not list constraints");
+            if value.data.len() == expected || std::time::Instant::now() >= deadline {
                 return value;
             }
             tokio::time::sleep(RETRY_INTERVAL).await;

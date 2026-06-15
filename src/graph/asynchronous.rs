@@ -403,7 +403,10 @@ impl HasGraphSchema for AsyncGraph {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_async_test_client, open_empty_async_test_graph, retry_until_async},
+        test_utils::{
+            create_async_test_client, open_empty_async_test_graph, retry_list_constraints,
+            retry_list_indices,
+        },
         IndexType,
     };
 
@@ -423,17 +426,7 @@ mod tests {
             .await
             .expect("Could not create index");
 
-        let indices = retry_until_async(
-            async || {
-                graph
-                    .inner
-                    .list_indices()
-                    .await
-                    .expect("Could not list indices")
-            },
-            |indices| indices.data.len() == 1,
-        )
-        .await;
+        let indices = retry_list_indices(&mut graph.inner, 1).await;
 
         assert_eq!(indices.data.len(), 1);
         assert_eq!(
@@ -531,17 +524,7 @@ mod tests {
             .await
             .expect("Could not create constraint");
 
-        let res = retry_until_async(
-            async || {
-                graph
-                    .inner
-                    .list_constraints()
-                    .await
-                    .expect("Could not list constraints")
-            },
-            |res| res.data.len() == 1,
-        )
-        .await;
+        let res = retry_list_constraints(&mut graph.inner, 1).await;
         assert_eq!(res.data.len(), 1);
     }
 

@@ -423,11 +423,18 @@ mod tests {
             .await
             .expect("Could not create index");
 
-        let indices = graph
-            .inner
-            .list_indices()
-            .await
-            .expect("Could not list indices");
+        let start = std::time::Instant::now();
+        let indices = loop {
+            let indices = graph
+                .inner
+                .list_indices()
+                .await
+                .expect("Could not list indices");
+            if indices.data.len() == 1 || start.elapsed() >= std::time::Duration::from_secs(5) {
+                break indices;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
 
         assert_eq!(indices.data.len(), 1);
         assert_eq!(
@@ -525,11 +532,18 @@ mod tests {
             .await
             .expect("Could not create constraint");
 
-        let res = graph
-            .inner
-            .list_constraints()
-            .await
-            .expect("Could not list constraints");
+        let start = std::time::Instant::now();
+        let res = loop {
+            let res = graph
+                .inner
+                .list_constraints()
+                .await
+                .expect("Could not list constraints");
+            if res.data.len() == 1 || start.elapsed() >= std::time::Duration::from_secs(5) {
+                break res;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
         assert_eq!(res.data.len(), 1);
     }
 

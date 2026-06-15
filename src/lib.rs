@@ -143,40 +143,59 @@ pub(crate) mod test_utils {
         }
     }
 
-    /// Async counterpart of [`retry_until`] for listing indices, written as a concrete
-    /// function (rather than a generic taking an async closure) to keep it compatible
-    /// with all stable toolchains.
+    /// Async counterpart of [`retry_until`]. Written with an explicit
+    /// `FnMut(&mut AsyncGraph) -> Pin<Box<dyn Future>>` bound (rather than an async
+    /// closure / `AsyncFnMut`) so it compiles on all stable toolchains.
     #[cfg(feature = "tokio")]
-    pub(crate) async fn retry_list_indices(
+    pub(crate) async fn retry_until_async<T>(
         graph: &mut AsyncGraph,
-        expected: usize,
-    ) -> QueryResult<Vec<FalkorIndex>> {
+        mut op: impl for<'a> FnMut(
+            &'a mut AsyncGraph,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>,
+        done: impl Fn(&T) -> bool,
+    ) -> T {
         let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
         loop {
-            let value = graph.list_indices().await.expect("Could not list indices");
-            if value.data.len() == expected || std::time::Instant::now() >= deadline {
+            let value = op(graph).await;
+            if done(&value) || std::time::Instant::now() >= deadline {
                 return value;
             }
             tokio::time::sleep(RETRY_INTERVAL).await;
         }
     }
+}
 
-    /// Async counterpart of [`retry_until`] for listing constraints.
-    #[cfg(feature = "tokio")]
-    pub(crate) async fn retry_list_constraints(
-        graph: &mut AsyncGraph,
-        expected: usize,
-    ) -> QueryResult<Vec<Constraint>> {
-        let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
-        loop {
-            let value = graph
-                .list_constraints()
-                .await
-                .expect("Could not list constraints");
-            if value.data.len() == expected || std::time::Instant::now() >= deadline {
-                return value;
-            }
-            tokio::time::sleep(RETRY_INTERVAL).await;
-        }
+#[cfg(test)]
+mod retry_tests {
+    use super::test_utils::retry_until;
+    use std::cell::Cell;
+
+    #[test]
+    fn retry_until_returns_immediately_when_already_done() {
+        let calls = Cell::new(0);
+        let value = retry_until(
+            || {
+                calls.set(calls.get() + 1);
+                calls.get()
+            },
+            |v| *v == 1,
+        );
+        assert_eq!(value, 1);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn retry_until_polls_until_condition_is_met() {
+        let calls = Cell::new(0);
+        let value = retry_until(
+            || {
+                calls.set(calls.get() + 1);
+                calls.get()
+            },
+            |v| *v == 3,
+        );
+        assert_eq!(value, 3);
+        assert_eq!(calls.get(), 3);
     }
 }

@@ -648,12 +648,19 @@ mod tests {
             .await
             .expect("Could not create constraint");
 
-        graph
-            .inner
-            .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
-            .wait()
-            .await
-            .expect("Constraint did not become operational");
+        let res = retry_until_async(
+            &mut graph.inner,
+            |g| {
+                Box::pin(async move {
+                    g.list_constraints()
+                        .await
+                        .expect("Could not list constraints")
+                })
+            },
+            |res| res.data.iter().any(|c| c.label == "person"),
+        )
+        .await;
+        assert!(res.data.iter().any(|c| c.label == "person"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

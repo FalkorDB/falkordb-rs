@@ -32,6 +32,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use falkordb::{
     EmbeddedConfig, EmbeddedServer, EntityType, FalkorClientBuilder, FalkorConnectionInfo,
@@ -61,16 +62,19 @@ fn resolve_module_path() -> Option<PathBuf> {
 }
 
 /// Build an [`EmbeddedConfig`] pointing at a resolved module, or `None` to skip. Sets a
-/// short, explicit `/tmp` socket path (unique per process) so the Unix socket stays well
-/// under the OS path-length limit even when the system temp dir is long (e.g. on macOS/CI).
+/// short, explicit `/tmp` socket path that is unique per server instance (pid + an atomic
+/// nonce) so concurrent tests never collide on the same socket, while staying well under
+/// the OS path-length limit even when the system temp dir is long (e.g. on macOS/CI).
 fn embedded_config() -> Option<EmbeddedConfig> {
+    static SOCKET_NONCE: AtomicU32 = AtomicU32::new(0);
     let module = resolve_module_path()?;
     Some(EmbeddedConfig {
         redis_server_path: std::env::var("REDIS_SERVER_PATH").ok().map(PathBuf::from),
         falkordb_module_path: Some(module),
         socket_path: Some(PathBuf::from(format!(
-            "/tmp/fdb-emb-{}.sock",
-            std::process::id()
+            "/tmp/fdb-emb-{}-{}.sock",
+            std::process::id(),
+            SOCKET_NONCE.fetch_add(1, Ordering::Relaxed)
         ))),
         ..Default::default()
     })

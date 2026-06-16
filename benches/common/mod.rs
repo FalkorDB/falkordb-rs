@@ -7,7 +7,8 @@
 //! `resource_usage`). Kept in a non-target subdirectory module so both benches can
 //! `mod common;` it without Cargo treating it as its own benchmark.
 
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
 
 use falkordb::{ConnectionStrategy, FalkorAsyncClient, FalkorClientBuilder, FalkorConnectionInfo};
 
@@ -43,7 +44,14 @@ fn connection_info() -> FalkorConnectionInfo {
 /// present but the client errors).
 fn server_is_reachable() -> bool {
     let (host, port) = target();
-    TcpStream::connect((host.as_str(), port)).is_ok()
+    // Resolve and probe with a bounded timeout so an unroutable FALKORDB_HOST skips the
+    // benches instead of stalling for the full OS TCP timeout.
+    match (host.as_str(), port).to_socket_addrs() {
+        Ok(addrs) => addrs
+            .into_iter()
+            .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()),
+        Err(_) => false,
+    }
 }
 
 /// Build an async client for `strategy`, or `None` when no server is reachable (so the

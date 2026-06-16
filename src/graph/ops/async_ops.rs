@@ -66,6 +66,11 @@ impl<'a> AsyncIndexOpBuilder<'a> {
 /// [`AsyncGraph::create_mandatory_constraint_op`] or [`AsyncGraph::drop_constraint_op`]. A `wait`
 /// on a create terminal returns [`crate::FalkorDBError::ConstraintFailed`] if the constraint
 /// reaches the terminal `FAILED` state.
+///
+/// For a unique constraint, `wait` polls `DB.CONSTRAINTS` until the constraint itself becomes
+/// operational. The server activates a unique constraint only after its backing range index is
+/// enabled, so polling the constraint already accounts for the backing index becoming ready — no
+/// separate index-readiness step is required.
 #[must_use = "a constraint op builder does nothing unless `.execute()` or `.wait()` is awaited"]
 pub struct AsyncConstraintOpBuilder<'a> {
     graph: &'a mut AsyncGraph,

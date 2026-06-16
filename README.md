@@ -73,8 +73,11 @@ one of them now has an additive `*_op` builder that adds explicit, opt-in waitin
 full backward compatibility.
 
 Each builder offers `.execute()` (non-blocking, identical to the eager method) and `.wait()` /
-`.wait_with(WaitOptions)` terminals (block until the operation has actually taken effect, or
-return [`FalkorDBError::Timeout`]):
+`.wait_with(WaitOptions)` terminals. For index and constraint builders, `.wait()` blocks until the
+operation has actually taken effect (the index/constraint becomes operational or is dropped),
+returning [`FalkorDBError::Timeout`] if it does not happen in time. For the copy builder, `GRAPH.COPY`
+is already blocking on the server, so `.wait()` simply retries transient `could not fork` failures
+with backoff; it does **not** verify the copied contents (that remains the caller's responsibility).
 
 ```rust,no_run
 use falkordb::{EntityType, FalkorClientBuilder, FalkorConnectionInfo, IndexType, WaitOptions};

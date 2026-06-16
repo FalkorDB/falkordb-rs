@@ -486,6 +486,90 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_copy_graph_op_wait() {
+        let client = create_async_test_client().await;
+
+        let mut original_graph = client.select_graph("imdb");
+        let expected = original_graph
+            .query("MATCH (a:actor) RETURN a")
+            .execute()
+            .await
+            .expect("Could not get actors from unmodified graph")
+            .data
+            .collect::<Vec<_>>();
+
+        let _copy_guard = TestAsyncGraphHandle {
+            inner: client.select_graph("imdb_op_copy_async_wait"),
+        };
+
+        // `.wait()` retries only transient fork failures; the rare empty-but-OK copy is still
+        // possible, so the outer loop re-issues until the destination matches the source.
+        let copied = retry_until_async_fn_with_timeout(
+            COPY_RETRY_TIMEOUT,
+            || async {
+                client
+                    .select_graph("imdb_op_copy_async_wait")
+                    .delete()
+                    .await
+                    .ok();
+                let mut graph = client
+                    .copy_graph_op("imdb", "imdb_op_copy_async_wait")
+                    .wait()
+                    .await
+                    .expect("Could not copy graph");
+                graph
+                    .query("MATCH (a:actor) RETURN a")
+                    .execute()
+                    .await
+                    .expect("Could not get actors from copied graph")
+                    .data
+                    .collect::<Vec<_>>()
+            },
+            |rows| rows == &expected,
+        )
+        .await;
+
+        assert_eq!(copied, expected);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_copy_graph_op_execute() {
+        let client = create_async_test_client().await;
+
+        let _copy_guard = TestAsyncGraphHandle {
+            inner: client.select_graph("imdb_op_copy_async_execute"),
+        };
+
+        let copied = retry_until_async_fn_with_timeout(
+            COPY_RETRY_TIMEOUT,
+            || async {
+                client
+                    .select_graph("imdb_op_copy_async_execute")
+                    .delete()
+                    .await
+                    .ok();
+                match client
+                    .copy_graph_op("imdb", "imdb_op_copy_async_execute")
+                    .execute()
+                    .await
+                {
+                    Ok(mut graph) => Ok(graph
+                        .query("MATCH (a:actor) RETURN a")
+                        .execute()
+                        .await?
+                        .data
+                        .collect::<Vec<_>>()),
+                    Err(error) => Err(error),
+                }
+            },
+            |rows| matches!(rows, Ok(rows) if !rows.is_empty()),
+        )
+        .await;
+
+        assert!(!copied.expect("Could not copy graph").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_get_config() {
         let client = create_async_test_client().await;
 

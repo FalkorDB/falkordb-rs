@@ -520,6 +520,74 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_graph_op_wait() {
+        let client = create_test_client();
+
+        let mut original_graph = client.select_graph("imdb");
+        let expected = original_graph
+            .query("MATCH (a:actor) RETURN a")
+            .execute()
+            .expect("Could not get actors from unmodified graph")
+            .data
+            .collect::<Vec<_>>();
+
+        let _copy_guard = TestSyncGraphHandle {
+            inner: client.select_graph("imdb_op_copy_wait"),
+        };
+
+        // `.wait()` retries only transient fork failures; the rare empty-but-OK copy is still
+        // possible, so the outer loop re-issues until the destination matches the source.
+        let copied = retry_until_with_timeout(
+            COPY_RETRY_TIMEOUT,
+            || {
+                client.select_graph("imdb_op_copy_wait").delete().ok();
+                let mut graph = client
+                    .copy_graph_op("imdb", "imdb_op_copy_wait")
+                    .wait()
+                    .expect("Could not copy graph");
+                graph
+                    .query("MATCH (a:actor) RETURN a")
+                    .execute()
+                    .expect("Could not get actors from copied graph")
+                    .data
+                    .collect::<Vec<_>>()
+            },
+            |rows| rows == &expected,
+        );
+
+        assert_eq!(copied, expected);
+    }
+
+    #[test]
+    fn test_copy_graph_op_execute() {
+        let client = create_test_client();
+
+        let _copy_guard = TestSyncGraphHandle {
+            inner: client.select_graph("imdb_op_copy_execute"),
+        };
+
+        let copied = retry_until_with_timeout(
+            COPY_RETRY_TIMEOUT,
+            || {
+                client.select_graph("imdb_op_copy_execute").delete().ok();
+                client
+                    .copy_graph_op("imdb", "imdb_op_copy_execute")
+                    .execute()
+                    .and_then(|mut graph| {
+                        Ok(graph
+                            .query("MATCH (a:actor) RETURN a")
+                            .execute()?
+                            .data
+                            .collect::<Vec<_>>())
+                    })
+            },
+            |rows| matches!(rows, Ok(rows) if !rows.is_empty()),
+        );
+
+        assert!(!copied.expect("Could not copy graph").is_empty());
+    }
+
+    #[test]
     fn test_get_config() {
         let client = create_test_client();
 

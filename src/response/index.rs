@@ -14,7 +14,7 @@ use crate::{
 use std::collections::HashMap;
 
 /// The status of this index
-#[derive(Copy, Clone, Debug, Eq, PartialEq, strum::EnumString, strum::Display)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, strum::Display)]
 #[strum(serialize_all = "UPPERCASE")]
 pub enum IndexStatus {
     /// This index is active.
@@ -23,6 +23,31 @@ pub enum IndexStatus {
     /// This index is still being created.
     #[strum(serialize = "UNDER CONSTRUCTION")]
     Pending,
+}
+
+impl std::str::FromStr for IndexStatus {
+    type Err = FalkorDBError;
+
+    /// Parses an index status as reported by `DB.INDEXES`. While being populated the server
+    /// reports a dynamic string such as `"[Indexing] 5/10: UNDER CONSTRUCTION"`, so matching is
+    /// done by substring rather than exact equality.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.contains("OPERATIONAL") {
+            Ok(IndexStatus::Active)
+        } else if value.contains("UNDER CONSTRUCTION") {
+            Ok(IndexStatus::Pending)
+        } else {
+            Err(FalkorDBError::InvalidEnumType(value.to_string()))
+        }
+    }
+}
+
+impl TryFrom<&str> for IndexStatus {
+    type Error = FalkorDBError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
 }
 
 /// The type of this indexed field
@@ -38,7 +63,7 @@ pub enum IndexType {
 }
 
 // parse array of strings, both array and strings represent as redis values
-fn parse_string_array(
+pub(crate) fn parse_string_array(
     value: redis::Value,
     graph_schema: &mut GraphSchema,
 ) -> Result<Vec<String>, FalkorDBError> {
@@ -166,6 +191,31 @@ mod tests {
             IndexStatus::from_str("UNDER CONSTRUCTION").unwrap(),
             IndexStatus::Pending
         );
+    }
+
+    #[test]
+    fn test_index_status_from_dynamic_under_construction_string() {
+        use std::str::FromStr;
+        // While populating, the server reports progress, e.g. "[Indexing] 5/10: UNDER CONSTRUCTION".
+        assert_eq!(
+            IndexStatus::from_str("[Indexing] 1545/200000: UNDER CONSTRUCTION").unwrap(),
+            IndexStatus::Pending
+        );
+    }
+
+    #[test]
+    fn test_index_status_from_unknown_string_errors() {
+        use std::str::FromStr;
+        assert!(IndexStatus::from_str("SOMETHING ELSE").is_err());
+    }
+
+    #[test]
+    fn test_index_status_try_from_str() {
+        assert_eq!(
+            IndexStatus::try_from("OPERATIONAL").unwrap(),
+            IndexStatus::Active
+        );
+        assert!(IndexStatus::try_from("nope").is_err());
     }
 
     #[test]

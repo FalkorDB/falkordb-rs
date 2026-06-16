@@ -4,10 +4,8 @@
  */
 
 use crate::{
-    parser::{
-        parse_falkor_enum, redis_value_as_typed_string, redis_value_as_typed_string_vec,
-        redis_value_as_vec, SchemaParsable,
-    },
+    parser::{parse_falkor_enum, redis_value_as_typed_string, redis_value_as_vec, SchemaParsable},
+    response::index::parse_string_array,
     EntityType, FalkorDBError, FalkorResult, GraphSchema,
 };
 
@@ -32,6 +30,7 @@ pub enum ConstraintStatus {
     #[strum(serialize = "UNDER CONSTRUCTION")]
     Pending,
     /// This constraint could not be applied, not all entities of this type and label are compliant.
+    #[strum(serialize = "FAILED")]
     Failed,
 }
 
@@ -57,7 +56,7 @@ impl SchemaParsable for Constraint {
     )]
     fn parse(
         value: redis::Value,
-        _: &mut GraphSchema,
+        graph_schema: &mut GraphSchema,
     ) -> FalkorResult<Self> {
         let [constraint_type_raw, label_raw, properties_raw, entity_type_raw, status_raw]: [redis::Value; 5] = redis_value_as_vec(value)
             .and_then(|res| res.try_into()
@@ -66,7 +65,7 @@ impl SchemaParsable for Constraint {
         Ok(Self {
             constraint_type: parse_falkor_enum(constraint_type_raw)?,
             label: redis_value_as_typed_string(label_raw)?,
-            properties: redis_value_as_typed_string_vec(properties_raw)?,
+            properties: parse_string_array(properties_raw, graph_schema)?,
             entity_type: parse_falkor_enum(entity_type_raw)?,
             status: parse_falkor_enum(status_raw)?,
         })
@@ -125,7 +124,24 @@ mod tests {
 
     #[test]
     fn test_constraint_status_failed() {
-        assert_eq!(ConstraintStatus::Failed.to_string(), "Failed");
+        assert_eq!(ConstraintStatus::Failed.to_string(), "FAILED");
+    }
+
+    #[test]
+    fn test_constraint_status_from_string() {
+        use std::str::FromStr;
+        assert_eq!(
+            ConstraintStatus::from_str("OPERATIONAL").unwrap(),
+            ConstraintStatus::Active
+        );
+        assert_eq!(
+            ConstraintStatus::from_str("UNDER CONSTRUCTION").unwrap(),
+            ConstraintStatus::Pending
+        );
+        assert_eq!(
+            ConstraintStatus::from_str("FAILED").unwrap(),
+            ConstraintStatus::Failed
+        );
     }
 
     #[test]

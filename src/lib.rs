@@ -31,6 +31,7 @@ pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
 pub use graph::{
     blocking::SyncGraph,
+    ops::{ConstraintOpBuilder, CopyGraphBuilder, IndexOpBuilder, WaitOperation, WaitOptions},
     query_builder::{ProcedureQueryBuilder, QueryBuilder},
 };
 pub use graph_schema::{GraphSchema, SchemaType};
@@ -54,6 +55,8 @@ pub use value::{
 pub use client::asynchronous::FalkorAsyncClient;
 #[cfg(feature = "tokio")]
 pub use graph::asynchronous::AsyncGraph;
+#[cfg(feature = "tokio")]
+pub use graph::ops::{AsyncConstraintOpBuilder, AsyncCopyGraphBuilder, AsyncIndexOpBuilder};
 
 #[cfg(feature = "embedded")]
 pub use embedded::{EmbeddedConfig, EmbeddedServer};

@@ -392,7 +392,7 @@ mod tests {
     use super::*;
     use crate::{
         test_utils::{create_test_client, open_empty_test_graph, retry_until},
-        FalkorDBError, IndexType,
+        FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
 
     #[test]
@@ -519,6 +519,138 @@ mod tests {
             |res| res.data.len() == 1,
         );
         assert_eq!(res.data.len(), 1);
+    }
+
+    #[test]
+    fn test_create_index_op_execute_is_non_blocking() {
+        let mut graph = open_empty_test_graph("test_create_index_op_execute");
+
+        let res = graph
+            .inner
+            .create_index_op(
+                IndexType::Fulltext,
+                EntityType::Node,
+                "actor",
+                &["name"],
+                None,
+            )
+            .execute()
+            .expect("Could not create index");
+        assert_eq!(res.get_indices_created(), Some(1));
+
+        let res = graph
+            .inner
+            .drop_index_op(IndexType::Fulltext, EntityType::Node, "actor", &["name"])
+            .execute()
+            .expect("Could not drop index");
+        assert_eq!(res.get_indices_deleted(), Some(1));
+    }
+
+    #[test]
+    fn test_create_drop_index_op_wait() {
+        let mut graph = open_empty_test_graph("test_create_index_op_wait");
+
+        graph
+            .inner
+            .create_index_op(IndexType::Range, EntityType::Node, "person", &["age"], None)
+            .wait()
+            .expect("Index did not become operational");
+
+        let indices = graph
+            .inner
+            .list_indices()
+            .expect("Could not list indices")
+            .data;
+        assert!(indices.iter().any(|index| {
+            index.index_label == "person"
+                && index.status == IndexStatus::Active
+                && index
+                    .field_types
+                    .get("age")
+                    .is_some_and(|types| types.contains(&IndexType::Range))
+        }));
+
+        graph
+            .inner
+            .drop_index_op(IndexType::Range, EntityType::Node, "person", &["age"])
+            .wait()
+            .expect("Index was not dropped");
+
+        let indices = graph
+            .inner
+            .list_indices()
+            .expect("Could not list indices")
+            .data;
+        assert!(!indices
+            .iter()
+            .any(|index| index.index_label == "person" && index.field_types.contains_key("age")));
+    }
+
+    #[test]
+    fn test_mandatory_constraint_op_wait() {
+        let mut graph = open_empty_test_graph("test_mandatory_constraint_op_wait");
+
+        graph
+            .inner
+            .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
+            .wait()
+            .expect("Constraint did not become operational");
+
+        graph
+            .inner
+            .drop_constraint_op(
+                ConstraintType::Mandatory,
+                EntityType::Node,
+                "person",
+                &["name"],
+            )
+            .wait()
+            .expect("Constraint was not dropped");
+    }
+
+    #[test]
+    fn test_unique_constraint_op_wait() {
+        let mut graph = open_empty_test_graph("test_unique_constraint_op_wait");
+
+        graph
+            .inner
+            .create_unique_constraint_op(EntityType::Node, "person", &["email"])
+            .wait()
+            .expect("Constraint did not become operational");
+
+        graph
+            .inner
+            .drop_constraint_op(
+                ConstraintType::Unique,
+                EntityType::Node,
+                "person",
+                &["email"],
+            )
+            .wait()
+            .expect("Constraint was not dropped");
+    }
+
+    #[test]
+    fn test_unique_constraint_op_wait_reports_failure() {
+        let mut graph = open_empty_test_graph("test_unique_constraint_op_failed");
+
+        graph
+            .inner
+            .query("CREATE (:person {email: 'dup'}), (:person {email: 'dup'})")
+            .execute()
+            .expect("Could not seed conflicting data");
+
+        let result = graph
+            .inner
+            .create_unique_constraint_op(EntityType::Node, "person", &["email"])
+            .wait_with(WaitOptions::with_timeout(std::time::Duration::from_secs(
+                10,
+            )));
+
+        assert!(matches!(
+            result,
+            Err(FalkorDBError::ConstraintFailed { .. })
+        ));
     }
 
     #[test]

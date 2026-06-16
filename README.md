@@ -258,6 +258,11 @@ Redis Sentinel deployment that exposes readable replicas, it automatically
 builds a dedicated read-only connection pool that routes those queries to a
 replica. Writes always go to the primary.
 
+> **Connection pool sizing:** When readable replicas are present the client opens
+> a second pool of up to `num_connections` additional connections (one per slot)
+> alongside the primary pool. Size your pool limits and file-descriptor limits
+> accordingly.
+
 ```rust,no_run
 use falkordb::FalkorClientBuilder;
 

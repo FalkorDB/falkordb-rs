@@ -159,7 +159,12 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
 impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
+        tracing::instrument(
+            name = "Common Query Execution Steps",
+            skip_all,
+            fields(readonly = (self.command == "GRAPH.RO_QUERY")),
+            level = "trace"
+        )
     )]
     fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
         let query = construct_query(&self.query_string, self.params);
@@ -190,7 +195,12 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
 impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Common Query Execution Steps", skip_all, level = "trace")
+        tracing::instrument(
+            name = "Common Query Execution Steps",
+            skip_all,
+            fields(readonly = (self.command == "GRAPH.RO_QUERY")),
+            level = "trace"
+        )
     )]
     async fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
         let query = construct_query(&self.query_string, self.params);
@@ -401,6 +411,7 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
         tracing::instrument(
             name = "Common Procedure Call Execution Steps",
             skip_all,
+            fields(readonly = self.readonly),
             level = "trace"
         )
     )]
@@ -439,6 +450,7 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
         tracing::instrument(
             name = "Common Procedure Call Execution Steps",
             skip_all,
+            fields(readonly = self.readonly),
             level = "trace"
         )
     )]

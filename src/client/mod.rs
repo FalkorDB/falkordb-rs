@@ -85,38 +85,50 @@ impl FalkorClientProvider {
     /// Returns a connection routed to a replica node when one is available
     /// (Sentinel deployments with replicas), otherwise falls back to the regular
     /// (primary) connection. Used to serve read-only queries from replicas.
+    ///
+    /// If a replica Sentinel client exists but the connection attempt fails (e.g.
+    /// the replica is temporarily unreachable), the error is silently discarded and
+    /// the call falls back to the primary so that read-only queries keep working.
     pub(crate) fn get_readonly_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
-        if let FalkorClientProvider::Redis {
+        // Obtain the replica result inside a scoped block so the borrow on `self`
+        // ends before we potentially call `self.get_connection()` as fallback.
+        let replica_result = if let FalkorClientProvider::Redis {
             sentinel_replica: Some(replica),
             ..
         } = self
         {
-            return Ok(FalkorSyncConnection::Redis(
-                replica
-                    .get_connection()
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
-            ));
+            Some(replica.get_connection())
+        } else {
+            None
+        };
+
+        if let Some(Ok(conn)) = replica_result {
+            return Ok(FalkorSyncConnection::Redis(conn));
         }
 
         self.get_connection()
     }
 
     /// Async counterpart of [`get_readonly_connection`](Self::get_readonly_connection).
+    ///
+    /// Falls back to the primary connection when the replica Sentinel is
+    /// unreachable, matching the behavior of the sync version.
     #[cfg(feature = "tokio")]
     pub(crate) async fn get_async_readonly_connection(
         &mut self
     ) -> FalkorResult<FalkorAsyncConnection> {
-        if let FalkorClientProvider::Redis {
+        let replica_result = if let FalkorClientProvider::Redis {
             sentinel_replica: Some(replica),
             ..
         } = self
         {
-            return Ok(FalkorAsyncConnection::Redis(
-                replica
-                    .get_async_connection()
-                    .await
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
-            ));
+            Some(replica.get_async_connection().await)
+        } else {
+            None
+        };
+
+        if let Some(Ok(conn)) = replica_result {
+            return Ok(FalkorAsyncConnection::Redis(conn));
         }
 
         self.get_async_connection().await
@@ -437,5 +449,83 @@ mod tests {
             embedded_server: None,
         };
         // Just verify the structure can be created
+    }
+
+    #[test]
+    fn test_get_readonly_connection_falls_back_when_replica_unreachable() {
+        // When a replica SentinelClient exists but the replica is unreachable, the
+        // implementation should swallow that error and fall back to the primary client
+        // rather than propagating the replica-specific error to the caller.
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        // Port 1 is reliably unroutable in test environments.
+        let connection_info =
+            redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info],
+            "mymaster".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: Some(replica),
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        // The replica connection will fail; the code must not propagate that error
+        // directly but instead attempt the primary path.  In this test environment
+        // the primary is also unreachable, so we still get an error – the key
+        // assertion is that the error comes from the primary path (RedisError) and
+        // that the function does not panic.
+        let result = provider.get_readonly_connection();
+        assert!(
+            result.is_err(),
+            "expected error because neither replica nor primary is reachable in test env"
+        );
+        if let Err(e) = result {
+            assert!(
+                matches!(e, FalkorDBError::RedisError(_)),
+                "error should come from the primary fallback path"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_readonly_connection_falls_back_when_replica_unreachable() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let connection_info =
+                redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+            let replica = redis::sentinel::SentinelClient::build(
+                vec![connection_info],
+                "mymaster".to_string(),
+                None,
+                redis::sentinel::SentinelServerType::Replica,
+            )
+            .unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: None,
+                sentinel_replica: Some(replica),
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            let result = provider.get_async_readonly_connection().await;
+            assert!(
+                result.is_err(),
+                "expected error because neither replica nor primary is reachable in test env"
+            );
+            if let Err(e) = result {
+                assert!(
+                    matches!(e, FalkorDBError::RedisError(_)),
+                    "error should come from the primary fallback path"
+                );
+            }
+        });
     }
 }

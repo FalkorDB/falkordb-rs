@@ -96,12 +96,6 @@ impl FalkorSyncClientInner {
         self.readonly_pool.is_some()
     }
 
-    /// Obtain a fresh connection routed to a replica node, used to replace a
-    /// read-only connection that was dropped by the server.
-    pub(crate) fn get_readonly_connection(&self) -> FalkorResult<FalkorSyncConnection> {
-        self._inner.lock().get_readonly_connection()
-    }
-
     /// Obtain a fresh connection routed to a replica node without fallback.
     /// Used for read-only pool creation and reconnection so the read-only pool
     /// never receives primary connections.

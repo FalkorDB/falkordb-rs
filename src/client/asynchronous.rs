@@ -116,26 +116,6 @@ impl FalkorAsyncClientInner {
         self._inner.lock().await.get_async_connection().await
     }
 
-    /// Obtain a fresh async connection routed to a replica node, used to replace a
-    /// read-only connection that was dropped by the server.
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(
-            name = "Get New Async Readonly Connection From Client",
-            skip_all,
-            level = "info"
-        )
-    )]
-    pub(crate) async fn get_async_readonly_connection(
-        &self
-    ) -> FalkorResult<FalkorAsyncConnection> {
-        self._inner
-            .lock()
-            .await
-            .get_async_readonly_connection()
-            .await
-    }
-
     /// Obtain a fresh async connection routed to a replica node without fallback.
     /// Used for read-only pool creation and reconnection so the read-only pool
     /// never receives primary connections.

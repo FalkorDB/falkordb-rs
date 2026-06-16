@@ -458,8 +458,7 @@ mod tests {
         // rather than propagating the replica-specific error to the caller.
         let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
         // Port 1 is reliably unroutable in test environments.
-        let connection_info =
-            redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
             vec![connection_info],
             "mymaster".to_string(),
@@ -499,8 +498,7 @@ mod tests {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
             let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-            let connection_info =
-                redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+            let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
             let replica = redis::sentinel::SentinelClient::build(
                 vec![connection_info],
                 "mymaster".to_string(),

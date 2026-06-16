@@ -167,16 +167,29 @@ enum Wakeup {
     TimedOut,
 }
 
+/// Computes the deadline for a wait. Returns `None` when `timeout` is so large that the deadline
+/// is not representable as an [`Instant`]; callers treat `None` as "never time out" rather than
+/// panicking on the overflowing `Instant` addition.
+fn deadline_for(timeout: Duration) -> Option<Instant> {
+    Instant::now().checked_add(timeout)
+}
+
 fn next_wakeup(
     options: &WaitOptions,
-    deadline: Instant,
+    deadline: Option<Instant>,
     attempt: u32,
 ) -> Wakeup {
-    let now = Instant::now();
-    if now >= deadline {
-        Wakeup::TimedOut
-    } else {
-        Wakeup::Sleep(options.delay_for_attempt(attempt).min(deadline - now))
+    let delay = options.delay_for_attempt(attempt);
+    match deadline {
+        None => Wakeup::Sleep(delay),
+        Some(deadline) => {
+            let now = Instant::now();
+            if now >= deadline {
+                Wakeup::TimedOut
+            } else {
+                Wakeup::Sleep(delay.min(deadline - now))
+            }
+        }
     }
 }
 
@@ -186,7 +199,7 @@ pub(crate) fn poll_sync<T>(
     operation: WaitOperation,
     mut attempt: impl FnMut() -> crate::FalkorResult<Step<T>>,
 ) -> crate::FalkorResult<T> {
-    let deadline = Instant::now() + options.timeout;
+    let deadline = deadline_for(options.timeout);
     let mut attempts = 0u32;
     loop {
         match attempt()? {
@@ -217,7 +230,7 @@ pub(crate) async fn poll_async<T>(
     operation: WaitOperation,
     mut attempt: impl AsyncFnMut() -> crate::FalkorResult<Step<T>>,
 ) -> crate::FalkorResult<T> {
-    let deadline = Instant::now() + options.timeout;
+    let deadline = deadline_for(options.timeout);
     let mut attempts = 0u32;
     loop {
         match attempt().await? {
@@ -719,9 +732,23 @@ mod tests {
     fn next_wakeup_sleeps_then_times_out() {
         let options = WaitOptions::new();
         let future = Instant::now() + Duration::from_secs(60);
-        assert!(matches!(next_wakeup(&options, future, 0), Wakeup::Sleep(_)));
+        assert!(matches!(
+            next_wakeup(&options, Some(future), 0),
+            Wakeup::Sleep(_)
+        ));
         let past = Instant::now() - Duration::from_secs(1);
-        assert!(matches!(next_wakeup(&options, past, 0), Wakeup::TimedOut));
+        assert!(matches!(
+            next_wakeup(&options, Some(past), 0),
+            Wakeup::TimedOut
+        ));
+        // No deadline (overflowing timeout) never times out.
+        assert!(matches!(next_wakeup(&options, None, 0), Wakeup::Sleep(_)));
+    }
+
+    #[test]
+    fn deadline_for_saturates_on_overflow() {
+        assert!(deadline_for(Duration::from_secs(1)).is_some());
+        assert!(deadline_for(Duration::MAX).is_none());
     }
 
     #[test]

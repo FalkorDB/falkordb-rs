@@ -137,7 +137,9 @@ pub enum FalkorDBError {
         timeout: std::time::Duration,
     },
     /// A constraint reached the terminal `FAILED` state (e.g. existing data violates it).
-    #[error("Constraint on label '{label}' properties {properties:?} failed to be enforced")]
+    #[error(
+        "{constraint_type} constraint on label '{label}' properties {properties:?} failed to be enforced"
+    )]
     ConstraintFailed {
         /// The label the constraint applies to.
         label: String,

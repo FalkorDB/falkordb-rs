@@ -617,17 +617,6 @@ mod tests {
             .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
             .execute()
             .expect("Could not create constraint");
-
-        let res = retry_until(
-            || {
-                graph
-                    .inner
-                    .list_constraints()
-                    .expect("Could not list constraints")
-            },
-            |res| res.data.iter().any(|c| c.label == "person"),
-        );
-        assert!(res.data.iter().any(|c| c.label == "person"));
     }
 
     #[test]

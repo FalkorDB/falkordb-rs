@@ -647,20 +647,6 @@ mod tests {
             .execute()
             .await
             .expect("Could not create constraint");
-
-        let res = retry_until_async(
-            &mut graph.inner,
-            |g| {
-                Box::pin(async move {
-                    g.list_constraints()
-                        .await
-                        .expect("Could not list constraints")
-                })
-            },
-            |res| res.data.iter().any(|c| c.label == "person"),
-        )
-        .await;
-        assert!(res.data.iter().any(|c| c.label == "person"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

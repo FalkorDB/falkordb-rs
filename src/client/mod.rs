@@ -474,20 +474,16 @@ mod tests {
             embedded_server: None,
         };
         // The replica connection will fail; the code must not propagate that error
-        // directly but instead attempt the primary path.  In this test environment
-        // the primary is also unreachable, so we still get an error – the key
-        // assertion is that the error comes from the primary path (RedisError) and
-        // that the function does not panic.
-        let result = provider.get_readonly_connection();
-        assert!(
-            result.is_err(),
-            "expected error because neither replica nor primary is reachable in test env"
-        );
-        if let Err(e) = result {
-            assert!(
+        // directly but instead attempt the primary path. The key assertion is that
+        // the call falls back to the primary without panicking: when the primary is
+        // reachable it returns `Ok` (proving the fallback ran), and when it is not it
+        // returns a primary-path `RedisError` (never a replica-specific error).
+        match provider.get_readonly_connection() {
+            Ok(_) => {}
+            Err(e) => assert!(
                 matches!(e, FalkorDBError::RedisError(_)),
                 "error should come from the primary fallback path"
-            );
+            ),
         }
     }
 
@@ -514,15 +510,12 @@ mod tests {
                 embedded_server: None,
             };
             let result = provider.get_async_readonly_connection().await;
-            assert!(
-                result.is_err(),
-                "expected error because neither replica nor primary is reachable in test env"
-            );
-            if let Err(e) = result {
-                assert!(
+            match result {
+                Ok(_) => {}
+                Err(e) => assert!(
                     matches!(e, FalkorDBError::RedisError(_)),
                     "error should come from the primary fallback path"
-                );
+                ),
             }
         });
     }

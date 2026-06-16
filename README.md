@@ -65,9 +65,10 @@ while let Some(node) = nodes.data.next() {
 
 ### Waiting for background operations
 
-Some FalkorDB operations finish **after** the command that starts them returns: creating or
-dropping an index or constraint is populated/enforced on a background worker thread, and
-`GRAPH.COPY` can fail transiently while the server is unable to `fork`. The eager methods
+Some FalkorDB operations finish **after** the command that starts them returns: when you create or
+drop an index or constraint, the request returns immediately while the index is populated (or the
+constraint is enforced) on a background worker thread, and `GRAPH.COPY` can fail transiently while
+the server is unable to `fork`. The eager methods
 (`create_index`, `create_unique_constraint`, `copy_graph`, …) stay fire-and-forget, but every
 one of them now has an additive `*_op` builder that adds explicit, opt-in waiting while keeping
 full backward compatibility.

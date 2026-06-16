@@ -552,6 +552,57 @@ mod tests {
     }
 
     #[test]
+    fn test_create_readonly_pool_none_without_replica() {
+        // Without a Sentinel replica, no read-only pool is created and reads are
+        // served by the primary pool.
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        assert!(FalkorSyncClient::create_readonly_pool(&mut provider, 4).is_none());
+    }
+
+    #[test]
+    fn test_create_readonly_pool_none_when_replica_unreachable() {
+        // With a replica-typed Sentinel client that cannot be reached, pool creation
+        // must fail (return None) rather than fall back to primary connections, so the
+        // read-only pool is never populated with primary connections.
+        use std::str::FromStr;
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        // Port 1 is reliably unroutable in test environments.
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info],
+            "mymaster",
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: Some(replica),
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        assert!(provider.has_sentinel_replica());
+        assert!(FalkorSyncClient::create_readonly_pool(&mut provider, 4).is_none());
+    }
+
+    #[test]
+    fn test_inner_get_replica_connection_errors_without_replica() {
+        // The inner client wrapper forwards to the provider's replica-only getter,
+        // which errors (no fallback) when no replica Sentinel is configured.
+        let inner = create_empty_inner_sync_client();
+        let result = inner.get_replica_connection();
+        assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+    }
+
+    #[test]
     fn test_read_vec32() {
         let client = create_test_client();
         let mut graph = client.select_graph("test_read_vec32");

@@ -27,9 +27,14 @@ pub(crate) enum FalkorClientProvider {
     Redis {
         client: redis::Client,
         sentinel: Option<redis::sentinel::SentinelClient>,
-        /// Sentinel client configured to hand out connections to replica nodes,
-        /// used to route read-only queries away from the primary. `None` when the
-        /// deployment is not Sentinel-managed.
+        /// Replica-typed Sentinel client used to route read-only queries away from
+        /// the primary. It is set whenever a Sentinel master is detected during
+        /// construction, so its presence indicates a Sentinel deployment — not that
+        /// readable replicas actually exist or are currently reachable. `None` when
+        /// the deployment is not Sentinel-managed. Because replica reachability is
+        /// only determined when a connection is established, read-only pool creation
+        /// uses replica-only connection getters (no primary fallback) so the pool is
+        /// only built when a replica connection actually succeeds.
         sentinel_replica: Option<redis::sentinel::SentinelClient>,
         #[cfg(feature = "embedded")]
         #[allow(dead_code)]
@@ -347,7 +352,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
             vec![connection_info],
-            "master".to_string(),
+            "master",
             None,
             redis::sentinel::SentinelServerType::Replica,
         )
@@ -378,7 +383,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
         let sentinel = redis::sentinel::SentinelClient::build(
             vec![connection_info],
-            "master".to_string(),
+            "master",
             None,
             redis::sentinel::SentinelServerType::Master,
         )
@@ -447,7 +452,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
             vec![connection_info],
-            "mymaster".to_string(),
+            "mymaster",
             None,
             redis::sentinel::SentinelServerType::Replica,
         )
@@ -481,7 +486,7 @@ mod tests {
             let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
             let replica = redis::sentinel::SentinelClient::build(
                 vec![connection_info],
-                "mymaster".to_string(),
+                "mymaster",
                 None,
                 redis::sentinel::SentinelServerType::Replica,
             )

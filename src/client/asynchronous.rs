@@ -540,6 +540,52 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_readonly_pool_none_without_replica() {
+        // Without a Sentinel replica, no read-only pool is created and reads are
+        // served by the primary pool.
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        assert!(FalkorAsyncClient::create_readonly_pool(&mut provider, 4)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_readonly_pool_none_when_replica_unreachable() {
+        // With a replica-typed Sentinel client that cannot be reached, pool creation
+        // must fail (return None) rather than fall back to primary connections, so the
+        // read-only pool is never populated with primary connections.
+        use std::str::FromStr;
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        // Port 1 is reliably unroutable in test environments.
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info],
+            "mymaster",
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: Some(replica),
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        assert!(provider.has_sentinel_replica());
+        assert!(FalkorAsyncClient::create_readonly_pool(&mut provider, 4)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_list_graphs() {
         let client = create_async_test_client().await;
         let res = client.list_graphs().await;

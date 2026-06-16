@@ -191,13 +191,22 @@ fn test_reads_from_replicas_single_node() {
         Err(_) => return,
     };
 
-    // A single-node FalkorDB instance is not a Sentinel deployment, so reads are
-    // not routed to replicas; read-only queries still succeed via the primary.
-    assert!(!client.reads_from_replicas());
+    // The test endpoint can be pointed at a Sentinel deployment via env vars, in
+    // which case `reads_from_replicas()` may legitimately be true. Only assert the
+    // single-node expectation (no replica routing) when the endpoint is known to be
+    // non-Sentinel; set FALKORDB_SENTINEL to skip that strict assertion.
+    let is_sentinel = std::env::var("FALKORDB_SENTINEL")
+        .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(false);
+    if !is_sentinel {
+        assert!(!client.reads_from_replicas());
+    }
 
     let mut graph = client.select_graph("test_reads_from_replicas_single_node");
     let _ = graph.query("CREATE (n:Data {value: 7})").execute();
 
+    // Read-only queries must succeed regardless of whether reads are routed to a
+    // replica (Sentinel) or served by the primary (single-node).
     let result = graph.ro_query("MATCH (n:Data) RETURN n.value").execute();
     assert!(result.is_ok());
 

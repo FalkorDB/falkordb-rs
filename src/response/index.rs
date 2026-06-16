@@ -26,7 +26,7 @@ pub enum IndexStatus {
 }
 
 impl std::str::FromStr for IndexStatus {
-    type Err = FalkorDBError;
+    type Err = strum::ParseError;
 
     /// Parses an index status as reported by `DB.INDEXES`. While being populated the server
     /// reports a dynamic string such as `"[Indexing] 5/10: UNDER CONSTRUCTION"`, so matching is
@@ -37,13 +37,13 @@ impl std::str::FromStr for IndexStatus {
         } else if value.contains("UNDER CONSTRUCTION") {
             Ok(IndexStatus::Pending)
         } else {
-            Err(FalkorDBError::InvalidEnumType(value.to_string()))
+            Err(strum::ParseError::VariantNotFound)
         }
     }
 }
 
 impl TryFrom<&str> for IndexStatus {
-    type Error = FalkorDBError;
+    type Error = strum::ParseError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         value.parse()

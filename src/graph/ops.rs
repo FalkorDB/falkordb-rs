@@ -143,7 +143,8 @@ impl WaitOptions {
         &self,
         attempt: u32,
     ) -> Duration {
-        let scaled = self.poll_interval.as_secs_f64() * self.backoff_factor.powi(attempt as i32);
+        let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
+        let scaled = self.poll_interval.as_secs_f64() * self.backoff_factor.powi(exponent);
         Duration::from_secs_f64(scaled.min(self.max_interval.as_secs_f64()))
     }
 }
@@ -658,6 +659,11 @@ mod tests {
         // capped at max_interval
         assert_eq!(options.delay_for_attempt(3), Duration::from_millis(500));
         assert_eq!(options.delay_for_attempt(1000), Duration::from_millis(500));
+        // a huge attempt count must not overflow the i32 exponent and shrink the delay
+        assert_eq!(
+            options.delay_for_attempt(u32::MAX),
+            Duration::from_millis(500)
+        );
     }
 
     #[test]

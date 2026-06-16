@@ -567,7 +567,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
             vec![connection_info],
-            "mymaster",
+            "mymaster".to_string(),
             None,
             redis::sentinel::SentinelServerType::Replica,
         )

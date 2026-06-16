@@ -352,7 +352,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
             vec![connection_info],
-            "master",
+            "master".to_string(),
             None,
             redis::sentinel::SentinelServerType::Replica,
         )
@@ -383,7 +383,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
         let sentinel = redis::sentinel::SentinelClient::build(
             vec![connection_info],
-            "master",
+            "master".to_string(),
             None,
             redis::sentinel::SentinelServerType::Master,
         )
@@ -452,7 +452,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
             vec![connection_info],
-            "mymaster",
+            "mymaster".to_string(),
             None,
             redis::sentinel::SentinelServerType::Replica,
         )
@@ -486,7 +486,7 @@ mod tests {
             let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
             let replica = redis::sentinel::SentinelClient::build(
                 vec![connection_info],
-                "mymaster",
+                "mymaster".to_string(),
                 None,
                 redis::sentinel::SentinelServerType::Replica,
             )

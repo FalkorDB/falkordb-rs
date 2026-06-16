@@ -180,6 +180,11 @@ check: fmt clippy build
 # Run every required CI gate locally (no server required).
 ci: fmt-check clippy build doc deny
 
+# Full post-task gate (no server required): strict clippy-all plus every CI gate.
+# Must be green before a task is declared done.
+done:
+    ./scripts/post-checks.sh
+
 # Full local validation: CI gates plus the server-backed test suite.
 verify: ci test-local
 

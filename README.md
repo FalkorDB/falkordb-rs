@@ -437,6 +437,10 @@ just check
 # fmt-check, clippy, build, doc, deny.
 just ci
 
+# Post-task gate: every CI gate PLUS strict clippy over all targets/features
+# (examples, tests, benches). Run this before declaring work done.
+just done
+
 # Format / lint / docs individually.
 just fmt
 just clippy

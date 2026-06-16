@@ -45,7 +45,7 @@ fn main() -> FalkorResult<()> {
         .ro_query("MATCH (g:Greeting) RETURN g.text")
         .execute()?;
 
-    while let Some(row) = greetings.data.next() {
+    for row in greetings.data.by_ref() {
         println!("read-only result: {row:?}");
     }
 

@@ -374,7 +374,7 @@ impl FalkorAsyncClient {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_async_test_client, TestAsyncGraphHandle},
+        test_utils::{create_async_test_client, retry_until_async_fn},
         FalkorClientBuilder,
     };
     use std::{mem, num::NonZeroU8, thread};
@@ -449,37 +449,35 @@ mod tests {
         // complete empty, and waiting never populates it. A successful copy is
         // visible immediately, so re-issue the copy until the new graph reports
         // the same rows as the source graph.
-        let mut graph = TestAsyncGraphHandle {
-            inner: client.select_graph("imdb_ro_copy_async"),
-        };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let copied = loop {
-            client
-                .select_graph("imdb_ro_copy_async")
-                .delete()
-                .await
-                .ok();
-            graph.inner = client
-                .copy_graph("imdb", "imdb_ro_copy_async")
-                .await
-                .expect("Could not copy graph");
+        let copied = retry_until_async_fn(
+            || async {
+                client
+                    .select_graph("imdb_ro_copy_async")
+                    .delete()
+                    .await
+                    .ok();
+                let mut graph = client
+                    .copy_graph("imdb", "imdb_ro_copy_async")
+                    .await
+                    .expect("Could not copy graph");
+                graph
+                    .query("MATCH (a:actor) RETURN a")
+                    .execute()
+                    .await
+                    .expect("Could not get actors from copied graph")
+                    .data
+                    .collect::<Vec<_>>()
+            },
+            |rows| rows.len() == expected.len(),
+        )
+        .await;
 
-            let rows = graph
-                .inner
-                .query("MATCH (a:actor) RETURN a")
-                .execute()
-                .await
-                .expect("Could not get actors from copied graph")
-                .data
-                .collect::<Vec<_>>();
-
-            if rows.len() == expected.len() || std::time::Instant::now() >= deadline {
-                break rows;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        };
-
-        assert_eq!(copied, expected)
+        assert_eq!(copied, expected);
+        client
+            .select_graph("imdb_ro_copy_async")
+            .delete()
+            .await
+            .ok();
     }
 
     #[tokio::test(flavor = "multi_thread")]

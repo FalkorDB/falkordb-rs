@@ -164,6 +164,29 @@ pub(crate) mod test_utils {
             tokio::time::sleep(RETRY_INTERVAL).await;
         }
     }
+
+    /// Async counterpart of [`retry_until`] for self-contained operations that do
+    /// not borrow a long-lived `&mut AsyncGraph` (so the future can capture
+    /// everything it needs, e.g. a shared `&FalkorAsyncClient`). Used for server
+    /// operations performed by a background fork (e.g. `GRAPH.COPY`) that must be
+    /// re-issued until they take effect.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn retry_until_async_fn<T, Fut>(
+        mut op: impl FnMut() -> Fut,
+        done: impl Fn(&T) -> bool,
+    ) -> T
+    where
+        Fut: std::future::Future<Output = T>,
+    {
+        let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
+        loop {
+            let value = op().await;
+            if done(&value) || std::time::Instant::now() >= deadline {
+                return value;
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +218,23 @@ mod retry_tests {
             },
             |v| *v == 3,
         );
+        assert_eq!(value, 3);
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn retry_until_async_fn_polls_until_condition_is_met() {
+        use super::test_utils::retry_until_async_fn;
+        let calls = Cell::new(0);
+        let value = retry_until_async_fn(
+            || async {
+                calls.set(calls.get() + 1);
+                calls.get()
+            },
+            |v| *v == 3,
+        )
+        .await;
         assert_eq!(value, 3);
         assert_eq!(calls.get(), 3);
     }

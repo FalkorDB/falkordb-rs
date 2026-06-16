@@ -349,7 +349,7 @@ mod tests {
     use super::*;
     use crate::FalkorValue::Node;
     use crate::{
-        test_utils::{create_test_client, TestSyncGraphHandle},
+        test_utils::{create_test_client, retry_until},
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
     };
     use approx::assert_relative_eq;
@@ -491,31 +491,24 @@ mod tests {
         // complete empty, and waiting never populates it. A successful copy is
         // visible immediately, so re-issue the copy until the new graph reports
         // the same rows as the source graph.
-        let mut graph = TestSyncGraphHandle {
-            inner: client.select_graph("imdb_ro_copy"),
-        };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let copied = loop {
-            client.select_graph("imdb_ro_copy").delete().ok();
-            graph.inner = client
-                .copy_graph("imdb", "imdb_ro_copy")
-                .expect("Could not copy graph");
+        let copied = retry_until(
+            || {
+                client.select_graph("imdb_ro_copy").delete().ok();
+                let mut graph = client
+                    .copy_graph("imdb", "imdb_ro_copy")
+                    .expect("Could not copy graph");
+                graph
+                    .query("MATCH (a:actor) RETURN a")
+                    .execute()
+                    .expect("Could not get actors from copied graph")
+                    .data
+                    .collect::<Vec<_>>()
+            },
+            |rows| rows.len() == expected.len(),
+        );
 
-            let rows = graph
-                .inner
-                .query("MATCH (a:actor) RETURN a")
-                .execute()
-                .expect("Could not get actors from copied graph")
-                .data
-                .collect::<Vec<_>>();
-
-            if rows.len() == expected.len() || std::time::Instant::now() >= deadline {
-                break rows;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        };
-
-        assert_eq!(copied, expected)
+        assert_eq!(copied, expected);
+        client.select_graph("imdb_ro_copy").delete().ok();
     }
 
     #[test]

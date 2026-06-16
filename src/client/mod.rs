@@ -508,4 +508,40 @@ mod tests {
             }
         });
     }
+
+    #[test]
+    fn test_get_replica_connection_on_redis_provider_without_replica_does_not_use_primary() {
+        // A real Redis provider with a reachable primary but no replica Sentinel must
+        // still return `UnavailableProvider` — never a primary connection. This catches
+        // a reintroduced fallback even when the primary URL happens to be reachable.
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        let result = provider.get_replica_connection();
+        assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_replica_connection_on_redis_provider_without_replica_does_not_use_primary() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: None,
+                sentinel_replica: None,
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            let result = provider.get_async_replica_connection().await;
+            assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+        });
+    }
 }

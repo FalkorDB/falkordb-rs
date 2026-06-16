@@ -197,10 +197,7 @@ mod retry_tests {
     #[test]
     fn retry_until_returns_immediately_when_already_done() {
         let calls = AtomicUsize::new(0);
-        let value = retry_until(
-            || calls.fetch_add(1, Ordering::Relaxed) + 1,
-            |v| *v == 1,
-        );
+        let value = retry_until(|| calls.fetch_add(1, Ordering::Relaxed) + 1, |v| *v == 1);
         assert_eq!(value, 1);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
@@ -208,10 +205,7 @@ mod retry_tests {
     #[test]
     fn retry_until_polls_until_condition_is_met() {
         let calls = AtomicUsize::new(0);
-        let value = retry_until(
-            || calls.fetch_add(1, Ordering::Relaxed) + 1,
-            |v| *v == 3,
-        );
+        let value = retry_until(|| calls.fetch_add(1, Ordering::Relaxed) + 1, |v| *v == 3);
         assert_eq!(value, 3);
         assert_eq!(calls.load(Ordering::Relaxed), 3);
     }

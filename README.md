@@ -413,6 +413,63 @@ The embedded server:
 - Automatically cleans up when the client is dropped
 - Can be configured with custom paths, database directory, and socket location
 
+## Development
+
+This repository ships a [`just`](https://github.com/casey/just) file that automates the
+whole development cycle — formatting, linting, building, docs, tests, coverage,
+benchmarks, the dependency audit and a Dockerized FalkorDB server. It is the recommended
+entry point for day-to-day work and mirrors the commands the CI gates run.
+
+Install the runner once with `cargo install just` (or `brew install just`), then list
+every available recipe:
+
+```bash
+just            # or: just --list
+```
+
+### Common recipes
+
+```bash
+# Fast inner loop (no server needed): format, lint and build.
+just check
+
+# Run every required CI gate locally (no server needed):
+# fmt-check, clippy, build, doc, deny.
+just ci
+
+# Format / lint / docs individually.
+just fmt
+just clippy
+just doc
+
+# Full validation including the server-backed test suite (manages Docker for you):
+# spins up FalkorDB, populates the fixture, runs the suite, tears it down.
+just verify
+```
+
+### Server-backed recipes
+
+Tests, coverage and benchmarks need a reachable FalkorDB instance. The `db-*` recipes
+manage one via Docker, and the `*-local` wrappers do it for you automatically:
+
+```bash
+# Manage a FalkorDB container yourself.
+just db-up          # start a server (and wait until it is ready)
+just db-populate    # load the IMDB fixture graph the lib tests use
+just db-down        # stop and remove the container
+
+# Or let a single recipe manage the container lifecycle end-to-end.
+just test-local       # start DB, populate, run the full suite, tear down
+just coverage-local   # same, but produce Codecov JSON
+just bench-local      # start DB, run all benchmarks, tear down
+```
+
+Targeted recipes are available too, e.g. `just test-parity`, `just test-embedded`,
+`just test-one <filter>`, `just bench-one '<criterion-id>'`, and `just coverage-html`.
+
+The host, port, Docker image and feature set can be overridden on the command line, for
+example `just port=6380 test` or `just image=falkordb/falkordb:latest db-up`.
+
 ## Testing
 
 ### Running Tests

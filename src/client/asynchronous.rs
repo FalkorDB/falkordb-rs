@@ -478,7 +478,7 @@ mod tests {
                     .data
                     .collect::<Vec<_>>()
             },
-            |rows| *rows == expected,
+            |rows| rows == &expected,
         )
         .await;
 

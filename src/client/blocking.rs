@@ -513,7 +513,7 @@ mod tests {
                     .data
                     .collect::<Vec<_>>()
             },
-            |rows| *rows == expected,
+            |rows| rows == &expected,
         );
 
         assert_eq!(copied, expected);

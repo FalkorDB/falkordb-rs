@@ -244,7 +244,7 @@ pub(crate) async fn poll_async<S, T>(
     mut attempt: impl for<'s> FnMut(
         &'s mut S,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = crate::FalkorResult<Step<T>>> + 's>,
+        Box<dyn std::future::Future<Output = crate::FalkorResult<Step<T>>> + Send + 's>,
     >,
 ) -> crate::FalkorResult<T> {
     let deadline = deadline_for(options.timeout);

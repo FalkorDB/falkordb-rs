@@ -52,7 +52,7 @@ pub enum ConnectionStrategy {
     },
 
     /// A small number of shared, cloneable, auto-reconnecting connections. Commands are
-    /// round-robined across them and pipelined concurrently over each socket, so a
+    /// distributed round-robin across them and pipelined concurrently over each socket, so a
     /// single connection can carry many in-flight commands at once. Default for the
     /// asynchronous client.
     Multiplexed {

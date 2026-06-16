@@ -119,17 +119,23 @@ pub(crate) mod test_utils {
         coverage job's \"Populate test graph\" step). This indicates a missing test fixture, \
         NOT a code regression.";
 
-    /// Number of `actor` nodes in the shared `imdb` fixture, or `0` when the graph is empty
-    /// or the query fails.
+    /// Number of `actor` nodes in the shared `imdb` fixture.
+    ///
+    /// A query or parsing failure here is a real connectivity/code problem (not a missing
+    /// fixture), so it panics with the underlying error rather than being collapsed into a
+    /// zero count. Only an actual count of `0` indicates an empty/missing fixture, which the
+    /// caller turns into the [`IMDB_FIXTURE_HINT`] message.
     fn imdb_actor_count(graph: &mut SyncGraph) -> i64 {
-        graph
+        let mut result = graph
             .ro_query("MATCH (a:actor) RETURN count(a)")
             .execute()
-            .ok()
-            .and_then(|mut res| res.data.next())
+            .expect("failed to query the imdb actor count (connection or query regression)");
+        result
+            .data
+            .next()
             .and_then(|row| row.into_iter().next())
             .and_then(|value| value.to_i64())
-            .unwrap_or(0)
+            .expect("imdb actor count query returned an unexpected shape")
     }
 
     /// Create a sync client and assert the shared `imdb` fixture is populated, so every
@@ -147,15 +153,17 @@ pub(crate) mod test_utils {
     pub(crate) async fn imdb_async_test_client() -> FalkorAsyncClient {
         let client = create_async_test_client().await;
         let mut graph = client.select_graph(IMDB_FIXTURE_GRAPH);
-        let count = graph
+        let mut result = graph
             .ro_query("MATCH (a:actor) RETURN count(a)")
             .execute()
             .await
-            .ok()
-            .and_then(|mut res| res.data.next())
+            .expect("failed to query the imdb actor count (connection or query regression)");
+        let count = result
+            .data
+            .next()
             .and_then(|row| row.into_iter().next())
             .and_then(|value| value.to_i64())
-            .unwrap_or(0);
+            .expect("imdb actor count query returned an unexpected shape");
         assert!(count > 0, "{IMDB_FIXTURE_HINT}");
         client
     }

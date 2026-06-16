@@ -7,29 +7,59 @@
 //! `resource_usage`). Kept in a non-target subdirectory module so both benches can
 //! `mod common;` it without Cargo treating it as its own benchmark.
 
+use std::net::TcpStream;
+
 use falkordb::{ConnectionStrategy, FalkorAsyncClient, FalkorClientBuilder, FalkorConnectionInfo};
 
 /// Connection counts compared across both benchmarks.
 pub const STRATEGY_COUNTS: [u8; 3] = [1, 8, 32];
 
-/// Resolve the target server from `FALKORDB_HOST` / `FALKORDB_PORT` (defaults
-/// `127.0.0.1:6379`), or `None` when the address is unparseable.
-pub fn connection_info() -> Option<FalkorConnectionInfo> {
+/// Resolve the target host/port from `FALKORDB_HOST` / `FALKORDB_PORT` (defaults
+/// `127.0.0.1:6379`).
+///
+/// Panics if `FALKORDB_PORT` is set but not a valid port, so a misconfigured benchmark
+/// fails loudly instead of silently falling back to the default target.
+fn target() -> (String, u16) {
     let host = std::env::var("FALKORDB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port: u16 = std::env::var("FALKORDB_PORT")
-        .unwrap_or_else(|_| "6379".to_string())
-        .parse()
-        .unwrap_or(6379);
-    FalkorConnectionInfo::try_from((host.as_str(), port)).ok()
+    let port: u16 = match std::env::var("FALKORDB_PORT") {
+        Ok(port) => port
+            .parse()
+            .expect("FALKORDB_PORT must be a valid u16 port number"),
+        Err(_) => 6379,
+    };
+    (host, port)
 }
 
-/// Build an async client for `strategy`, or `None` when no server is reachable.
+/// The configured connection info. Panics if the host/port cannot form a valid
+/// [`FalkorConnectionInfo`], surfacing configuration errors rather than hiding them.
+fn connection_info() -> FalkorConnectionInfo {
+    let (host, port) = target();
+    FalkorConnectionInfo::try_from((host.as_str(), port))
+        .expect("Could not build a FalkorConnectionInfo from FALKORDB_HOST/FALKORDB_PORT")
+}
+
+/// Whether the configured server is accepting TCP connections. Used to decide whether to
+/// skip (server absent — benches stay runnable in serverless CI) versus fail (server
+/// present but the client errors).
+fn server_is_reachable() -> bool {
+    let (host, port) = target();
+    TcpStream::connect((host.as_str(), port)).is_ok()
+}
+
+/// Build an async client for `strategy`, or `None` when no server is reachable (so the
+/// benches skip cleanly in serverless CI).
+///
+/// When the server *is* reachable, a build failure is a real error (config, auth, or a
+/// regression) and panics rather than being silently turned into a skipped case.
 pub async fn build_client(strategy: ConnectionStrategy) -> Option<FalkorAsyncClient> {
-    let conn_info = connection_info()?;
-    FalkorClientBuilder::new_async()
-        .with_connection_info(conn_info)
+    if !server_is_reachable() {
+        return None;
+    }
+    let client = FalkorClientBuilder::new_async()
+        .with_connection_info(connection_info())
         .with_connection_strategy(strategy)
         .build()
         .await
-        .ok()
+        .expect("FalkorDB is reachable but building the async client failed");
+    Some(client)
 }

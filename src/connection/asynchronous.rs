@@ -44,7 +44,7 @@ impl FalkorAsyncConnection {
         cmd.arg(graph_name);
         if let Some(params) = params {
             for param in params {
-                cmd.arg(param.to_string());
+                cmd.arg(*param);
             }
         }
         match self {
@@ -162,7 +162,7 @@ impl BorrowedAsyncConnection {
             Err(FalkorDBError::ConnectionDown) => {
                 if let Ok(new_conn) = self.client.fresh_connection(self.readonly).await {
                     self.conn = Some(new_conn);
-                    tokio::spawn(async { self.return_to_pool().await });
+                    self.return_to_pool().await;
                     return Err(FalkorDBError::ConnectionDown);
                 }
                 Err(FalkorDBError::NoConnection)
@@ -170,7 +170,7 @@ impl BorrowedAsyncConnection {
             res => res,
         };
 
-        tokio::spawn(async { self.return_to_pool().await });
+        self.return_to_pool().await;
         res
     }
 

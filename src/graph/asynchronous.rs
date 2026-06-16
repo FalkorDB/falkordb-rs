@@ -559,6 +559,31 @@ mod tests {
             .expect("Could not create index");
         assert_eq!(res.get_indices_created(), Some(1));
 
+        // `execute` is non-blocking, so the index may not be visible yet; wait for it
+        // to appear before dropping so the drop is deterministic.
+        retry_until_async(
+            &mut graph.inner,
+            |graph| {
+                Box::pin(async move {
+                    graph
+                        .list_indices()
+                        .await
+                        .expect("Could not list indices")
+                        .data
+                })
+            },
+            |indices| {
+                indices.iter().any(|index| {
+                    index.index_label == "actor"
+                        && index
+                            .field_types
+                            .get("name")
+                            .is_some_and(|types| types.contains(&IndexType::Fulltext))
+                })
+            },
+        )
+        .await;
+
         let res = graph
             .inner
             .drop_index_op(IndexType::Fulltext, EntityType::Node, "actor", &["name"])

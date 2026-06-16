@@ -46,8 +46,7 @@ impl<const R: char> FalkorClientBuilder<R> {
     /// This updates the connection count of the builder's active
     /// [`ConnectionStrategy`] (pool size for [`ConnectionStrategy::Pooled`], or number
     /// of multiplexed sockets for [`ConnectionStrategy::Multiplexed`]). When combined
-    /// with [`with_connection_strategy`](FalkorClientBuilder::with_connection_strategy),
-    /// the last setter wins.
+    /// with `with_connection_strategy` (async builder only), the last setter wins.
     ///
     /// # Arguments
     /// * `num_connections`: the number of connections, a non-zero integer, between 1 and 32
@@ -137,9 +136,10 @@ impl<const R: char> FalkorClientBuilder<R> {
 
             // Create a Redis client that connects to the embedded server's Unix socket
             let socket_path = embedded_server.socket_path();
-            let redis_connection_info = redis::ConnectionAddr::Unix(socket_path.to_path_buf())
-                .into_connection_info()
-                .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
+            let redis_connection_info = redis::IntoConnectionInfo::into_connection_info(
+                redis::ConnectionAddr::Unix(socket_path.to_path_buf()),
+            )
+            .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
 
             let client = redis::Client::open(redis_connection_info.clone())
                 .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;

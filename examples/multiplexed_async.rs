@@ -54,7 +54,8 @@ async fn main() -> FalkorResult<()> {
     }
 
     let mut completed = 0;
-    while let Some(Ok(result)) = join_set.join_next().await {
+    while let Some(joined) = join_set.join_next().await {
+        let result = joined.expect("task should not panic");
         let (_i, _value) = result?;
         completed += 1;
     }

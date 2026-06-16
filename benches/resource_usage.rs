@@ -107,12 +107,18 @@ async fn run_workload(
                 let graph_name = graph_name.to_string();
                 tokio::spawn(async move {
                     let mut graph = client.select_graph(&graph_name);
-                    graph.ro_query("RETURN 1").execute().await.map(|_| ()).ok();
+                    graph
+                        .ro_query("RETURN 1")
+                        .execute()
+                        .await
+                        .expect("resource benchmark query should succeed");
                 })
             })
             .collect();
         for handle in handles {
-            let _ = handle.await;
+            handle
+                .await
+                .expect("resource benchmark task should not panic");
         }
         remaining -= batch;
     }

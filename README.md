@@ -375,8 +375,8 @@ falkordb = { version = "0.3.0", features = ["embedded"] }
 - `falkordb.so` module must be installed (or you can specify a custom path)
 
 You can install these from:
-- Redis: https://github.com/redis/redis
-- FalkorDB: https://github.com/falkordb/falkordb
+- [Redis](https://github.com/redis/redis)
+- [FalkorDB](https://github.com/falkordb/falkordb)
 
 #### Usage Example
 

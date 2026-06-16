@@ -252,13 +252,14 @@ mod async_flavours {
     async fn test_embedded_async_concurrent_single_socket() {
         const CONCURRENCY: i64 = 200;
 
-        let Some(client) = build_async(ConnectionStrategy::Multiplexed {
+        if embedded_config().is_none() {
+            return;
+        }
+        let client = build_async(ConnectionStrategy::Multiplexed {
             connections: NonZeroU8::new(1).unwrap(),
         })
         .await
-        else {
-            return;
-        };
+        .expect("embedded async client should build for an available module");
         let client = Arc::new(client);
         let graph_name = "embedded_async_concurrent";
         let _ = client.select_graph(graph_name).delete().await;

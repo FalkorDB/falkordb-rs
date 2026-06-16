@@ -757,4 +757,97 @@ mod tests {
             assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
         });
     }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_connection_manager_none_provider_is_unavailable() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut provider = FalkorClientProvider::None;
+            let result = provider.get_async_connection_manager(None).await;
+            assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_connection_manager_routes_through_sentinel() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+            let sentinel = redis::sentinel::SentinelClient::build(
+                vec![connection_info],
+                "mymaster".to_string(),
+                None,
+                redis::sentinel::SentinelServerType::Master,
+            )
+            .unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: Some(sentinel),
+                sentinel_replica: None,
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            // The sentinel arm resolves the master through an unreachable sentinel, which
+            // fails fast with a RedisError rather than bypassing it.
+            let result = provider.get_async_connection_manager(None).await;
+            assert!(
+                matches!(result, Err(FalkorDBError::RedisError(_))),
+                "error should come from the sentinel resolution path"
+            );
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_replica_connection_manager_errors_when_replica_unreachable() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+            let replica = redis::sentinel::SentinelClient::build(
+                vec![connection_info],
+                "mymaster".to_string(),
+                None,
+                redis::sentinel::SentinelServerType::Replica,
+            )
+            .unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: None,
+                sentinel_replica: Some(replica),
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            let result = provider.get_async_replica_connection_manager(None).await;
+            assert!(
+                matches!(result, Err(FalkorDBError::RedisError(_))),
+                "error should come from the replica manager path"
+            );
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_replica_connection_manager_without_replica_does_not_use_primary() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: None,
+                sentinel_replica: None,
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            let result = provider.get_async_replica_connection_manager(None).await;
+            assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+        });
+    }
 }

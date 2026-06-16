@@ -596,8 +596,143 @@ mod tests {
         },
         FalkorClientBuilder,
     };
-    use std::{mem, num::NonZeroU8, thread};
+    use std::{
+        mem,
+        num::{NonZeroU8, NonZeroUsize},
+        thread,
+    };
     use tokio::sync::mpsc::error::TryRecvError;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_multiplexed_strategy_with_max_inflight() {
+        // An explicit multiplexed strategy combined with a bounded in-flight limit
+        // exercises the `ConnectionManager` concurrency-limit configuration path and the
+        // multiplexed executor build loop.
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_strategy(ConnectionStrategy::Multiplexed {
+                connections: NonZeroU8::new(2).expect("Could not create a perfectly valid u8"),
+            })
+            .with_max_inflight(
+                NonZeroUsize::new(4).expect("Could not create a perfectly valid usize"),
+            )
+            .build()
+            .await
+            .expect("Could not build a bounded multiplexed client");
+
+        assert!(
+            matches!(
+                client.connection_strategy(),
+                ConnectionStrategy::Multiplexed { .. }
+            ),
+            "An explicit multiplexed strategy must be preserved on a single-node deployment"
+        );
+        assert_eq!(client.connection_pool_size(), 2);
+        assert!(
+            matches!(&client.inner.primary, AsyncExecutor::Multiplexed(_)),
+            "The primary executor must be multiplexed"
+        );
+
+        // A real round-trip proves the bounded multiplexed sockets route responses.
+        let mut graph = client.select_graph("test_multiplexed_max_inflight");
+        graph
+            .query("CREATE (:N {v: 1})")
+            .execute()
+            .await
+            .expect("Could not create node over the multiplexed client");
+        let mut result = graph
+            .ro_query("MATCH (n:N) RETURN count(n)")
+            .execute()
+            .await
+            .expect("Could not read over the multiplexed client");
+        assert!(
+            result.data.next().is_some(),
+            "Expected the multiplexed read-only query to return a row"
+        );
+        graph.delete().await.ok();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_multiplexed_fresh_connection() {
+        // `fresh_connection` on a multiplexed client hands out a managed clone for both
+        // primary and (replica-less) read-only routing, without falling back to a pool.
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_strategy(ConnectionStrategy::Multiplexed {
+                connections: NonZeroU8::new(1).expect("Could not create a perfectly valid u8"),
+            })
+            .build()
+            .await
+            .expect("Could not build a single-socket multiplexed client");
+
+        let primary = client
+            .inner
+            .fresh_connection(false)
+            .await
+            .expect("Could not obtain a fresh primary multiplexed connection");
+        assert!(
+            matches!(primary, FalkorAsyncConnection::Managed(_)),
+            "A multiplexed primary must hand out a managed connection"
+        );
+
+        // No readable replica on a single node: read-only routing transparently falls
+        // back to the primary multiplexed manager.
+        let readonly = client
+            .inner
+            .fresh_connection(true)
+            .await
+            .expect("Read-only routing must fall back to the primary manager");
+        assert!(
+            matches!(readonly, FalkorAsyncConnection::Managed(_)),
+            "Read-only fallback must also be a managed connection"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_with_num_connections_preserves_multiplexed() {
+        // `with_num_connections` updates the count of the builder's active strategy; on
+        // the async builder the default strategy is multiplexed, so the multiplexed arm
+        // of `with_connection_count` is exercised.
+        let client = FalkorClientBuilder::new_async()
+            .with_num_connections(NonZeroU8::new(3).expect("Could not create a perfectly valid u8"))
+            .build()
+            .await
+            .expect("Could not build a multiplexed client with a custom socket count");
+
+        assert!(matches!(
+            client.connection_strategy(),
+            ConnectionStrategy::Multiplexed { .. }
+        ));
+        assert_eq!(client.connection_pool_size(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pooled_fresh_connection() {
+        // On a pooled client `fresh_connection` opens a brand new connection; with no
+        // replica configured, read-only routing also falls through to a primary-pool
+        // connection rather than a replica.
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_strategy(ConnectionStrategy::Pooled {
+                size: NonZeroU8::new(2).expect("Could not create a perfectly valid u8"),
+            })
+            .build()
+            .await
+            .expect("Could not build a pooled client");
+
+        assert!(matches!(&client.inner.primary, AsyncExecutor::Pooled(_)));
+
+        let primary = client
+            .inner
+            .fresh_connection(false)
+            .await
+            .expect("Could not open a fresh pooled connection");
+        assert!(matches!(primary, FalkorAsyncConnection::Redis(_)));
+
+        let readonly = client
+            .inner
+            .fresh_connection(true)
+            .await
+            .expect("Read-only routing must fall back to a primary-pool connection");
+        assert!(matches!(readonly, FalkorAsyncConnection::Redis(_)));
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_borrow_connection() {

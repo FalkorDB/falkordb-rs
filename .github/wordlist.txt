@@ -51,6 +51,8 @@ cleans
 FalkorResult
 FalkorClientBuilder
 FalkorConnectionInfo
+EntityType
+IndexType
 EmbeddedServer
 Alice
 falkor

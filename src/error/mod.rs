@@ -8,6 +8,7 @@ use crate::SchemaType;
 /// A verbose error enum used throughout the client, messages are static string slices.
 /// this allows easy error integration using [`thiserror`]
 #[derive(thiserror::Error, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum FalkorDBError {
     /// A required ID for parsing was not found in the schema.
     #[error("A required Id for parsing was not found in the schema")]
@@ -127,6 +128,26 @@ pub enum FalkorDBError {
     /// An error occurred with the embedded FalkorDB server
     #[error("Embedded server error: {0}")]
     EmbeddedServerError(String),
+    /// A background operation did not reach its expected state before the wait timed out.
+    #[error("Timed out after {timeout:?} waiting for {operation}")]
+    Timeout {
+        /// Which background operation timed out.
+        operation: crate::WaitOperation,
+        /// The timeout that elapsed.
+        timeout: std::time::Duration,
+    },
+    /// A constraint reached the terminal `FAILED` state (e.g. existing data violates it).
+    #[error(
+        "{constraint_type} constraint on label '{label}' properties {properties:?} failed to be enforced"
+    )]
+    ConstraintFailed {
+        /// The label the constraint applies to.
+        label: String,
+        /// The properties the constraint applies to.
+        properties: Vec<String>,
+        /// Whether the failed constraint was unique or mandatory.
+        constraint_type: crate::ConstraintType,
+    },
 }
 
 impl From<strum::ParseError> for FalkorDBError {

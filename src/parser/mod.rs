@@ -187,27 +187,6 @@ pub(crate) fn redis_value_as_typed_string(value: redis::Value) -> FalkorResult<S
 
 #[cfg_attr(
     feature = "tracing",
-    tracing::instrument(name = "String Vec From Redis Value", skip_all, level = "debug")
-)]
-pub(crate) fn redis_value_as_typed_string_vec(value: redis::Value) -> FalkorResult<Vec<String>> {
-    type_val_from_value(value)
-        .and_then(|(type_marker, val)| {
-            if type_marker == ParserTypeMarker::Array {
-                redis_value_as_vec(val)
-            } else {
-                Err(FalkorDBError::ParsingArray)
-            }
-        })
-        .map(|val_vec| {
-            val_vec
-                .into_iter()
-                .flat_map(redis_value_as_string)
-                .collect()
-        })
-}
-
-#[cfg_attr(
-    feature = "tracing",
     tracing::instrument(name = "String Vec From Untyped Value", skip_all, level = "trace")
 )]
 pub(crate) fn redis_value_as_untyped_string_vec(value: redis::Value) -> FalkorResult<Vec<String>> {

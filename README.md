@@ -63,6 +63,83 @@ while let Some(node) = nodes.data.next() {
 
 ## Features
 
+### Waiting for background operations
+
+Some FalkorDB operations finish **after** the command that starts them returns: when you create or
+drop an index or constraint, the request returns immediately while the index is populated (or the
+constraint is enforced) on a background worker thread, and `GRAPH.COPY` can fail transiently while
+the server is unable to `fork`. The eager methods
+(`create_index`, `create_unique_constraint`, `copy_graph`, …) stay fire-and-forget, but every
+one of them now has an additive `*_op` builder that adds explicit, opt-in waiting while keeping
+full backward compatibility.
+
+Each builder offers `.execute()` (non-blocking, identical to the eager method) and `.wait()` /
+`.wait_with(WaitOptions)` terminals. For index and constraint builders, `.wait()` blocks until the
+operation has actually taken effect (the index/constraint becomes operational or is dropped),
+returning [`FalkorDBError::Timeout`] if it does not happen in time. For the copy builder, `GRAPH.COPY`
+is already blocking on the server, so `.wait()` simply retries transient `could not fork` failures
+with backoff; it does **not** verify the copied contents (that remains the caller's responsibility).
+
+```rust,no_run
+use falkordb::{EntityType, FalkorClientBuilder, FalkorConnectionInfo, IndexType, WaitOptions};
+use std::time::Duration;
+
+let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
+            .expect("Invalid connection info");
+let client = FalkorClientBuilder::new()
+           .with_connection_info(connection_info)
+           .build()
+           .expect("Failed to build client");
+let mut graph = client.select_graph("social");
+
+// Fire-and-forget, exactly like `create_index` (returns as soon as the server accepts it):
+graph.create_index_op(IndexType::Range, EntityType::Node, "Person", &["age"], None)
+     .execute()
+     .expect("Failed to request index creation");
+
+// Block until the index is actually operational (default 30s readiness timeout):
+graph.create_index_op(IndexType::Range, EntityType::Node, "Person", &["name"], None)
+     .wait()
+     .expect("Index did not become operational");
+
+// A unique constraint reports a *distinct* error if existing data violates it:
+match graph.create_unique_constraint_op(EntityType::Node, "Person", &["email"])
+           .wait_with(WaitOptions::with_timeout(Duration::from_secs(10)))
+{
+    Ok(()) => println!("constraint is enforced"),
+    Err(falkordb::FalkorDBError::ConstraintFailed { .. }) => println!("data violates the constraint"),
+    Err(other) => panic!("unexpected error: {other}"),
+}
+
+// Copy a graph, retrying transient `could not fork` failures:
+let _copy = client.copy_graph_op("social", "social_backup")
+                  .wait()
+                  .expect("Failed to copy graph");
+```
+
+The same builders exist on the async client/graph; just `await` the terminals:
+
+```rust,ignore
+use falkordb::{EntityType, FalkorClientBuilder, FalkorConnectionInfo, IndexType};
+
+let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
+            .expect("Invalid connection info");
+let client = FalkorClientBuilder::new_async()
+           .with_connection_info(connection_info)
+           .build()
+           .await
+           .expect("Failed to build client");
+let mut graph = client.select_graph("social");
+
+graph.create_index_op(IndexType::Range, EntityType::Node, "Person", &["name"], None)
+     .wait()
+     .await
+     .expect("Index did not become operational");
+```
+
+[`FalkorDBError::Timeout`]: https://docs.rs/falkordb/latest/falkordb/enum.FalkorDBError.html
+
+
 ### `tokio` support
 
 This client supports nonblocking API using the [`tokio`](https://tokio.rs/) runtime.

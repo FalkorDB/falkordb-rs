@@ -404,7 +404,7 @@ mod tests {
     use super::*;
     use crate::{
         test_utils::{create_async_test_client, open_empty_async_test_graph, retry_until_async},
-        IndexType,
+        ConstraintType, FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
 
     #[tokio::test(flavor = "multi_thread")]
@@ -539,6 +539,202 @@ mod tests {
         )
         .await;
         assert_eq!(res.data.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_index_op_execute_is_non_blocking() {
+        let mut graph = open_empty_async_test_graph("test_create_index_op_execute_async").await;
+
+        let res = graph
+            .inner
+            .create_index_op(
+                IndexType::Fulltext,
+                EntityType::Node,
+                "actor",
+                &["name"],
+                None,
+            )
+            .execute()
+            .await
+            .expect("Could not create index");
+        assert_eq!(res.get_indices_created(), Some(1));
+
+        // `execute` is non-blocking, so the index may not be visible yet; wait for it
+        // to appear before dropping so the drop is deterministic.
+        retry_until_async(
+            &mut graph.inner,
+            |graph| {
+                Box::pin(async move {
+                    graph
+                        .list_indices()
+                        .await
+                        .expect("Could not list indices")
+                        .data
+                })
+            },
+            |indices| {
+                indices.iter().any(|index| {
+                    index.index_label == "actor"
+                        && index
+                            .field_types
+                            .get("name")
+                            .is_some_and(|types| types.contains(&IndexType::Fulltext))
+                })
+            },
+        )
+        .await;
+
+        let res = graph
+            .inner
+            .drop_index_op(IndexType::Fulltext, EntityType::Node, "actor", &["name"])
+            .execute()
+            .await
+            .expect("Could not drop index");
+        assert_eq!(res.get_indices_deleted(), Some(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_drop_index_op_wait() {
+        let mut graph = open_empty_async_test_graph("test_create_index_op_wait_async").await;
+
+        graph
+            .inner
+            .create_index_op(IndexType::Range, EntityType::Node, "person", &["age"], None)
+            .wait()
+            .await
+            .expect("Index did not become operational");
+
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices")
+            .data;
+        assert!(indices.iter().any(|index| {
+            index.index_label == "person"
+                && index.status == IndexStatus::Active
+                && index
+                    .field_types
+                    .get("age")
+                    .is_some_and(|types| types.contains(&IndexType::Range))
+        }));
+
+        graph
+            .inner
+            .drop_index_op(IndexType::Range, EntityType::Node, "person", &["age"])
+            .wait()
+            .await
+            .expect("Index was not dropped");
+
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices")
+            .data;
+        assert!(indices.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_mandatory_constraint_op_wait() {
+        let mut graph =
+            open_empty_async_test_graph("test_mandatory_constraint_op_wait_async").await;
+
+        graph
+            .inner
+            .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
+            .wait()
+            .await
+            .expect("Constraint did not become operational");
+
+        graph
+            .inner
+            .drop_constraint_op(
+                ConstraintType::Mandatory,
+                EntityType::Node,
+                "person",
+                &["name"],
+            )
+            .wait()
+            .await
+            .expect("Constraint was not dropped");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_constraint_op_execute_is_non_blocking() {
+        let mut graph = open_empty_async_test_graph("test_constraint_op_execute_async").await;
+
+        graph
+            .inner
+            .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
+            .execute()
+            .await
+            .expect("Could not create constraint");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_drop_index_op_wait_errors_when_missing() {
+        let mut graph = open_empty_async_test_graph("test_drop_index_op_missing_async").await;
+
+        let result = graph
+            .inner
+            .drop_index_op(IndexType::Range, EntityType::Node, "person", &["age"])
+            .wait()
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_unique_constraint_op_wait() {
+        let mut graph = open_empty_async_test_graph("test_unique_constraint_op_wait_async").await;
+
+        graph
+            .inner
+            .create_unique_constraint_op(EntityType::Node, "person", &["email"])
+            .wait()
+            .await
+            .expect("Constraint did not become operational");
+
+        graph
+            .inner
+            .drop_constraint_op(
+                ConstraintType::Unique,
+                EntityType::Node,
+                "person",
+                &["email"],
+            )
+            .wait()
+            .await
+            .expect("Constraint was not dropped");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_unique_constraint_op_wait_reports_failure() {
+        let mut graph = open_empty_async_test_graph("test_unique_constraint_op_failed_async").await;
+
+        graph
+            .inner
+            .query("CREATE (:person {email: 'dup'}), (:person {email: 'dup'})")
+            .execute()
+            .await
+            .expect("Could not seed conflicting data");
+
+        let result = graph
+            .inner
+            .create_unique_constraint_op(EntityType::Node, "person", &["email"])
+            .wait_with(WaitOptions::with_timeout(std::time::Duration::from_secs(
+                10,
+            )))
+            .await;
+
+        assert_eq!(
+            result,
+            Err(FalkorDBError::ConstraintFailed {
+                label: "person".to_string(),
+                properties: vec!["email".to_string()],
+                constraint_type: ConstraintType::Unique,
+            })
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

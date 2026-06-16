@@ -9,6 +9,8 @@ use std::{collections::HashMap, fmt::Display};
 pub(crate) mod blocking;
 pub(crate) mod query_builder;
 
+pub(crate) mod ops;
+
 #[cfg(feature = "tokio")]
 pub(crate) mod asynchronous;
 

@@ -349,7 +349,9 @@ mod tests {
     use super::*;
     use crate::FalkorValue::Node;
     use crate::{
-        test_utils::{create_test_client, retry_until, TestSyncGraphHandle},
+        test_utils::{
+            create_test_client, retry_until_with_timeout, TestSyncGraphHandle, COPY_RETRY_TIMEOUT,
+        },
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
     };
     use approx::assert_relative_eq;
@@ -497,7 +499,8 @@ mod tests {
         // complete empty, and waiting never populates it. A successful copy is
         // visible immediately, so re-issue the copy until the new graph reports
         // the same rows as the source graph.
-        let copied = retry_until(
+        let copied = retry_until_with_timeout(
+            COPY_RETRY_TIMEOUT,
             || {
                 client.select_graph("imdb_ro_copy").delete().ok();
                 let mut graph = client

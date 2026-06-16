@@ -374,7 +374,10 @@ impl FalkorAsyncClient {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_async_test_client, retry_until_async_fn, TestAsyncGraphHandle},
+        test_utils::{
+            create_async_test_client, retry_until_async_fn_with_timeout, TestAsyncGraphHandle,
+            COPY_RETRY_TIMEOUT,
+        },
         FalkorClientBuilder,
     };
     use std::{mem, num::NonZeroU8, thread};
@@ -455,7 +458,8 @@ mod tests {
         // complete empty, and waiting never populates it. A successful copy is
         // visible immediately, so re-issue the copy until the new graph reports
         // the same rows as the source graph.
-        let copied = retry_until_async_fn(
+        let copied = retry_until_async_fn_with_timeout(
+            COPY_RETRY_TIMEOUT,
             || async {
                 client
                     .select_graph("imdb_ro_copy_async")

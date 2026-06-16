@@ -80,6 +80,7 @@ pub struct BorrowedSyncConnection {
     conn: Option<FalkorSyncConnection>,
     return_tx: mpsc::SyncSender<FalkorSyncConnection>,
     client: Arc<FalkorSyncClientInner>,
+    readonly: bool,
 }
 
 impl BorrowedSyncConnection {
@@ -87,11 +88,13 @@ impl BorrowedSyncConnection {
         conn: FalkorSyncConnection,
         return_tx: mpsc::SyncSender<FalkorSyncConnection>,
         client: Arc<FalkorSyncClientInner>,
+        readonly: bool,
     ) -> Self {
         Self {
             conn: Some(conn),
             return_tx,
             client,
+            readonly,
         }
     }
 
@@ -119,7 +122,12 @@ impl BorrowedSyncConnection {
             .execute_command(graph_name, command, subcommand, params)
         {
             Err(FalkorDBError::ConnectionDown) => {
-                if let Ok(new_conn) = self.client.get_connection() {
+                let new_conn = if self.readonly {
+                    self.client.get_readonly_connection()
+                } else {
+                    self.client.get_connection()
+                };
+                if let Ok(new_conn) = new_conn {
                     self.conn = Some(new_conn);
                     return Err(FalkorDBError::ConnectionDown);
                 }

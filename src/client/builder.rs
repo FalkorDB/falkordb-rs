@@ -141,6 +141,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                 FalkorClientProvider::Redis {
                     client,
                     sentinel: None,
+                    sentinel_replica: None,
                     embedded_server: Some(embedded_server),
                 },
                 FalkorConnectionInfo::Redis(redis_connection_info),
@@ -162,6 +163,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                     FalkorClientProvider::Redis {
                         client,
                         sentinel: None,
+                        sentinel_replica: None,
                         #[cfg(feature = "embedded")]
                         embedded_server: None,
                     }
@@ -202,8 +204,11 @@ impl FalkorClientBuilder<'S'> {
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
-            if let Some(sentinel) = client.get_sentinel_client(redis_conn_info)? {
-                client.set_sentinel(sentinel);
+            if let Some(sentinels) = client.get_sentinel_client(redis_conn_info)? {
+                client.set_sentinel(sentinels.master);
+                if let Some(replica) = sentinels.replica {
+                    client.set_sentinel_replica(replica);
+                }
             }
         }
         FalkorSyncClient::create(client, actual_connection_info, self.num_connections.get())
@@ -238,8 +243,11 @@ impl FalkorClientBuilder<'A'> {
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
-            if let Some(sentinel) = client.get_sentinel_client_async(redis_conn_info).await? {
-                client.set_sentinel(sentinel);
+            if let Some(sentinels) = client.get_sentinel_client_async(redis_conn_info).await? {
+                client.set_sentinel(sentinels.master);
+                if let Some(replica) = sentinels.replica {
+                    client.set_sentinel_replica(replica);
+                }
             }
         }
         FalkorAsyncClient::create(client, actual_connection_info, self.num_connections.get()).await

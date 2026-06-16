@@ -19,6 +19,14 @@ use tokio::{
     task,
 };
 
+/// A connection pool holding a fixed number of async connections that callers
+/// borrow from and return to. Used both for the primary pool and the optional
+/// replica-routed read-only pool.
+pub(crate) struct AsyncConnectionPool {
+    tx: mpsc::Sender<FalkorAsyncConnection>,
+    rx: Mutex<mpsc::Receiver<FalkorAsyncConnection>>,
+}
+
 /// A user-opaque inner struct, containing the actual implementation of the asynchronous client
 /// The idea is that each member here is either Copy, or locked in some form, and the public struct only has an Arc to this struct
 /// allowing thread safe operations and cloning
@@ -28,6 +36,10 @@ pub struct FalkorAsyncClientInner {
     connection_pool_size: u8,
     connection_pool_tx: mpsc::Sender<FalkorAsyncConnection>,
     connection_pool_rx: Mutex<mpsc::Receiver<FalkorAsyncConnection>>,
+    /// Dedicated pool serving read-only queries from replica nodes. `None` when the
+    /// deployment has no readable replicas, in which case read-only queries reuse
+    /// the primary pool (preserving the previous behavior).
+    readonly_pool: Option<AsyncConnectionPool>,
 }
 
 impl FalkorAsyncClientInner {
@@ -52,7 +64,44 @@ impl FalkorAsyncClientInner {
                 .ok_or(FalkorDBError::EmptyConnection)?,
             self.connection_pool_tx.clone(),
             pool_owner,
+            false,
         ))
+    }
+
+    /// Borrow a connection for a read-only query. When a replica-routed read-only
+    /// pool exists the connection is taken from it (serving the query from a
+    /// replica), otherwise it falls back to the primary pool.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "Borrow Readonly Connection From Connection Pool",
+            skip_all,
+            level = "debug"
+        )
+    )]
+    pub(crate) async fn borrow_readonly_connection(
+        &self,
+        pool_owner: Arc<Self>,
+    ) -> FalkorResult<BorrowedAsyncConnection> {
+        match &self.readonly_pool {
+            Some(pool) => Ok(BorrowedAsyncConnection::new(
+                pool.rx
+                    .lock()
+                    .await
+                    .recv()
+                    .await
+                    .ok_or(FalkorDBError::EmptyConnection)?,
+                pool.tx.clone(),
+                pool_owner,
+                true,
+            )),
+            None => self.borrow_connection(pool_owner).await,
+        }
+    }
+
+    /// Whether read-only queries are routed to replica nodes for this client.
+    pub(crate) fn has_readonly_pool(&self) -> bool {
+        self.readonly_pool.is_some()
     }
 
     #[cfg_attr(
@@ -65,6 +114,26 @@ impl FalkorAsyncClientInner {
     )]
     pub(crate) async fn get_async_connection(&self) -> FalkorResult<FalkorAsyncConnection> {
         self._inner.lock().await.get_async_connection().await
+    }
+
+    /// Obtain a fresh async connection routed to a replica node, used to replace a
+    /// read-only connection that was dropped by the server.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "Get New Async Readonly Connection From Client",
+            skip_all,
+            level = "info"
+        )
+    )]
+    pub(crate) async fn get_async_readonly_connection(
+        &self
+    ) -> FalkorResult<FalkorAsyncConnection> {
+        self._inner
+            .lock()
+            .await
+            .get_async_readonly_connection()
+            .await
     }
 }
 
@@ -119,6 +188,8 @@ impl FalkorAsyncClient {
                 .map_err(|_| FalkorDBError::EmptyConnection)?;
         }
 
+        let readonly_pool = Self::create_readonly_pool(&mut client, num_connections).await;
+
         Ok(Self {
             inner: Arc::new(FalkorAsyncClientInner {
                 _inner: client.into(),
@@ -126,14 +197,52 @@ impl FalkorAsyncClient {
                 connection_pool_size: num_connections,
                 connection_pool_tx,
                 connection_pool_rx: Mutex::new(connection_pool_rx),
+                readonly_pool,
             }),
             _connection_info: connection_info,
+        })
+    }
+
+    /// Build the optional replica-routed read-only pool. Returns `None` when the
+    /// deployment exposes no readable replicas, or (best-effort) when the replica
+    /// connections cannot currently be established, so read-only queries transparently
+    /// fall back to the primary pool.
+    async fn create_readonly_pool(
+        client: &mut FalkorClientProvider,
+        num_connections: u8,
+    ) -> Option<AsyncConnectionPool> {
+        if !client.has_sentinel_replica() {
+            return None;
+        }
+
+        let (tx, rx) = mpsc::channel(num_connections as usize);
+        for _ in 0..num_connections {
+            match client.get_async_readonly_connection().await {
+                Ok(conn) => {
+                    if tx.send(conn).await.is_err() {
+                        return None;
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+
+        Some(AsyncConnectionPool {
+            tx,
+            rx: Mutex::new(rx),
         })
     }
 
     /// Get the max number of connections in the client's connection pool
     pub fn connection_pool_size(&self) -> u8 {
         self.inner.connection_pool_size
+    }
+
+    /// Whether read-only queries (`ro_query` / `call_procedure_ro`) are routed to
+    /// replica nodes. This is `true` only for Redis Sentinel deployments that expose
+    /// readable replicas; otherwise read-only queries are served by the primary.
+    pub fn reads_from_replicas(&self) -> bool {
+        self.inner.has_readonly_pool()
     }
 
     pub(crate) async fn borrow_connection(&self) -> FalkorResult<BorrowedAsyncConnection> {
@@ -405,6 +514,38 @@ mod tests {
         let Err(TryRecvError::Empty) = non_existing_conn else {
             panic!("Got error, but not a TryRecvError::Empty, as expected");
         };
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reads_from_replicas_single_node() {
+        // On a single-node (non-Sentinel) deployment there are no readable
+        // replicas, so read-only queries transparently fall back to the primary
+        // pool and `reads_from_replicas` reports false.
+        let client = create_async_test_client().await;
+        assert!(
+            !client.reads_from_replicas(),
+            "A single-node deployment must not route reads to replicas"
+        );
+
+        let mut graph = client.select_graph("test_reads_from_replicas_single_node_async");
+        graph
+            .query("CREATE (n:Person {name: 'Jane Doe', age: 25})")
+            .execute()
+            .await
+            .expect("Could not create Jane");
+
+        // Read-only query still succeeds via the primary fallback.
+        let mut result = graph
+            .ro_query("MATCH (n:Person {name: 'Jane Doe'}) RETURN n.age")
+            .execute()
+            .await
+            .expect("Could not read Jane via ro_query");
+        assert!(
+            result.data.next().is_some(),
+            "Expected the read-only query to return Jane"
+        );
+
+        graph.delete().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

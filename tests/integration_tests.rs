@@ -173,6 +173,38 @@ fn test_read_only_query() {
 }
 
 #[test]
+fn test_reads_from_replicas_single_node() {
+    if skip_if_no_server() {
+        return;
+    }
+
+    let conn_info = match get_test_connection_info() {
+        Ok(info) => info,
+        Err(_) => return,
+    };
+
+    let client = match FalkorClientBuilder::new()
+        .with_connection_info(conn_info)
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // A single-node FalkorDB instance is not a Sentinel deployment, so reads are
+    // not routed to replicas; read-only queries still succeed via the primary.
+    assert!(!client.reads_from_replicas());
+
+    let mut graph = client.select_graph("test_reads_from_replicas_single_node");
+    let _ = graph.query("CREATE (n:Data {value: 7})").execute();
+
+    let result = graph.ro_query("MATCH (n:Data) RETURN n.value").execute();
+    assert!(result.is_ok());
+
+    let _ = graph.delete();
+}
+
+#[test]
 fn test_list_graphs() {
     if skip_if_no_server() {
         return;

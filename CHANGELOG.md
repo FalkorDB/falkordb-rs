@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Route read-only queries (`ro_query` / `call_procedure_ro`) to replica nodes
+  when connected to a Redis Sentinel deployment with readable replicas. Adds
+  `FalkorSyncClient::reads_from_replicas` / `FalkorAsyncClient::reads_from_replicas`
+  to check whether replica routing is active. Fully backward compatible:
+  deployments without replicas transparently fall back to the primary
+  ([#127](https://github.com/FalkorDB/falkordb-rs/issues/127)).
+
 ## [0.2.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.2.0...v0.2.1) - 2026-01-18
 
 ### Other

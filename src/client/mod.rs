@@ -27,6 +27,15 @@ pub(crate) enum FalkorClientProvider {
     Redis {
         client: redis::Client,
         sentinel: Option<redis::sentinel::SentinelClient>,
+        /// Replica-typed Sentinel client used to route read-only queries away from
+        /// the primary. It is set whenever a Sentinel master is detected during
+        /// construction, so its presence indicates a Sentinel deployment — not that
+        /// readable replicas actually exist or are currently reachable. `None` when
+        /// the deployment is not Sentinel-managed. Because replica reachability is
+        /// only determined when a connection is established, read-only pool creation
+        /// uses replica-only connection getters (no primary fallback) so the pool is
+        /// only built when a replica connection actually succeeds.
+        sentinel_replica: Option<redis::sentinel::SentinelClient>,
         #[cfg(feature = "embedded")]
         #[allow(dead_code)]
         embedded_server: Option<std::sync::Arc<crate::embedded::EmbeddedServer>>,
@@ -78,6 +87,54 @@ impl FalkorClientProvider {
         })
     }
 
+    /// Returns a replica-routed connection without fallback. This is used for
+    /// building and maintaining the dedicated read-only pool so that it never
+    /// gets populated with primary connections.
+    pub(crate) fn get_replica_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
+        match self {
+            FalkorClientProvider::Redis {
+                sentinel_replica: Some(replica),
+                ..
+            } => Ok(FalkorSyncConnection::Redis(
+                replica
+                    .get_connection()
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
+            )),
+            _ => Err(FalkorDBError::UnavailableProvider),
+        }
+    }
+
+    /// Async counterpart of [`get_replica_connection`](Self::get_replica_connection).
+    /// Returns a replica-routed connection without falling back to primary.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn get_async_replica_connection(
+        &mut self
+    ) -> FalkorResult<FalkorAsyncConnection> {
+        match self {
+            FalkorClientProvider::Redis {
+                sentinel_replica: Some(replica),
+                ..
+            } => Ok(FalkorAsyncConnection::Redis(
+                replica
+                    .get_async_connection()
+                    .await
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
+            )),
+            _ => Err(FalkorDBError::UnavailableProvider),
+        }
+    }
+
+    /// Whether this provider can route read-only queries to replica nodes.
+    pub(crate) fn has_sentinel_replica(&self) -> bool {
+        matches!(
+            self,
+            FalkorClientProvider::Redis {
+                sentinel_replica: Some(_),
+                ..
+            }
+        )
+    }
+
     pub(crate) fn set_sentinel(
         &mut self,
         sentinel_client: redis::sentinel::SentinelClient,
@@ -89,10 +146,39 @@ impl FalkorClientProvider {
         }
     }
 
+    pub(crate) fn set_sentinel_replica(
+        &mut self,
+        sentinel_client: redis::sentinel::SentinelClient,
+    ) {
+        match self {
+            FalkorClientProvider::Redis {
+                sentinel_replica, ..
+            } => *sentinel_replica = Some(sentinel_client),
+            #[cfg(test)]
+            FalkorClientProvider::None => {}
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn get_sentinel_client_common(
         &self,
         connection_info: &redis::ConnectionInfo,
         sentinel_masters: Vec<redis::Value>,
+    ) -> FalkorResult<Option<redis::sentinel::SentinelClient>> {
+        self.build_sentinel_client(
+            connection_info,
+            sentinel_masters,
+            redis::sentinel::SentinelServerType::Master,
+        )
+    }
+
+    /// Build a [`SentinelClient`](redis::sentinel::SentinelClient) for the given
+    /// `server_type` (master or replica) out of the `SENTINEL MASTERS` reply.
+    fn build_sentinel_client(
+        &self,
+        connection_info: &redis::ConnectionInfo,
+        sentinel_masters: Vec<redis::Value>,
+        server_type: redis::sentinel::SentinelServerType,
     ) -> FalkorResult<Option<redis::sentinel::SentinelClient>> {
         if sentinel_masters.len() != 1 {
             return Err(FalkorDBError::SentinelMastersCount);
@@ -132,7 +218,7 @@ impl FalkorClientProvider {
                         _ => node_info,
                     }
                 }),
-                redis::sentinel::SentinelServerType::Master,
+                server_type,
             )
             .map_err(|err| FalkorDBError::SentinelConnection(err.to_string()))?,
         ))
@@ -140,45 +226,76 @@ impl FalkorClientProvider {
 
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Get Sentinel Client", skip_all, level = "info")
+        tracing::instrument(name = "Get Sentinel Clients", skip_all, level = "info")
     )]
     pub(crate) fn get_sentinel_client(
         &mut self,
         connection_info: &redis::ConnectionInfo,
-    ) -> FalkorResult<Option<redis::sentinel::SentinelClient>> {
+    ) -> FalkorResult<Option<SentinelClients>> {
         let mut conn = self.get_connection()?;
         if !conn.check_is_redis_sentinel()? {
             return Ok(None);
         }
 
-        conn.execute_command(None, "SENTINEL", Some("MASTERS"), None)
-            .and_then(redis_value_as_vec)
-            .and_then(|sentinel_masters| {
-                self.get_sentinel_client_common(connection_info, sentinel_masters)
-            })
+        let sentinel_masters = conn
+            .execute_command(None, "SENTINEL", Some("MASTERS"), None)
+            .and_then(redis_value_as_vec)?;
+
+        self.build_sentinel_clients(connection_info, sentinel_masters)
     }
 
     #[cfg(feature = "tokio")]
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Get Sentinel Client", skip_all, level = "info")
+        tracing::instrument(name = "Get Sentinel Clients", skip_all, level = "info")
     )]
     pub(crate) async fn get_sentinel_client_async(
         &mut self,
         connection_info: &redis::ConnectionInfo,
-    ) -> FalkorResult<Option<redis::sentinel::SentinelClient>> {
+    ) -> FalkorResult<Option<SentinelClients>> {
         let mut conn = self.get_async_connection().await?;
         if !conn.check_is_redis_sentinel().await? {
             return Ok(None);
         }
 
-        conn.execute_command(None, "SENTINEL", Some("MASTERS"), None)
+        let sentinel_masters = conn
+            .execute_command(None, "SENTINEL", Some("MASTERS"), None)
             .await
-            .and_then(redis_value_as_vec)
-            .and_then(|sentinel_masters| {
-                self.get_sentinel_client_common(connection_info, sentinel_masters)
-            })
+            .and_then(redis_value_as_vec)?;
+
+        self.build_sentinel_clients(connection_info, sentinel_masters)
     }
+
+    /// Build both the master and replica [`SentinelClient`](redis::sentinel::SentinelClient)s
+    /// from a single `SENTINEL MASTERS` reply, so read-only queries can be routed to replicas.
+    fn build_sentinel_clients(
+        &self,
+        connection_info: &redis::ConnectionInfo,
+        sentinel_masters: Vec<redis::Value>,
+    ) -> FalkorResult<Option<SentinelClients>> {
+        let master = self
+            .build_sentinel_client(
+                connection_info,
+                sentinel_masters.clone(),
+                redis::sentinel::SentinelServerType::Master,
+            )?
+            .ok_or(FalkorDBError::SentinelMastersCount)?;
+        let replica = self.build_sentinel_client(
+            connection_info,
+            sentinel_masters,
+            redis::sentinel::SentinelServerType::Replica,
+        )?;
+
+        Ok(Some(SentinelClients { master, replica }))
+    }
+}
+
+/// The pair of Sentinel clients derived from a Sentinel deployment: the `master`
+/// client serves writes/primary reads, while the optional `replica` client routes
+/// read-only queries to replica nodes.
+pub(crate) struct SentinelClients {
+    pub(crate) master: redis::sentinel::SentinelClient,
+    pub(crate) replica: Option<redis::sentinel::SentinelClient>,
 }
 
 pub(crate) trait ProvidesSyncConnections: Sync + Send {
@@ -198,6 +315,47 @@ mod tests {
         if let Err(e) = result {
             assert!(matches!(e, FalkorDBError::UnavailableProvider));
         }
+    }
+
+    #[test]
+    fn test_has_sentinel_replica_default() {
+        // A Redis provider with no replica Sentinel must not advertise replica routing.
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        assert!(!provider.has_sentinel_replica());
+    }
+
+    #[test]
+    fn test_get_replica_connection_errors_without_replica() {
+        // Without a replica Sentinel, get_replica_connection does not fall back to
+        // the primary; it surfaces UnavailableProvider so the read-only pool is
+        // never populated with primary connections.
+        let mut provider = FalkorClientProvider::None;
+        assert!(!provider.has_sentinel_replica());
+        let result = provider.get_replica_connection();
+        assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+    }
+
+    #[test]
+    fn test_set_sentinel_replica() {
+        let mut provider = FalkorClientProvider::None;
+        // Setting a replica Sentinel on the None provider is a no-op and must not panic.
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info],
+            "master".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+        provider.set_sentinel_replica(replica);
+        assert!(!provider.has_sentinel_replica());
     }
 
     #[test]
@@ -247,10 +405,86 @@ mod tests {
             &connection_info,
             vec![redis::Value::Nil, redis::Value::Nil],
         );
-        assert!(result.is_err());
-        if let Err(e) = result {
-            assert!(matches!(e, FalkorDBError::SentinelMastersCount));
-        }
+        assert!(matches!(result, Err(FalkorDBError::SentinelMastersCount)));
+    }
+
+    /// A single `SENTINEL MASTERS` master entry exposing the given `name`, in the
+    /// alternating key/value layout the parser expects.
+    fn single_master_reply(name: &str) -> Vec<redis::Value> {
+        vec![redis::Value::Array(vec![
+            redis::Value::BulkString(b"name".to_vec()),
+            redis::Value::BulkString(name.as_bytes().to_vec()),
+        ])]
+    }
+
+    #[test]
+    fn test_build_sentinel_client_happy_path() {
+        // A well-formed single-master reply must yield a built master SentinelClient.
+        let provider = FalkorClientProvider::None;
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:6379").unwrap();
+        let client = provider
+            .get_sentinel_client_common(&connection_info, single_master_reply("mymaster"))
+            .expect("master client should build");
+        assert!(client.is_some());
+    }
+
+    #[test]
+    fn test_build_sentinel_client_missing_name() {
+        // A master entry without a `name` field must surface SentinelMastersCount.
+        let provider = FalkorClientProvider::None;
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:6379").unwrap();
+        let reply = vec![redis::Value::Array(vec![
+            redis::Value::BulkString(b"ip".to_vec()),
+            redis::Value::BulkString(b"127.0.0.1".to_vec()),
+        ])];
+        let result = provider.get_sentinel_client_common(&connection_info, reply);
+        assert!(matches!(result, Err(FalkorDBError::SentinelMastersCount)));
+    }
+
+    #[test]
+    fn test_build_sentinel_clients_master_and_replica() {
+        // A single-master reply must build both the master client and the optional
+        // replica client used to route read-only queries.
+        let provider = FalkorClientProvider::None;
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:6379").unwrap();
+        let clients = provider
+            .build_sentinel_clients(&connection_info, single_master_reply("mymaster"))
+            .expect("clients should build")
+            .expect("a Sentinel reply yields clients");
+        assert!(clients.replica.is_some());
+    }
+
+    #[test]
+    fn test_build_sentinel_clients_invalid_count() {
+        let provider = FalkorClientProvider::None;
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:6379").unwrap();
+        let result = provider.build_sentinel_clients(&connection_info, vec![]);
+        assert!(matches!(result, Err(FalkorDBError::SentinelMastersCount)));
+    }
+
+    #[test]
+    fn test_set_sentinel_replica_on_redis_provider() {
+        // Setting a replica Sentinel on a real Redis provider stores it, so
+        // has_sentinel_replica then reports true.
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        assert!(!provider.has_sentinel_replica());
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info],
+            "mymaster".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+        provider.set_sentinel_replica(replica);
+        assert!(provider.has_sentinel_replica());
     }
 
     #[test]
@@ -261,6 +495,7 @@ mod tests {
         let _provider = FalkorClientProvider::Redis {
             client,
             sentinel: None,
+            sentinel_replica: None,
             embedded_server: None,
         };
         // Just verify the structure can be created
@@ -273,9 +508,107 @@ mod tests {
         let _provider = FalkorClientProvider::Redis {
             client,
             sentinel: None,
+            sentinel_replica: None,
             #[cfg(feature = "embedded")]
             embedded_server: None,
         };
         // Just verify the structure can be created
+    }
+
+    #[test]
+    fn test_get_replica_connection_errors_when_replica_unreachable() {
+        // When a replica SentinelClient exists but the replica is unreachable, the
+        // implementation must propagate the error rather than fall back to the
+        // primary, so the read-only pool never receives primary connections.
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        // Port 1 is reliably unroutable in test environments.
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info],
+            "mymaster".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: Some(replica),
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        // The replica connection fails and the error must surface as a replica-path
+        // RedisError; the call must not fall back to the primary.
+        let result = provider.get_replica_connection();
+        assert!(
+            matches!(result, Err(FalkorDBError::RedisError(_))),
+            "error should come from the replica path"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_replica_connection_errors_when_replica_unreachable() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+            let replica = redis::sentinel::SentinelClient::build(
+                vec![connection_info],
+                "mymaster".to_string(),
+                None,
+                redis::sentinel::SentinelServerType::Replica,
+            )
+            .unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: None,
+                sentinel_replica: Some(replica),
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            let result = provider.get_async_replica_connection().await;
+            assert!(
+                matches!(result, Err(FalkorDBError::RedisError(_))),
+                "error should come from the replica path"
+            );
+        });
+    }
+
+    #[test]
+    fn test_get_replica_connection_on_redis_provider_without_replica_does_not_use_primary() {
+        // A real Redis provider with a reachable primary but no replica Sentinel must
+        // still return `UnavailableProvider` — never a primary connection. This catches
+        // a reintroduced fallback even when the primary URL happens to be reachable.
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        let result = provider.get_replica_connection();
+        assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_replica_connection_on_redis_provider_without_replica_does_not_use_primary() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: None,
+                sentinel_replica: None,
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            let result = provider.get_async_replica_connection().await;
+            assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+        });
     }
 }

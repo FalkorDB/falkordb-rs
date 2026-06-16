@@ -408,6 +408,19 @@ mod tests {
     };
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_call_procedure_ro_routes_read_only() {
+        // `call_procedure_ro` must build a read-only procedure call (GRAPH.RO_QUERY)
+        // and borrow from the read-only connection path. DB.INDEXES is a read-only
+        // procedure, so this exercises the read-only borrow branch end-to-end.
+        let mut graph = create_async_test_client().await.select_graph("imdb");
+        let result = graph
+            .call_procedure_ro::<QueryResult<Vec<FalkorIndex>>>("DB.INDEXES")
+            .execute()
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_create_drop_index() {
         let mut graph = open_empty_async_test_graph("test_create_drop_index_async").await;
 

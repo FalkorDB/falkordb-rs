@@ -250,6 +250,48 @@ let client = FalkorClientBuilder::new()
 > Unix-domain socket / embedded connections and the Sentinel connection path are
 > not affected.
 
+### Read-only Queries and Replica Routing
+
+Read-only queries (`ro_query` and `call_procedure_ro`) can be served from
+replica nodes, taking read load off the primary. When the client connects to a
+Redis Sentinel deployment that exposes readable replicas, it automatically
+builds a dedicated read-only connection pool that routes those queries to a
+replica. Writes always go to the primary.
+
+> **Connection pool sizing:** When readable replicas are present the client opens
+> a second pool of up to `num_connections` additional connections (one per slot)
+> alongside the primary pool. Size your pool limits and file-descriptor limits
+> accordingly.
+
+```rust,no_run
+use falkordb::FalkorClientBuilder;
+
+let client = FalkorClientBuilder::new()
+    // A Sentinel endpoint, e.g. falkor://127.0.0.1:26379
+    .with_connection_info("falkor://127.0.0.1:26379".try_into().expect("Invalid connection info"))
+    .build()
+    .expect("Failed to build client");
+
+// `true` only when readable replicas are available.
+if client.reads_from_replicas() {
+    println!("Read-only queries are routed to replicas");
+}
+
+let mut graph = client.select_graph("imdb");
+
+// Writes go to the primary.
+graph.query("CREATE (:Actor {name: 'Tom Hanks'})").execute().expect("Failed to write");
+
+// Read-only queries are served from a replica when one is available.
+let mut nodes = graph.ro_query("MATCH (a:Actor) RETURN a.name").execute().expect("Failed to read");
+```
+
+This behavior is fully backward compatible: against a single node (or any
+deployment without readable replicas), `ro_query` / `call_procedure_ro`
+transparently fall back to the primary connection, and `reads_from_replicas()`
+returns `false`. See [`examples/readonly_replica.rs`](examples/readonly_replica.rs)
+for a complete working example.
+
 ### Tracing
 
 This crate fully supports instrumentation using the [`tracing`](https://docs.rs/tracing/latest/tracing/) crate, to use

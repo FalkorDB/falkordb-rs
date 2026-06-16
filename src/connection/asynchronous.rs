@@ -74,6 +74,7 @@ pub struct BorrowedAsyncConnection {
     conn: Option<FalkorAsyncConnection>,
     return_tx: mpsc::Sender<FalkorAsyncConnection>,
     client: Arc<FalkorAsyncClientInner>,
+    readonly: bool,
 }
 
 impl BorrowedAsyncConnection {
@@ -81,11 +82,13 @@ impl BorrowedAsyncConnection {
         conn: FalkorAsyncConnection,
         return_tx: mpsc::Sender<FalkorAsyncConnection>,
         client: Arc<FalkorAsyncClientInner>,
+        readonly: bool,
     ) -> Self {
         Self {
             conn: Some(conn),
             return_tx,
             client,
+            readonly,
         }
     }
 
@@ -114,7 +117,12 @@ impl BorrowedAsyncConnection {
             .await
         {
             Err(FalkorDBError::ConnectionDown) => {
-                if let Ok(new_conn) = self.client.get_async_connection().await {
+                let new_conn = if self.readonly {
+                    self.client.get_async_replica_connection().await
+                } else {
+                    self.client.get_async_connection().await
+                };
+                if let Ok(new_conn) = new_conn {
                     self.conn = Some(new_conn);
                     tokio::spawn(async { self.return_to_pool().await });
                     return Err(FalkorDBError::ConnectionDown);

@@ -19,6 +19,14 @@ use tokio::{
     task,
 };
 
+/// A connection pool holding a fixed number of async connections that callers
+/// borrow from and return to. Used both for the primary pool and the optional
+/// replica-routed read-only pool.
+pub(crate) struct AsyncConnectionPool {
+    tx: mpsc::Sender<FalkorAsyncConnection>,
+    rx: Mutex<mpsc::Receiver<FalkorAsyncConnection>>,
+}
+
 /// A user-opaque inner struct, containing the actual implementation of the asynchronous client
 /// The idea is that each member here is either Copy, or locked in some form, and the public struct only has an Arc to this struct
 /// allowing thread safe operations and cloning
@@ -28,6 +36,10 @@ pub struct FalkorAsyncClientInner {
     connection_pool_size: u8,
     connection_pool_tx: mpsc::Sender<FalkorAsyncConnection>,
     connection_pool_rx: Mutex<mpsc::Receiver<FalkorAsyncConnection>>,
+    /// Dedicated pool serving read-only queries from replica nodes. `None` when the
+    /// deployment has no readable replicas, in which case read-only queries reuse
+    /// the primary pool (preserving the previous behavior).
+    readonly_pool: Option<AsyncConnectionPool>,
 }
 
 impl FalkorAsyncClientInner {
@@ -52,7 +64,44 @@ impl FalkorAsyncClientInner {
                 .ok_or(FalkorDBError::EmptyConnection)?,
             self.connection_pool_tx.clone(),
             pool_owner,
+            false,
         ))
+    }
+
+    /// Borrow a connection for a read-only query. When a replica-routed read-only
+    /// pool exists the connection is taken from it (serving the query from a
+    /// replica), otherwise it falls back to the primary pool.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "Borrow Readonly Connection From Connection Pool",
+            skip_all,
+            level = "debug"
+        )
+    )]
+    pub(crate) async fn borrow_readonly_connection(
+        &self,
+        pool_owner: Arc<Self>,
+    ) -> FalkorResult<BorrowedAsyncConnection> {
+        match &self.readonly_pool {
+            Some(pool) => Ok(BorrowedAsyncConnection::new(
+                pool.rx
+                    .lock()
+                    .await
+                    .recv()
+                    .await
+                    .ok_or(FalkorDBError::EmptyConnection)?,
+                pool.tx.clone(),
+                pool_owner,
+                true,
+            )),
+            None => self.borrow_connection(pool_owner).await,
+        }
+    }
+
+    /// Whether read-only queries are routed to replica nodes for this client.
+    pub(crate) fn has_readonly_pool(&self) -> bool {
+        self.readonly_pool.is_some()
     }
 
     #[cfg_attr(
@@ -65,6 +114,17 @@ impl FalkorAsyncClientInner {
     )]
     pub(crate) async fn get_async_connection(&self) -> FalkorResult<FalkorAsyncConnection> {
         self._inner.lock().await.get_async_connection().await
+    }
+
+    /// Obtain a fresh async connection routed to a replica node without fallback.
+    /// Used for read-only pool creation and reconnection so the read-only pool
+    /// never receives primary connections.
+    pub(crate) async fn get_async_replica_connection(&self) -> FalkorResult<FalkorAsyncConnection> {
+        self._inner
+            .lock()
+            .await
+            .get_async_replica_connection()
+            .await
     }
 }
 
@@ -119,6 +179,8 @@ impl FalkorAsyncClient {
                 .map_err(|_| FalkorDBError::EmptyConnection)?;
         }
 
+        let readonly_pool = Self::create_readonly_pool(&mut client, num_connections).await;
+
         Ok(Self {
             inner: Arc::new(FalkorAsyncClientInner {
                 _inner: client.into(),
@@ -126,14 +188,59 @@ impl FalkorAsyncClient {
                 connection_pool_size: num_connections,
                 connection_pool_tx,
                 connection_pool_rx: Mutex::new(connection_pool_rx),
+                readonly_pool,
             }),
             _connection_info: connection_info,
+        })
+    }
+
+    /// Build the optional replica-routed read-only pool. Returns `None` when the
+    /// deployment exposes no readable replicas, or (best-effort) when the replica
+    /// connections cannot currently be established, so read-only queries transparently
+    /// fall back to the primary pool.
+    async fn create_readonly_pool(
+        client: &mut FalkorClientProvider,
+        num_connections: u8,
+    ) -> Option<AsyncConnectionPool> {
+        if !client.has_sentinel_replica() {
+            return None;
+        }
+
+        let mut connections = Vec::with_capacity(num_connections as usize);
+        for _ in 0..num_connections {
+            connections.push(client.get_async_replica_connection().await.ok()?);
+        }
+        Self::pool_from_connections(connections)
+    }
+
+    /// Build an [`AsyncConnectionPool`] pre-filled with the given connections. Returns
+    /// `None` if the connections cannot be enqueued.
+    fn pool_from_connections(
+        connections: Vec<FalkorAsyncConnection>
+    ) -> Option<AsyncConnectionPool> {
+        let (tx, rx) = mpsc::channel(connections.len().max(1));
+        for conn in connections {
+            if tx.try_send(conn).is_err() {
+                return None;
+            }
+        }
+
+        Some(AsyncConnectionPool {
+            tx,
+            rx: Mutex::new(rx),
         })
     }
 
     /// Get the max number of connections in the client's connection pool
     pub fn connection_pool_size(&self) -> u8 {
         self.inner.connection_pool_size
+    }
+
+    /// Whether read-only queries (`ro_query` / `call_procedure_ro`) are routed to
+    /// replica nodes. This is `true` only for Redis Sentinel deployments that expose
+    /// readable replicas; otherwise read-only queries are served by the primary.
+    pub fn reads_from_replicas(&self) -> bool {
+        self.inner.has_readonly_pool()
     }
 
     pub(crate) async fn borrow_connection(&self) -> FalkorResult<BorrowedAsyncConnection> {
@@ -405,6 +512,129 @@ mod tests {
         let Err(TryRecvError::Empty) = non_existing_conn else {
             panic!("Got error, but not a TryRecvError::Empty, as expected");
         };
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reads_from_replicas_single_node() {
+        // On a single-node (non-Sentinel) deployment there are no readable
+        // replicas, so read-only queries transparently fall back to the primary
+        // pool and `reads_from_replicas` reports false.
+        let client = create_async_test_client().await;
+        assert!(
+            !client.reads_from_replicas(),
+            "A single-node deployment must not route reads to replicas"
+        );
+
+        let mut graph = client.select_graph("test_reads_from_replicas_single_node_async");
+        graph
+            .query("CREATE (n:Person {name: 'Jane Doe', age: 25})")
+            .execute()
+            .await
+            .expect("Could not create Jane");
+
+        // Read-only query still succeeds via the primary fallback.
+        let mut result = graph
+            .ro_query("MATCH (n:Person {name: 'Jane Doe'}) RETURN n.age")
+            .execute()
+            .await
+            .expect("Could not read Jane via ro_query");
+        assert!(
+            result.data.next().is_some(),
+            "Expected the read-only query to return Jane"
+        );
+
+        graph.delete().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_readonly_pool_none_without_replica() {
+        // Without a Sentinel replica, no read-only pool is created and reads are
+        // served by the primary pool.
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        assert!(FalkorAsyncClient::create_readonly_pool(&mut provider, 4)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_readonly_pool_none_when_replica_unreachable() {
+        // With a replica-typed Sentinel client that cannot be reached, pool creation
+        // must fail (return None) rather than fall back to primary connections, so the
+        // read-only pool is never populated with primary connections.
+        use std::str::FromStr;
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        // Port 1 is reliably unroutable in test environments.
+        let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info],
+            "mymaster".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+        let mut provider = FalkorClientProvider::Redis {
+            client,
+            sentinel: None,
+            sentinel_replica: Some(replica),
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        assert!(provider.has_sentinel_replica());
+        assert!(FalkorAsyncClient::create_readonly_pool(&mut provider, 4)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pool_from_connections_and_borrow_readonly() {
+        // Exercise the read-only pool plumbing (filling the pool, borrowing from it,
+        // reporting it exists, and the replica-only inner getter) without needing a
+        // live replica deployment. A primary connection is used purely as a
+        // placeholder for the pool slot.
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open("redis://127.0.0.1:6379").unwrap(),
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded")]
+            embedded_server: None,
+        };
+        let conn = provider
+            .get_async_connection()
+            .await
+            .expect("primary connection");
+        let pool = FalkorAsyncClient::pool_from_connections(vec![conn]).expect("pool should build");
+
+        let (tx, rx) = mpsc::channel(1);
+        let inner = Arc::new(FalkorAsyncClientInner {
+            _inner: Mutex::new(provider),
+            connection_pool_size: 0,
+            connection_pool_tx: tx,
+            connection_pool_rx: Mutex::new(rx),
+            readonly_pool: Some(pool),
+        });
+
+        assert!(inner.has_readonly_pool());
+
+        // The inner replica getter forwards to the provider and errors (no fallback)
+        // when no replica Sentinel is configured.
+        assert!(matches!(
+            inner.get_async_replica_connection().await,
+            Err(FalkorDBError::UnavailableProvider)
+        ));
+
+        // Borrowing routes to the read-only pool.
+        let borrowed = inner
+            .borrow_readonly_connection(inner.clone())
+            .await
+            .expect("should borrow from the read-only pool");
+        drop(borrowed);
     }
 
     #[tokio::test(flavor = "multi_thread")]

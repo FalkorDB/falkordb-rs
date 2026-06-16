@@ -145,7 +145,13 @@ impl WaitOptions {
     ) -> Duration {
         let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
         let scaled = self.poll_interval.as_secs_f64() * self.backoff_factor.powi(exponent);
-        Duration::from_secs_f64(scaled.min(self.max_interval.as_secs_f64()))
+        let capped = self.max_interval.as_secs_f64();
+        // Guard against non-finite (`NaN`/`inf`) or out-of-range values that would make
+        // `Duration::from_secs_f64` panic: fall back to the (already finite) `max_interval`.
+        if !scaled.is_finite() || scaled >= capped {
+            return self.max_interval;
+        }
+        Duration::try_from_secs_f64(scaled).unwrap_or(self.max_interval)
     }
 }
 
@@ -222,18 +228,29 @@ pub(crate) fn poll_sync<T>(
 
 /// Asynchronously polls `attempt` until it is [`Step::Done`]/[`Step::Fail`] or the timeout
 /// elapses. This is the async counterpart of [`poll_sync`] and shares the exact same backoff and
-/// deadline logic; it is generic over an async closure so the index/constraint wait (which needs
-/// `&mut AsyncGraph`) and the graph-copy wait (which needs `&FalkorAsyncClient`) can both reuse it.
+/// deadline logic.
+///
+/// `attempt` receives `&mut state` on every poll and returns a boxed future. This explicit
+/// `FnMut(&mut S) -> Pin<Box<dyn Future>>` shape (rather than an async closure / `AsyncFnMut`)
+/// mirrors `crate::test_utils::retry_until_async` so the crate keeps compiling on all stable
+/// toolchains. Threading the polled value through `&mut state` lets both the index/constraint
+/// wait (`state = &mut AsyncGraph`) and the graph-copy wait (`state` carrying the client and graph
+/// names) reuse this single loop.
 #[cfg(feature = "tokio")]
-pub(crate) async fn poll_async<T>(
+pub(crate) async fn poll_async<S, T>(
+    state: &mut S,
     options: &WaitOptions,
     operation: WaitOperation,
-    mut attempt: impl AsyncFnMut() -> crate::FalkorResult<Step<T>>,
+    mut attempt: impl for<'s> FnMut(
+        &'s mut S,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::FalkorResult<Step<T>>> + 's>,
+    >,
 ) -> crate::FalkorResult<T> {
     let deadline = deadline_for(options.timeout);
     let mut attempts = 0u32;
     loop {
-        match attempt().await? {
+        match attempt(state).await? {
             Step::Done(value) => return Ok(value),
             Step::Fail(error) => return Err(error),
             Step::Retry => {}
@@ -729,6 +746,23 @@ mod tests {
     }
 
     #[test]
+    fn delay_for_attempt_handles_non_finite_and_overflow() {
+        // A very large `max_interval` combined with a growing backoff must never panic in
+        // `Duration::from_secs_f64`; it falls back to `max_interval`.
+        let huge = WaitOptions::new()
+            .poll_interval(Duration::from_secs(1))
+            .backoff_factor(10.0)
+            .max_interval(Duration::MAX);
+        assert_eq!(huge.delay_for_attempt(u32::MAX), Duration::MAX);
+        // An infinite backoff factor saturates to `max_interval` rather than panicking.
+        let infinite = WaitOptions::new()
+            .poll_interval(Duration::from_millis(10))
+            .backoff_factor(f64::INFINITY)
+            .max_interval(Duration::from_millis(500));
+        assert_eq!(infinite.delay_for_attempt(1), Duration::from_millis(500));
+    }
+
+    #[test]
     fn next_wakeup_sleeps_then_times_out() {
         let options = WaitOptions::new();
         let future = Instant::now() + Duration::from_secs(60);
@@ -1200,9 +1234,10 @@ mod tests {
     #[tokio::test]
     async fn poll_async_returns_first_done() {
         let value = poll_async(
+            &mut (),
             &WaitOptions::new(),
             WaitOperation::IndexCreation,
-            async || Ok::<_, crate::FalkorDBError>(Step::Done(7)),
+            |()| Box::pin(async { Ok::<_, crate::FalkorDBError>(Step::Done(7)) }),
         )
         .await
         .unwrap();
@@ -1214,14 +1249,21 @@ mod tests {
     async fn poll_async_retries_until_done() {
         let options = WaitOptions::new().poll_interval(Duration::from_millis(1));
         let mut calls = 0u32;
-        let value = poll_async(&options, WaitOperation::IndexCreation, async || {
-            calls += 1;
-            Ok::<_, crate::FalkorDBError>(if calls < 3 {
-                Step::Retry
-            } else {
-                Step::Done(calls)
-            })
-        })
+        let value = poll_async(
+            &mut calls,
+            &options,
+            WaitOperation::IndexCreation,
+            |calls| {
+                Box::pin(async move {
+                    *calls += 1;
+                    Ok::<_, crate::FalkorDBError>(if *calls < 3 {
+                        Step::Retry
+                    } else {
+                        Step::Done(*calls)
+                    })
+                })
+            },
+        )
         .await
         .unwrap();
         assert_eq!(value, 3);
@@ -1231,14 +1273,17 @@ mod tests {
     #[tokio::test]
     async fn poll_async_propagates_fail() {
         let result: crate::FalkorResult<()> = poll_async(
+            &mut (),
             &WaitOptions::new(),
             WaitOperation::ConstraintCreation,
-            async || {
-                Ok(Step::Fail(crate::FalkorDBError::ConstraintFailed {
-                    label: "P".to_string(),
-                    properties: vec!["id".to_string()],
-                    constraint_type: ConstraintType::Unique,
-                }))
+            |()| {
+                Box::pin(async {
+                    Ok(Step::Fail(crate::FalkorDBError::ConstraintFailed {
+                        label: "P".to_string(),
+                        properties: vec!["id".to_string()],
+                        constraint_type: ConstraintType::Unique,
+                    }))
+                })
             },
         )
         .await;
@@ -1252,9 +1297,10 @@ mod tests {
     #[tokio::test]
     async fn poll_async_propagates_attempt_error() {
         let result: crate::FalkorResult<()> = poll_async(
+            &mut (),
             &WaitOptions::new(),
             WaitOperation::IndexCreation,
-            async || Err(crate::FalkorDBError::ParsingArray),
+            |()| Box::pin(async { Err(crate::FalkorDBError::ParsingArray) }),
         )
         .await;
         assert!(matches!(result, Err(crate::FalkorDBError::ParsingArray)));
@@ -1265,7 +1311,10 @@ mod tests {
     async fn poll_async_times_out() {
         let options = WaitOptions::new().timeout(Duration::ZERO);
         let result: crate::FalkorResult<()> =
-            poll_async(&options, WaitOperation::GraphCopy, async || Ok(Step::Retry)).await;
+            poll_async(&mut (), &options, WaitOperation::GraphCopy, |()| {
+                Box::pin(async { Ok(Step::Retry) })
+            })
+            .await;
         assert!(matches!(
             result,
             Err(crate::FalkorDBError::Timeout {

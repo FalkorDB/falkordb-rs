@@ -55,7 +55,7 @@ impl<'a> AsyncIndexOpBuilder<'a> {
     ) -> FalkorResult<()> {
         let wait = self.op.to_wait();
         run_index_command(self.graph, &self.op).await?;
-        wait_async(self.graph, &options, &wait).await
+        wait_async(self.graph, &options, wait).await
     }
 }
 
@@ -101,7 +101,7 @@ impl<'a> AsyncConstraintOpBuilder<'a> {
     ) -> FalkorResult<()> {
         let wait = self.op.to_wait();
         run_constraint_command(self.graph, &self.op).await?;
-        wait_async(self.graph, &options, &wait).await
+        wait_async(self.graph, &options, wait).await
     }
 }
 
@@ -149,12 +149,15 @@ impl<'a> AsyncCopyGraphBuilder<'a> {
         self,
         options: WaitOptions,
     ) -> FalkorResult<AsyncGraph> {
-        poll_async(&options, WaitOperation::GraphCopy, async || {
-            Ok(classify_copy_result(
-                self.client
-                    .copy_graph(&self.source, &self.destination)
-                    .await,
-            ))
+        let mut this = self;
+        poll_async(&mut this, &options, WaitOperation::GraphCopy, |this| {
+            Box::pin(async move {
+                Ok(classify_copy_result(
+                    this.client
+                        .copy_graph(&this.source, &this.destination)
+                        .await,
+                ))
+            })
         })
         .await
     }
@@ -251,10 +254,13 @@ async fn evaluate_async(
 async fn wait_async(
     graph: &mut AsyncGraph,
     options: &WaitOptions,
-    wait: &Wait,
+    wait: Wait,
 ) -> FalkorResult<()> {
-    poll_async(options, wait.operation(), async || {
-        evaluate_async(graph, wait).await
+    let operation = wait.operation();
+    let mut state = (graph, wait);
+    poll_async(&mut state, options, operation, |state| {
+        let (graph, wait) = state;
+        Box::pin(evaluate_async(graph, wait))
     })
     .await
 }

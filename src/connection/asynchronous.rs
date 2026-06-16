@@ -179,7 +179,20 @@ impl Drop for BorrowedAsyncConnection {
     /// multiplexed clones are cheap shared handles and are simply dropped.
     fn drop(&mut self) {
         if let (Some(conn), ConnReturn::Pool(return_tx)) = (self.conn.take(), &self.return_to) {
-            return_tx.try_send(conn).ok();
+            match return_tx.try_send(conn) {
+                Ok(()) => {}
+                // The pool was dropped before this connection returned; nothing to reclaim.
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+                // Each borrow consumes a channel slot, so a return can never find it full.
+                // A full channel means the pool's slot accounting is broken: surface it in
+                // debug builds while still discarding the connection in release.
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    debug_assert!(
+                        false,
+                        "pool channel unexpectedly full while returning a borrowed connection"
+                    );
+                }
+            }
         }
     }
 }

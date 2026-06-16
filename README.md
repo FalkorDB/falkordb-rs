@@ -215,7 +215,7 @@ let client = FalkorClientBuilder::new_async()
         connections: NonZeroU8::new(4).unwrap(),
     })
     // Optional backpressure: cap concurrently in-flight commands per socket.
-    .with_max_inflight(256)
+    .with_max_inflight(std::num::NonZeroUsize::new(256).unwrap())
     .build()
     .await
     .expect("Failed to build client");
@@ -231,8 +231,8 @@ Notes and caveats:
   of underlying connections/sockets for the active strategy, and `connection_pool_size()`
   reports that count.
 - **Backpressure:** multiplexed mode does not bound the number of outstanding requests
-  unless you set `with_max_inflight(n)` (ignored by the pooled strategy, whose pool size
-  already caps in-flight commands).
+  unless you set `with_max_inflight(n)` (where `n` is a `NonZeroUsize`; ignored by the
+  pooled strategy, whose pool size already caps in-flight commands).
 - **Sentinel:** a multiplexed connection built from a Sentinel-resolved node would not
   re-resolve the master/replica on failover, so for Sentinel deployments the client
   transparently falls back to the pooled strategy (which re-resolves on reconnect).

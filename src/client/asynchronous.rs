@@ -12,6 +12,7 @@ use crate::{
     parser::{parse_config_hashmap, redis_value_as_untyped_string_vec},
     AsyncGraph, ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult,
 };
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
@@ -222,7 +223,7 @@ impl FalkorAsyncClient {
         mut client: FalkorClientProvider,
         connection_info: FalkorConnectionInfo,
         requested_strategy: ConnectionStrategy,
-        max_inflight: Option<usize>,
+        max_inflight: Option<NonZeroUsize>,
     ) -> FalkorResult<Self> {
         // A multiplexed ConnectionManager built from a Sentinel-resolved client pins to a
         // single node and reconnects to the same address rather than re-resolving the
@@ -232,6 +233,13 @@ impl FalkorAsyncClient {
         // reports this effective value.
         let strategy = match requested_strategy {
             ConnectionStrategy::Multiplexed { connections } if client.has_sentinel() => {
+                #[cfg(feature = "tracing")]
+                tracing::warn!(
+                    "Sentinel deployment detected: downgrading ConnectionStrategy from \
+                     Multiplexed to Pooled. A multiplexed ConnectionManager pins to a single \
+                     resolved node and will not re-resolve on failover; the pooled strategy \
+                     opens a fresh Sentinel-resolved connection on every reconnect."
+                );
                 ConnectionStrategy::Pooled { size: connections }
             }
             other => other,
@@ -267,7 +275,7 @@ impl FalkorAsyncClient {
     async fn build_executor(
         client: &mut FalkorClientProvider,
         strategy: ConnectionStrategy,
-        max_inflight: Option<usize>,
+        max_inflight: Option<NonZeroUsize>,
         readonly: bool,
     ) -> FalkorResult<AsyncExecutor> {
         let count = strategy.connection_count().get() as usize;
@@ -368,7 +376,7 @@ impl FalkorAsyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    /// The config key can also be "*", which will return ALL the configuration options.
+    ///   The config key can also be "*", which will return ALL the configuration options.
     ///
     /// # Returns
     /// A [`HashMap`] comprised of [`String`] keys, and [`ConfigValue`] values.
@@ -391,7 +399,7 @@ impl FalkorAsyncClient {
     ///
     /// # Arguments
     /// * `config_Key`: A [`String`] representation of a configuration's key.
-    /// The config key can also be "*", which will return ALL the configuration options.
+    ///   The config key can also be "*", which will return ALL the configuration options.
     /// * `value`: The new value to set, which is anything that can be converted into a [`ConfigValue`], namely string types and i64.
     #[cfg_attr(
         feature = "tracing",

@@ -73,7 +73,10 @@ fn embedded_config() -> Option<EmbeddedConfig> {
 
 /// Retry an operation until `done` is satisfied or the deadline elapses. FalkorDB builds
 /// indices asynchronously, so a freshly created index may not be listed immediately.
-fn retry_until<T>(mut op: impl FnMut() -> T, done: impl Fn(&T) -> bool) -> T {
+fn retry_until<T>(
+    mut op: impl FnMut() -> T,
+    done: impl Fn(&T) -> bool,
+) -> T {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let value = op();
@@ -303,7 +306,10 @@ fn test_embedded_server_lifecycle() {
     {
         let server = EmbeddedServer::start(config).expect("embedded server should start");
         socket_path = server.socket_path().to_path_buf();
-        assert!(socket_path.exists(), "socket should exist while server runs");
+        assert!(
+            socket_path.exists(),
+            "socket should exist while server runs"
+        );
         assert_eq!(
             server.connection_string(),
             format!("unix://{}", socket_path.display())

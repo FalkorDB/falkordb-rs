@@ -50,19 +50,40 @@ fn strategies() -> [ConnectionStrategy; 3] {
     ]
 }
 
-/// Build a client for the given strategy, or `None` when the server is unavailable / the
-/// suite is skipped (so the test no-ops in those environments).
+/// Probe whether the FalkorDB server is accepting TCP connections. Returns `true` if a
+/// socket can be opened to the configured host/port, `false` otherwise (which means the
+/// test should be skipped rather than failed).
+async fn server_is_available() -> bool {
+    let host = std::env::var("FALKORDB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port: u16 = std::env::var("FALKORDB_PORT")
+        .unwrap_or_else(|_| "6379".to_string())
+        .parse()
+        .unwrap_or(6379);
+    tokio::net::TcpStream::connect((host.as_str(), port))
+        .await
+        .is_ok()
+}
+
+/// Build a client for the given strategy, or `None` when the server is genuinely
+/// unavailable (skip silently). Panics on any build failure that occurs *after* the
+/// server has been confirmed reachable, so a code or configuration bug is never silently
+/// masked as "no server".
 async fn build_client(strategy: ConnectionStrategy) -> Option<FalkorAsyncClient> {
     if skip_if_no_server() {
         return None;
     }
+    if !server_is_available().await {
+        return None;
+    }
     let conn_info = get_test_connection_info()?;
-    FalkorClientBuilder::new_async()
-        .with_connection_info(conn_info)
-        .with_connection_strategy(strategy)
-        .build()
-        .await
-        .ok()
+    Some(
+        FalkorClientBuilder::new_async()
+            .with_connection_info(conn_info)
+            .with_connection_strategy(strategy)
+            .build()
+            .await
+            .expect("Client build failed despite server being reachable"),
+    )
 }
 
 /// Run the core async API surface (write query, parameterized read, read-only query) and

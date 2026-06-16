@@ -12,6 +12,9 @@ use std::collections::HashMap;
 use std::num::NonZeroU8;
 
 #[cfg(feature = "tokio")]
+use std::num::NonZeroUsize;
+
+#[cfg(feature = "tokio")]
 use crate::connection::asynchronous::FalkorAsyncConnection;
 
 pub(crate) mod blocking;
@@ -221,7 +224,7 @@ impl FalkorClientProvider {
     #[cfg(feature = "tokio")]
     pub(crate) async fn get_async_connection_manager(
         &mut self,
-        max_inflight: Option<usize>,
+        max_inflight: Option<NonZeroUsize>,
     ) -> FalkorResult<FalkorAsyncConnection> {
         let client = match self {
             FalkorClientProvider::Redis {
@@ -244,7 +247,7 @@ impl FalkorClientProvider {
     #[cfg(feature = "tokio")]
     pub(crate) async fn get_async_replica_connection_manager(
         &mut self,
-        max_inflight: Option<usize>,
+        max_inflight: Option<NonZeroUsize>,
     ) -> FalkorResult<FalkorAsyncConnection> {
         match self {
             FalkorClientProvider::Redis {
@@ -264,12 +267,12 @@ impl FalkorClientProvider {
     #[cfg(feature = "tokio")]
     async fn manager_from_client(
         client: redis::Client,
-        max_inflight: Option<usize>,
+        max_inflight: Option<NonZeroUsize>,
     ) -> FalkorResult<FalkorAsyncConnection> {
         let manager = match max_inflight {
             Some(limit) => {
                 let config =
-                    redis::aio::ConnectionManagerConfig::new().set_concurrency_limit(limit);
+                    redis::aio::ConnectionManagerConfig::new().set_concurrency_limit(limit.get());
                 redis::aio::ConnectionManager::new_with_config(client, config).await
             }
             None => redis::aio::ConnectionManager::new(client).await,

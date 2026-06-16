@@ -7,8 +7,7 @@ use crate::{
     client::{ConnectionStrategy, FalkorClientProvider},
     FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorSyncClient,
 };
-use redis::IntoConnectionInfo;
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::Duration;
 
 #[cfg(feature = "tokio")]
@@ -19,7 +18,7 @@ pub struct FalkorClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
     strategy: ConnectionStrategy,
     #[cfg_attr(not(feature = "tokio"), allow(dead_code))]
-    max_inflight: Option<usize>,
+    max_inflight: Option<NonZeroUsize>,
     tcp_settings: Option<redis::io::tcp::TcpSettings>,
 }
 
@@ -294,14 +293,18 @@ impl FalkorClientBuilder<'A'> {
     /// Use it to apply backpressure; without it, multiplexed mode does not bound the
     /// number of outstanding requests.
     ///
+    /// A limit of zero would permanently stall the socket (no commands could ever
+    /// complete), so this method requires a [`NonZeroUsize`].
+    ///
     /// # Arguments
-    /// * `max_inflight`: maximum number of in-flight commands per multiplexed socket.
+    /// * `max_inflight`: maximum number of in-flight commands per multiplexed socket,
+    ///   must be non-zero.
     ///
     /// # Returns
     /// The consumed and modified self.
     pub fn with_max_inflight(
         self,
-        max_inflight: usize,
+        max_inflight: NonZeroUsize,
     ) -> Self {
         Self {
             max_inflight: Some(max_inflight),

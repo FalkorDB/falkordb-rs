@@ -70,7 +70,10 @@ fn strategy_matrix() -> Vec<(String, ConnectionStrategy)> {
     let mut out = Vec::new();
     for n in [1u8, 8, 32] {
         let count = NonZeroU8::new(n).unwrap();
-        out.push((format!("pooled:{n}"), ConnectionStrategy::Pooled { size: count }));
+        out.push((
+            format!("pooled:{n}"),
+            ConnectionStrategy::Pooled { size: count },
+        ));
         out.push((
             format!("multiplexed:{n}"),
             ConnectionStrategy::Multiplexed { connections: count },
@@ -91,7 +94,10 @@ fn parse_strategy(spec: &str) -> Option<ConnectionStrategy> {
 }
 
 /// Drive `TOTAL_QUERIES` short read queries, keeping `CONCURRENCY` in flight.
-async fn run_workload(client: Arc<FalkorAsyncClient>, graph_name: &str) {
+async fn run_workload(
+    client: Arc<FalkorAsyncClient>,
+    graph_name: &str,
+) {
     let mut remaining = TOTAL_QUERIES;
     while remaining > 0 {
         let batch = remaining.min(CONCURRENCY);
@@ -156,7 +162,10 @@ fn peak_rss_mib() -> f64 {
 }
 
 /// Run a single strategy and print one row of metrics. Returns `false` if no server.
-fn run_single(label: &str, strategy: ConnectionStrategy) -> bool {
+fn run_single(
+    label: &str,
+    strategy: ConnectionStrategy,
+) -> bool {
     let runtime = Runtime::new().expect("tokio runtime");
 
     let client = match runtime.block_on(build_client(strategy)) {

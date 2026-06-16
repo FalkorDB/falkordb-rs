@@ -477,32 +477,45 @@ mod tests {
     fn test_copy_graph() {
         let client = create_test_client();
 
-        client.select_graph("imdb_ro_copy").delete().ok();
-
-        let graph = client.copy_graph("imdb", "imdb_ro_copy");
-        assert!(graph.is_ok());
-
-        let mut graph = TestSyncGraphHandle {
-            inner: graph.unwrap(),
-        };
-
         let mut original_graph = client.select_graph("imdb");
 
-        assert_eq!(
-            graph
+        let expected = original_graph
+            .query("MATCH (a:actor) RETURN a")
+            .execute()
+            .expect("Could not get actors from unmodified graph")
+            .data
+            .collect::<Vec<_>>();
+
+        // GRAPH.COPY is performed by a background fork on the server; when the
+        // server is busy forking for other operations the copy can silently
+        // complete empty, and waiting never populates it. A successful copy is
+        // visible immediately, so re-issue the copy until the new graph reports
+        // the same rows as the source graph.
+        let mut graph = TestSyncGraphHandle {
+            inner: client.select_graph("imdb_ro_copy"),
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let copied = loop {
+            client.select_graph("imdb_ro_copy").delete().ok();
+            graph.inner = client
+                .copy_graph("imdb", "imdb_ro_copy")
+                .expect("Could not copy graph");
+
+            let rows = graph
                 .inner
                 .query("MATCH (a:actor) RETURN a")
                 .execute()
-                .expect("Could not get actors from unmodified graph")
+                .expect("Could not get actors from copied graph")
                 .data
-                .collect::<Vec<_>>(),
-            original_graph
-                .query("MATCH (a:actor) RETURN a")
-                .execute()
-                .expect("Could not get actors from unmodified graph")
-                .data
-                .collect::<Vec<_>>()
-        )
+                .collect::<Vec<_>>();
+
+            if rows.len() == expected.len() || std::time::Instant::now() >= deadline {
+                break rows;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+
+        assert_eq!(copied, expected)
     }
 
     #[test]

@@ -434,38 +434,52 @@ mod tests {
     async fn test_copy_graph() {
         let client = create_async_test_client().await;
 
-        client
-            .select_graph("imdb_ro_copy_async")
-            .delete()
-            .await
-            .ok();
-
-        let graph = client.copy_graph("imdb", "imdb_ro_copy_async").await;
-        assert!(graph.is_ok());
-
-        let mut graph = TestAsyncGraphHandle {
-            inner: graph.unwrap(),
-        };
-
         let mut original_graph = client.select_graph("imdb");
 
-        assert_eq!(
-            graph
+        let expected = original_graph
+            .query("MATCH (a:actor) RETURN a")
+            .execute()
+            .await
+            .expect("Could not get actors from unmodified graph")
+            .data
+            .collect::<Vec<_>>();
+
+        // GRAPH.COPY is performed by a background fork on the server; when the
+        // server is busy forking for other operations the copy can silently
+        // complete empty, and waiting never populates it. A successful copy is
+        // visible immediately, so re-issue the copy until the new graph reports
+        // the same rows as the source graph.
+        let mut graph = TestAsyncGraphHandle {
+            inner: client.select_graph("imdb_ro_copy_async"),
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let copied = loop {
+            client
+                .select_graph("imdb_ro_copy_async")
+                .delete()
+                .await
+                .ok();
+            graph.inner = client
+                .copy_graph("imdb", "imdb_ro_copy_async")
+                .await
+                .expect("Could not copy graph");
+
+            let rows = graph
                 .inner
                 .query("MATCH (a:actor) RETURN a")
                 .execute()
                 .await
-                .expect("Could not get actors from unmodified graph")
+                .expect("Could not get actors from copied graph")
                 .data
-                .collect::<Vec<_>>(),
-            original_graph
-                .query("MATCH (a:actor) RETURN a")
-                .execute()
-                .await
-                .expect("Could not get actors from unmodified graph")
-                .data
-                .collect::<Vec<_>>()
-        )
+                .collect::<Vec<_>>();
+
+            if rows.len() == expected.len() || std::time::Instant::now() >= deadline {
+                break rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+
+        assert_eq!(copied, expected)
     }
 
     #[tokio::test(flavor = "multi_thread")]

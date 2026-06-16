@@ -38,37 +38,21 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use falkordb::{ConnectionStrategy, FalkorAsyncClient, FalkorClientBuilder, FalkorConnectionInfo};
+use falkordb::{ConnectionStrategy, FalkorAsyncClient};
 use tokio::runtime::Runtime;
+
+mod common;
+use common::{build_client, STRATEGY_COUNTS};
 
 /// Total queries executed per strategy run.
 const TOTAL_QUERIES: usize = 20_000;
 /// Number of queries kept in flight at once.
 const CONCURRENCY: usize = 64;
 
-fn connection_info() -> Option<FalkorConnectionInfo> {
-    let host = std::env::var("FALKORDB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port: u16 = std::env::var("FALKORDB_PORT")
-        .unwrap_or_else(|_| "6379".to_string())
-        .parse()
-        .unwrap_or(6379);
-    FalkorConnectionInfo::try_from((host.as_str(), port)).ok()
-}
-
-async fn build_client(strategy: ConnectionStrategy) -> Option<FalkorAsyncClient> {
-    let conn_info = connection_info()?;
-    FalkorClientBuilder::new_async()
-        .with_connection_info(conn_info)
-        .with_connection_strategy(strategy)
-        .build()
-        .await
-        .ok()
-}
-
-/// Strategies compared: pooled and multiplexed at 1, 8 and 32 connections.
+/// Strategies compared: pooled and multiplexed at each connection count.
 fn strategy_matrix() -> Vec<(String, ConnectionStrategy)> {
     let mut out = Vec::new();
-    for n in [1u8, 8, 32] {
+    for n in STRATEGY_COUNTS {
         let count = NonZeroU8::new(n).unwrap();
         out.push((
             format!("pooled:{n}"),

@@ -25,34 +25,16 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use falkordb::{ConnectionStrategy, FalkorAsyncClient, FalkorClientBuilder, FalkorConnectionInfo};
+use falkordb::{ConnectionStrategy, FalkorAsyncClient};
 use tokio::runtime::Runtime;
 
-fn connection_info() -> Option<FalkorConnectionInfo> {
-    let host = std::env::var("FALKORDB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port: u16 = std::env::var("FALKORDB_PORT")
-        .unwrap_or_else(|_| "6379".to_string())
-        .parse()
-        .unwrap_or(6379);
-    FalkorConnectionInfo::try_from((host.as_str(), port)).ok()
-}
+mod common;
+use common::{build_client, STRATEGY_COUNTS};
 
-async fn build_client(strategy: ConnectionStrategy) -> Option<FalkorAsyncClient> {
-    let conn_info = connection_info()?;
-    FalkorClientBuilder::new_async()
-        .with_connection_info(conn_info)
-        .with_connection_strategy(strategy)
-        .build()
-        .await
-        .ok()
-}
-
-/// Strategies compared across the matrix: pooled and multiplexed at 1, 8 and 32
-/// connections.
+/// Strategies compared across the matrix: pooled and multiplexed at each connection count.
 fn strategy_matrix() -> Vec<(&'static str, ConnectionStrategy)> {
-    let counts = [1u8, 8, 32];
     let mut out = Vec::new();
-    for n in counts {
+    for n in STRATEGY_COUNTS {
         let count = NonZeroU8::new(n).unwrap();
         out.push(("pooled", ConnectionStrategy::Pooled { size: count }));
         out.push((

@@ -49,7 +49,8 @@ impl<const R: char> FalkorClientBuilder<R> {
     /// with `with_connection_strategy` (async builder only), the last setter wins.
     ///
     /// # Arguments
-    /// * `num_connections`: the number of connections, a non-zero integer, between 1 and 32
+    /// * `num_connections`: the number of connections to maintain, a non-zero [`u8`]
+    ///   (so at most 255)
     ///
     /// # Returns
     /// The consumed and modified self.

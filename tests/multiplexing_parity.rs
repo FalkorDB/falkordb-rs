@@ -69,9 +69,16 @@ fn strategies() -> [ConnectionStrategy; 3] {
 /// test should be skipped rather than failed).
 async fn server_is_available() -> bool {
     let (host, port) = target();
-    tokio::net::TcpStream::connect((host.as_str(), port))
-        .await
-        .is_ok()
+    // Bound the probe so an unroutable FALKORDB_HOST can't stall the suite on the OS
+    // TCP timeout; a slow/unreachable server is treated as "skip".
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::net::TcpStream::connect((host.as_str(), port)),
+        )
+        .await,
+        Ok(Ok(_))
+    )
 }
 
 /// Build a client for the given strategy, or `None` when the server is genuinely

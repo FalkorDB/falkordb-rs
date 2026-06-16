@@ -137,9 +137,16 @@ fn peak_rss_mib() -> f64 {
         libc::getrusage(libc::RUSAGE_SELF, &mut usage);
         usage
     };
-    // `ru_maxrss` is bytes on macOS/BSD and kibibytes on Linux.
+    // `ru_maxrss` is bytes on macOS and the BSDs, but kibibytes on Linux.
     let max_rss = usage.ru_maxrss as f64;
-    if cfg!(target_os = "macos") {
+    if cfg!(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly",
+    )) {
         max_rss / (1024.0 * 1024.0)
     } else {
         max_rss / 1024.0

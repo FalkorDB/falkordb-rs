@@ -41,6 +41,10 @@ jobs:
           toolchain: stable
           override: true
 
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
+
       - name: Install redis-cli
         run: |
           sudo apt-get update
@@ -60,10 +64,10 @@ jobs:
           redis-cli -h 127.0.0.1 -p 6379 ping
 
       - name: Run integration tests
-        run: cargo test --test integration_tests --verbose
+        run: just integration
 
       - name: Run integration tests with all features
-        run: cargo test --test integration_tests --all-features --verbose
+        run: just integration --all-features
 
   integration-tests-tokio:
     runs-on: ubuntu-latest
@@ -88,6 +92,10 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
 
       - name: Install redis-cli
         run: |

@@ -12,39 +12,55 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job runs a single `just` recipe so the exact command can be reproduced
+# locally (see the Justfile / README "Development" section).
 jobs:
   check-clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
       - name: Check Clippy
-        run: cargo clippy --all
+        run: just clippy
 
   check-deny:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, cargo-deny
         with:
-          command: check bans licenses sources
+          tool: just,cargo-deny
+      - name: Check Deny
+        run: just deny
 
   check-doc:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
       - name: Doc
-        run: cargo doc --all
+        run: just doc
 
   check-fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
       - name: Check Rustfmt
-        run: cargo fmt --all --check
+        run: just fmt-check
 
   check-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
       - name: Build
-        run: cargo build
+        run: just build

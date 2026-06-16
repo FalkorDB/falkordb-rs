@@ -45,7 +45,7 @@ clippy-all:
 
 # Dependency/license/advisory audit (matches the `check-deny` CI gate).
 deny:
-    cargo deny check
+    cargo deny check bans licenses sources
 
 # === Build ===================================================================
 
@@ -59,9 +59,9 @@ build-all:
 
 # Build the API docs (matches the `check-doc` CI gate).
 doc:
-    cargo doc --all --no-deps
+    cargo doc --all
 
-# Build docs and open them in a browser.
+# Build docs (no deps) and open them in a browser.
 doc-open:
     cargo doc --all --no-deps --open
 
@@ -83,10 +83,12 @@ test-embedded:
     FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
         cargo nextest run --features {{features}} --test embedded_integration
 
-# Run the integration tests exactly as CI does (tokio feature).
-test-integration:
+# Run the integration_tests binary with the given cargo args, exactly as the
+# integration CI jobs do. Examples: `just integration`,
+# `just integration --features tokio`, `just integration --all-features`.
+integration *args:
     FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
-        cargo test --test integration_tests --features tokio --verbose
+        cargo test --test integration_tests {{args}} --verbose
 
 # Run a single test by name filter, e.g. `just test-one test_borrow_connection`.
 test-one filter:

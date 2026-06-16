@@ -470,6 +470,26 @@ Targeted recipes are available too, e.g. `just test-parity`, `just test-embedded
 The host, port, Docker image and feature set can be overridden on the command line, for
 example `just port=6380 test` or `just image=falkordb/falkordb:latest db-up`.
 
+### Reproducing CI locally
+
+The GitHub Actions workflows invoke these same recipes, so a failing CI job can be
+reproduced with a single command:
+
+| CI job | Recipe |
+| --- | --- |
+| `check-fmt` | `just fmt-check` |
+| `check-clippy` | `just clippy` |
+| `check-build` | `just build` |
+| `check-doc` | `just doc` |
+| `check-deny` | `just deny` |
+| `integration-tests` | `just integration` and `just integration --all-features` |
+| `integration-tests-tokio` | `just integration --features tokio` |
+| `coverage` | `just coverage` |
+
+Run `just ci` to execute every required no-server gate at once, or `just verify` to also
+run the server-backed suite. The integration and coverage recipes need a reachable
+FalkorDB instance (use `just db-up` first, or the `*-local` wrappers).
+
 ## Testing
 
 ### Running Tests

@@ -622,7 +622,7 @@ mod tests {
         // Test that overly long socket paths are rejected
         let very_long_path = "/".to_string() + &"a".repeat(MAX_SOCKET_PATH_LENGTH + 10);
         let config = EmbeddedConfig {
-            redis_server_path: Some(PathBuf::from("/bin/true")), // Use a valid executable
+            redis_server_path: Some(PathBuf::from("/bin/sh")), // Use a valid executable
             falkordb_module_path: Some(PathBuf::from("/dev/null")), // Won't actually use this
             socket_path: Some(PathBuf::from(very_long_path)),
             ..Default::default()
@@ -957,17 +957,17 @@ mod tests {
 
     #[test]
     fn test_find_redis_server_with_valid_path() {
-        // Test with a path that exists (use /bin/true as a placeholder)
+        // Test with a path that exists (use /bin/sh as a placeholder)
         #[cfg(unix)]
         {
             let config = EmbeddedConfig {
-                redis_server_path: Some(PathBuf::from("/bin/true")),
+                redis_server_path: Some(PathBuf::from("/bin/sh")),
                 ..Default::default()
             };
 
             let result = EmbeddedServer::find_redis_server(&config);
             assert!(result.is_ok());
-            assert_eq!(result.unwrap(), PathBuf::from("/bin/true"));
+            assert_eq!(result.unwrap(), PathBuf::from("/bin/sh"));
         }
     }
 

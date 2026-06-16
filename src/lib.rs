@@ -124,16 +124,31 @@ pub(crate) mod test_utils {
 
     const RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+    /// `GRAPH.COPY` is performed by a background fork on the server, which can take
+    /// noticeably longer than index/constraint readiness under heavy load, so its
+    /// re-issue loop is given a longer window than [`RETRY_TIMEOUT`].
+    pub(crate) const COPY_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// FalkorDB builds indices and validates constraints asynchronously, so a freshly
     /// created index/constraint may not be reported by the matching `list_*` call that
     /// immediately follows creation, especially while the server is under load. Retry
     /// `op` until `done` is satisfied or the timeout elapses, returning the last value.
     pub(crate) fn retry_until<T>(
+        op: impl FnMut() -> T,
+        done: impl Fn(&T) -> bool,
+    ) -> T {
+        retry_until_with_timeout(RETRY_TIMEOUT, op, done)
+    }
+
+    /// [`retry_until`] with an explicit overall timeout, for operations that need a
+    /// different retry window than the shared default (e.g. the `GRAPH.COPY` re-issue
+    /// loop, which uses [`COPY_RETRY_TIMEOUT`]).
+    pub(crate) fn retry_until_with_timeout<T>(
+        timeout: std::time::Duration,
         mut op: impl FnMut() -> T,
         done: impl Fn(&T) -> bool,
     ) -> T {
-        let deadline = std::time::Instant::now() + RETRY_TIMEOUT;
+        let deadline = std::time::Instant::now() + timeout;
         loop {
             let value = op();
             if done(&value) || std::time::Instant::now() >= deadline {
@@ -164,38 +179,78 @@ pub(crate) mod test_utils {
             tokio::time::sleep(RETRY_INTERVAL).await;
         }
     }
+
+    /// Async counterpart of [`retry_until`] for self-contained operations that do
+    /// not borrow a long-lived `&mut AsyncGraph` (so the future can capture
+    /// everything it needs, e.g. a shared `&FalkorAsyncClient`). Used for server
+    /// operations performed by a background fork (e.g. `GRAPH.COPY`) that must be
+    /// re-issued until they take effect.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn retry_until_async_fn<T, Fut>(
+        op: impl FnMut() -> Fut,
+        done: impl Fn(&T) -> bool,
+    ) -> T
+    where
+        Fut: std::future::Future<Output = T>,
+    {
+        retry_until_async_fn_with_timeout(RETRY_TIMEOUT, op, done).await
+    }
+
+    /// [`retry_until_async_fn`] with an explicit overall timeout, for operations that
+    /// need a different retry window than the shared default (e.g. the `GRAPH.COPY`
+    /// re-issue loop, which uses [`COPY_RETRY_TIMEOUT`]).
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn retry_until_async_fn_with_timeout<T, Fut>(
+        timeout: std::time::Duration,
+        mut op: impl FnMut() -> Fut,
+        done: impl Fn(&T) -> bool,
+    ) -> T
+    where
+        Fut: std::future::Future<Output = T>,
+    {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let value = op().await;
+            if done(&value) || std::time::Instant::now() >= deadline {
+                return value;
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+    }
 }
 
 #[cfg(test)]
 mod retry_tests {
     use super::test_utils::retry_until;
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn retry_until_returns_immediately_when_already_done() {
-        let calls = Cell::new(0);
-        let value = retry_until(
-            || {
-                calls.set(calls.get() + 1);
-                calls.get()
-            },
-            |v| *v == 1,
-        );
+        let calls = AtomicUsize::new(0);
+        let value = retry_until(|| calls.fetch_add(1, Ordering::Relaxed) + 1, |v| *v == 1);
         assert_eq!(value, 1);
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn retry_until_polls_until_condition_is_met() {
-        let calls = Cell::new(0);
-        let value = retry_until(
-            || {
-                calls.set(calls.get() + 1);
-                calls.get()
-            },
-            |v| *v == 3,
-        );
+        let calls = AtomicUsize::new(0);
+        let value = retry_until(|| calls.fetch_add(1, Ordering::Relaxed) + 1, |v| *v == 3);
         assert_eq!(value, 3);
-        assert_eq!(calls.get(), 3);
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retry_until_async_fn_polls_until_condition_is_met() {
+        use super::test_utils::retry_until_async_fn;
+        let calls = AtomicUsize::new(0);
+        let value = retry_until_async_fn(
+            || async { calls.fetch_add(1, Ordering::Relaxed) + 1 },
+            |v| *v == 3,
+        )
+        .await;
+        assert_eq!(value, 3);
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
 }

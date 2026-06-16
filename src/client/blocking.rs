@@ -349,7 +349,9 @@ mod tests {
     use super::*;
     use crate::FalkorValue::Node;
     use crate::{
-        test_utils::{create_test_client, TestSyncGraphHandle},
+        test_utils::{
+            create_test_client, retry_until_with_timeout, TestSyncGraphHandle, COPY_RETRY_TIMEOUT,
+        },
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
     };
     use approx::assert_relative_eq;
@@ -477,32 +479,44 @@ mod tests {
     fn test_copy_graph() {
         let client = create_test_client();
 
-        client.select_graph("imdb_ro_copy").delete().ok();
-
-        let graph = client.copy_graph("imdb", "imdb_ro_copy");
-        assert!(graph.is_ok());
-
-        let mut graph = TestSyncGraphHandle {
-            inner: graph.unwrap(),
-        };
-
         let mut original_graph = client.select_graph("imdb");
 
-        assert_eq!(
-            graph
-                .inner
-                .query("MATCH (a:actor) RETURN a")
-                .execute()
-                .expect("Could not get actors from unmodified graph")
-                .data
-                .collect::<Vec<_>>(),
-            original_graph
-                .query("MATCH (a:actor) RETURN a")
-                .execute()
-                .expect("Could not get actors from unmodified graph")
-                .data
-                .collect::<Vec<_>>()
-        )
+        let expected = original_graph
+            .query("MATCH (a:actor) RETURN a")
+            .execute()
+            .expect("Could not get actors from unmodified graph")
+            .data
+            .collect::<Vec<_>>();
+
+        // Ensure the copied graph is cleaned up even if an assertion panics,
+        // so leftover state cannot interfere with other parallel tests.
+        let _copy_guard = TestSyncGraphHandle {
+            inner: client.select_graph("imdb_ro_copy"),
+        };
+
+        // GRAPH.COPY is performed by a background fork on the server; when the
+        // server is busy forking for other operations the copy can silently
+        // complete empty, and waiting never populates it. A successful copy is
+        // visible immediately, so re-issue the copy until the new graph reports
+        // the same rows as the source graph.
+        let copied = retry_until_with_timeout(
+            COPY_RETRY_TIMEOUT,
+            || {
+                client.select_graph("imdb_ro_copy").delete().ok();
+                let mut graph = client
+                    .copy_graph("imdb", "imdb_ro_copy")
+                    .expect("Could not copy graph");
+                graph
+                    .query("MATCH (a:actor) RETURN a")
+                    .execute()
+                    .expect("Could not get actors from copied graph")
+                    .data
+                    .collect::<Vec<_>>()
+            },
+            |rows| rows == &expected,
+        );
+
+        assert_eq!(copied, expected);
     }
 
     #[test]

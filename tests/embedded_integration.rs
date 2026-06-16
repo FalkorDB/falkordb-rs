@@ -60,8 +60,9 @@ fn resolve_module_path() -> Option<PathBuf> {
     common_module_paths().into_iter().find(|p| p.exists())
 }
 
-/// Build an [`EmbeddedConfig`] pointing at a resolved module, or `None` to skip. A short,
-/// fixed socket directory keeps the Unix socket path well under the OS length limit.
+/// Build an [`EmbeddedConfig`] pointing at a resolved module, or `None` to skip. Relies on
+/// [`EmbeddedConfig::default`] for the socket location (an auto-generated temp directory),
+/// overriding only the module path and an optional `redis-server` path.
 fn embedded_config() -> Option<EmbeddedConfig> {
     let module = resolve_module_path()?;
     Some(EmbeddedConfig {

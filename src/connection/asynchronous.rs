@@ -154,29 +154,32 @@ impl BorrowedAsyncConnection {
         subcommand: Option<&str>,
         params: Option<&[&str]>,
     ) -> FalkorResult<redis::Value> {
-        let res = match self
+        match self
             .as_inner()?
             .execute_command(graph_name, command, subcommand, params)
             .await
         {
             Err(FalkorDBError::ConnectionDown) => {
+                // Swap in a healthy connection so a live one is returned to the pool on drop.
                 if let Ok(new_conn) = self.client.fresh_connection(self.readonly).await {
                     self.conn = Some(new_conn);
-                    self.return_to_pool().await;
                     return Err(FalkorDBError::ConnectionDown);
                 }
                 Err(FalkorDBError::NoConnection)
             }
             res => res,
-        };
-
-        self.return_to_pool().await;
-        res
+        }
+        // `self` is dropped here, returning the connection (see the `Drop` impl below).
     }
+}
 
-    pub(crate) async fn return_to_pool(self) {
-        if let (Some(conn), ConnReturn::Pool(return_tx)) = (self.conn, self.return_to) {
-            return_tx.send(conn).await.ok();
+impl Drop for BorrowedAsyncConnection {
+    /// Return the connection to its origin. Pooled connections are handed back through the
+    /// bounded channel, which always has a free slot because this borrow consumed one;
+    /// multiplexed clones are cheap shared handles and are simply dropped.
+    fn drop(&mut self) {
+        if let (Some(conn), ConnReturn::Pool(return_tx)) = (self.conn.take(), &self.return_to) {
+            return_tx.try_send(conn).ok();
         }
     }
 }

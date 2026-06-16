@@ -473,13 +473,11 @@ impl FalkorAsyncClient {
         &self,
         section: Option<&str>,
     ) -> FalkorResult<HashMap<String, String>> {
-        let mut conn = self.borrow_connection().await?;
-
-        let redis_info = conn.as_inner()?.get_redis_info(section).await;
-
-        conn.return_to_pool().await;
-
-        redis_info
+        self.borrow_connection()
+            .await?
+            .as_inner()?
+            .get_redis_info(section)
+            .await
     }
 
     /// Load a User Defined Function (UDF) library.
@@ -761,6 +759,47 @@ mod tests {
         let Err(TryRecvError::Empty) = non_existing_conn else {
             panic!("Got error, but not a TryRecvError::Empty, as expected");
         };
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_borrowed_connection_returns_to_pool_on_drop() {
+        // A borrowed pooled connection must be returned to the pool when it is dropped
+        // without calling `execute_command`. Otherwise the pool would permanently leak
+        // connections and eventually deadlock future borrows.
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_strategy(ConnectionStrategy::Pooled {
+                size: NonZeroU8::new(2).expect("Could not create a perfectly valid u8"),
+            })
+            .build()
+            .await
+            .expect("Could not build a pooled client");
+
+        // Drain the entire pool by borrowing every connection.
+        let mut borrowed = Vec::with_capacity(2);
+        for _ in 0..2 {
+            borrowed.push(client.borrow_connection().await.expect("Could not borrow"));
+        }
+
+        let AsyncExecutor::Pooled(pool) = &client.inner.primary else {
+            panic!("Expected a pooled primary executor");
+        };
+        assert!(
+            matches!(pool.rx.lock().await.try_recv(), Err(TryRecvError::Empty)),
+            "The pool must be empty while every connection is borrowed"
+        );
+
+        // Drop the borrows without ever calling `execute_command`.
+        drop(borrowed);
+
+        let mut returned = 0;
+        let mut rx = pool.rx.lock().await;
+        while rx.try_recv().is_ok() {
+            returned += 1;
+        }
+        assert_eq!(
+            returned, 2,
+            "Every dropped borrow must be returned to the pool"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

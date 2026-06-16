@@ -25,13 +25,27 @@ fn skip_if_no_server() -> bool {
     std::env::var("SKIP_INTEGRATION_TESTS").is_ok()
 }
 
-fn get_test_connection_info() -> Option<FalkorConnectionInfo> {
+fn target() -> (String, u16) {
     let host = std::env::var("FALKORDB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port: u16 = std::env::var("FALKORDB_PORT")
-        .unwrap_or_else(|_| "6379".to_string())
-        .parse()
+        .ok()
+        .and_then(|p| p.parse().ok())
         .unwrap_or(6379);
+    (host, port)
+}
+
+fn get_test_connection_info() -> Option<FalkorConnectionInfo> {
+    let (host, port) = target();
     FalkorConnectionInfo::try_from((host.as_str(), port)).ok()
+}
+
+/// A short, unique slug for a strategy (kind + connection count) so parity test cases
+/// never share a graph across strategies.
+fn strategy_slug(strategy: ConnectionStrategy) -> String {
+    match strategy {
+        ConnectionStrategy::Pooled { size } => format!("pooled_{}", size.get()),
+        ConnectionStrategy::Multiplexed { connections } => format!("mux_{}", connections.get()),
+    }
 }
 
 /// The strategies exercised by the parity matrix: legacy pool, new multiplexed default,
@@ -54,11 +68,7 @@ fn strategies() -> [ConnectionStrategy; 3] {
 /// socket can be opened to the configured host/port, `false` otherwise (which means the
 /// test should be skipped rather than failed).
 async fn server_is_available() -> bool {
-    let host = std::env::var("FALKORDB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port: u16 = std::env::var("FALKORDB_PORT")
-        .unwrap_or_else(|_| "6379".to_string())
-        .parse()
-        .unwrap_or(6379);
+    let (host, port) = target();
     tokio::net::TcpStream::connect((host.as_str(), port))
         .await
         .is_ok()
@@ -95,7 +105,7 @@ async fn test_core_operations_under_all_strategies() {
             return;
         };
 
-        let graph_name = format!("parity_core_{}", strategy.connection_count().get());
+        let graph_name = format!("parity_core_{}", strategy_slug(strategy));
         let mut graph = client.select_graph(&graph_name);
         let _ = graph.delete().await;
         let mut graph = client.select_graph(&graph_name);
@@ -152,7 +162,7 @@ async fn test_high_concurrency_no_response_mismatch() {
         };
 
         let client = std::sync::Arc::new(client);
-        let graph_name = format!("parity_concurrency_{}", strategy.connection_count().get());
+        let graph_name = format!("parity_concurrency_{}", strategy_slug(strategy));
         let _ = client.select_graph(&graph_name).delete().await;
 
         let handles: Vec<_> = (0..CONCURRENCY)

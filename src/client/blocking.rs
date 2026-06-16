@@ -349,7 +349,7 @@ mod tests {
     use super::*;
     use crate::FalkorValue::Node;
     use crate::{
-        test_utils::{create_test_client, retry_until},
+        test_utils::{create_test_client, retry_until, TestSyncGraphHandle},
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
     };
     use approx::assert_relative_eq;
@@ -486,6 +486,12 @@ mod tests {
             .data
             .collect::<Vec<_>>();
 
+        // Ensure the copied graph is cleaned up even if an assertion panics,
+        // so leftover state cannot interfere with other parallel tests.
+        let _copy_guard = TestSyncGraphHandle {
+            inner: client.select_graph("imdb_ro_copy"),
+        };
+
         // GRAPH.COPY is performed by a background fork on the server; when the
         // server is busy forking for other operations the copy can silently
         // complete empty, and waiting never populates it. A successful copy is
@@ -504,11 +510,10 @@ mod tests {
                     .data
                     .collect::<Vec<_>>()
             },
-            |rows| rows.len() == expected.len(),
+            |rows| *rows == expected,
         );
 
         assert_eq!(copied, expected);
-        client.select_graph("imdb_ro_copy").delete().ok();
     }
 
     #[test]

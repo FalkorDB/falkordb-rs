@@ -192,50 +192,41 @@ pub(crate) mod test_utils {
 #[cfg(test)]
 mod retry_tests {
     use super::test_utils::retry_until;
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn retry_until_returns_immediately_when_already_done() {
-        let calls = Cell::new(0);
+        let calls = AtomicUsize::new(0);
         let value = retry_until(
-            || {
-                calls.set(calls.get() + 1);
-                calls.get()
-            },
+            || calls.fetch_add(1, Ordering::Relaxed) + 1,
             |v| *v == 1,
         );
         assert_eq!(value, 1);
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn retry_until_polls_until_condition_is_met() {
-        let calls = Cell::new(0);
+        let calls = AtomicUsize::new(0);
         let value = retry_until(
-            || {
-                calls.set(calls.get() + 1);
-                calls.get()
-            },
+            || calls.fetch_add(1, Ordering::Relaxed) + 1,
             |v| *v == 3,
         );
         assert_eq!(value, 3);
-        assert_eq!(calls.get(), 3);
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
 
     #[cfg(feature = "tokio")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn retry_until_async_fn_polls_until_condition_is_met() {
         use super::test_utils::retry_until_async_fn;
-        let calls = Cell::new(0);
+        let calls = AtomicUsize::new(0);
         let value = retry_until_async_fn(
-            || async {
-                calls.set(calls.get() + 1);
-                calls.get()
-            },
+            || async { calls.fetch_add(1, Ordering::Relaxed) + 1 },
             |v| *v == 3,
         )
         .await;
         assert_eq!(value, 3);
-        assert_eq!(calls.get(), 3);
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
 }

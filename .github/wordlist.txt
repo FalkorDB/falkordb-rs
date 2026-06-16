@@ -71,3 +71,7 @@ TcpSettings
 nodelay
 NATs
 stateful
+codeql
+macOS
+openssl
+SHAs

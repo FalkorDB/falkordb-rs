@@ -188,6 +188,58 @@ Note that thread safety is still up to the user to ensure, I.e. an `AsyncGraph` 
 by tokio and expected to be used later,
 it must be wrapped in an Arc<Mutex<_>> or something similar.
 
+### Connection Strategy and Multiplexing
+
+The asynchronous client chooses how it manages its underlying Redis connections via a
+`ConnectionStrategy`:
+
+- **`Multiplexed`** (the async default): a small number of shared, cloneable,
+  auto-reconnecting connections. Many concurrent commands are pipelined over each socket,
+  so a single connection can carry many in-flight requests at once. This avoids the
+  borrow/return bottleneck and is the most efficient option for highly concurrent
+  workloads.
+- **`Pooled`**: a fixed pool of independent connections, each used by exactly one command
+  at a time (borrow/return). This gives strict per-command isolation and a natural cap on
+  in-flight commands. It is the only strategy for the synchronous client.
+
+Select or tune the strategy on the builder:
+
+```rust,no_run
+use falkordb::{ConnectionStrategy, FalkorClientBuilder};
+use std::num::NonZeroU8;
+
+# async fn doc() {
+// Spread commands across 4 shared multiplexed sockets (the default uses 8).
+let client = FalkorClientBuilder::new_async()
+    .with_connection_strategy(ConnectionStrategy::Multiplexed {
+        connections: NonZeroU8::new(4).unwrap(),
+    })
+    // Optional backpressure: cap concurrently in-flight commands per socket.
+    .with_max_inflight(256)
+    .build()
+    .await
+    .expect("Failed to build client");
+
+assert_eq!(client.connection_pool_size(), 4);
+# }
+```
+
+Notes and caveats:
+
+- **Behavior change:** the async default is now multiplexed (previously an exclusive
+  borrow-pool). The API is source-compatible; `with_num_connections` now sets the number
+  of underlying connections/sockets for the active strategy, and `connection_pool_size()`
+  reports that count.
+- **Backpressure:** multiplexed mode does not bound the number of outstanding requests
+  unless you set `with_max_inflight(n)` (ignored by the pooled strategy, whose pool size
+  already caps in-flight commands).
+- **Sentinel:** a multiplexed connection built from a Sentinel-resolved node would not
+  re-resolve the master/replica on failover, so for Sentinel deployments the client
+  transparently falls back to the pooled strategy (which re-resolves on reconnect).
+  `connection_strategy()` returns this *effective* strategy.
+
+A runnable example is provided in [`examples/multiplexed_async.rs`](examples/multiplexed_async.rs).
+
 ### SSL/TLS Support
 
 This client is currently built upon the [`redis`](https://docs.rs/redis/latest/redis/) crate, and therefore supports TLS
@@ -401,3 +453,90 @@ docker stop falkordb-test && docker rm falkordb-test
 #### CI Integration Tests
 
 Integration tests are automatically run in GitHub Actions using Docker services. See `.github/workflows/integration-tests.yml` for the CI configuration.
+
+### Benchmarks
+
+The crate ships a [criterion](https://docs.rs/criterion) benchmark,
+`benches/async_strategies.rs`, that compares the two async connection strategies
+(`Pooled` vs `Multiplexed`) across a range of connection counts (1, 8, 32) and
+concurrency levels (1, 8, 64, 256). Benchmarks are developer/PR-time tools and are **not**
+part of the required CI gates.
+
+They require a running FalkorDB instance and the `tokio` feature:
+
+```bash
+# Start a server (configure with FALKORDB_HOST / FALKORDB_PORT; defaults to 127.0.0.1:6379)
+docker run -d --name falkordb-bench -p 6379:6379 falkordb/falkordb:latest
+
+# Run the full benchmark suite
+cargo bench --features tokio --bench async_strategies
+
+# Run a single case (criterion accepts a filter on the benchmark id)
+cargo bench --features tokio --bench async_strategies -- 'async_read_throughput/multiplexed_8/8'
+
+# Clean up
+docker stop falkordb-bench && docker rm falkordb-bench
+```
+
+When no server is reachable the benchmark prints a notice and skips its work, so it stays
+runnable in serverless CI.
+
+#### Interpreting the results
+
+Each case reports the wall-clock time to complete a batch of `concurrency` read queries,
+and the corresponding throughput (`Kelem/s`). criterion writes a full HTML report to
+`target/criterion/report/index.html`.
+
+What to expect:
+
+- **At concurrency = 1** the two strategies are close: a single in-flight command cannot
+  benefit from multiplexing, so the per-request latency dominates.
+- **As concurrency rises (64, 256)** the `multiplexed` strategy should pull ahead of
+  `pooled` at the same connection count, because many commands are pipelined over each
+  shared socket instead of waiting for an exclusive connection from the pool. The gap is
+  largest at low connection counts (e.g. `multiplexed_1` vs `pooled_1`), where the pool
+  becomes a hard bottleneck while a single multiplexed socket keeps absorbing work.
+- **Higher connection counts narrow the gap**: a large pool (e.g. `pooled_32`) hides much
+  of its borrow/return cost, approaching multiplexed throughput at the expense of holding
+  more sockets open.
+
+Absolute numbers depend heavily on your hardware, the server, and network latency, so
+treat them as relative comparisons between strategies on the *same* machine rather than
+portable figures.
+
+#### Memory and CPU usage
+
+`benches/async_strategies.rs` measures wall-clock throughput. A second, non-criterion
+harness, `benches/resource_usage.rs`, measures **peak memory (RSS)** and **CPU time**
+(user/system) per strategy. Because peak RSS is a process-wide high-water mark that cannot
+be reset between iterations, the harness runs each strategy in its own subprocess and
+prints a table:
+
+```bash
+docker run -d --name falkordb-bench -p 6379:6379 falkordb/falkordb:latest
+cargo bench --features tokio --bench resource_usage
+docker stop falkordb-bench && docker rm falkordb-bench
+```
+
+Example output (numbers are illustrative — they vary by machine and server):
+
+```text
+strategy         peak_rss_MiB  cpu_user_ms   cpu_sys_ms      wall_ms    queries/sec
+pooled:1               ...
+multiplexed:1          ...
+...
+```
+
+What to expect:
+
+- **Memory:** at the *same* connection count, peak RSS is comparable — both strategies hold
+  that many sockets. The real saving is that `multiplexed` sustains high concurrency with
+  *far fewer* connections (e.g. `multiplexed:1` vs a large `pooled:N`), and each connection
+  carries its own read/write buffers, so cutting connection count cuts RSS.
+- **CPU:** `multiplexed` removes the borrow/return machinery — the `mpsc` channel, the
+  `Mutex`, and the per-command task spawn the pool uses to return a connection — so it
+  generally spends less CPU per request and produces less transient allocation churn.
+
+When no server is reachable the harness prints a notice and exits cleanly, so it stays
+runnable in serverless CI.
+

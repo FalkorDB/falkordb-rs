@@ -26,7 +26,7 @@ mod value;
 /// A [`Result`] which only returns [`FalkorDBError`] as its E type
 pub type FalkorResult<T> = Result<T, FalkorDBError>;
 
-pub use client::{blocking::FalkorSyncClient, builder::FalkorClientBuilder};
+pub use client::{blocking::FalkorSyncClient, builder::FalkorClientBuilder, ConnectionStrategy};
 pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
 pub use graph::{

@@ -21,7 +21,7 @@
 Just add it to your `Cargo.toml`, like so:
 
 ```toml
-falkordb = { version = "0.1.10" }
+falkordb = { version = "0.3.0" }
 ```
 
 ### Run FalkorDB instance
@@ -146,7 +146,7 @@ This client supports nonblocking API using the [`tokio`](https://tokio.rs/) runt
 It can be enabled like so:
 
 ```toml
-falkordb = { version = "0.1.10", features = ["tokio"] }
+falkordb = { version = "0.3.0", features = ["tokio"] }
 ```
 
 Currently, this API requires running within a [
@@ -200,21 +200,21 @@ when using tokio: `"tokio-rustls"`/`"tokio-native-tls"`).
 For Rustls:
 
 ```toml
-falkordb = { version = "0.1.10", features = ["rustls"] }
+falkordb = { version = "0.3.0", features = ["rustls"] }
 ```
 
 ```toml
-falkordb = { version = "0.1.10", features = ["tokio-rustls"] }
+falkordb = { version = "0.3.0", features = ["tokio-rustls"] }
 ```
 
 For Native TLS:
 
 ```toml
-falkordb = { version = "0.1.10", features = ["native-tls"] }
+falkordb = { version = "0.3.0", features = ["native-tls"] }
 ```
 
 ```toml
-falkordb = { version = "0.1.10", features = ["tokio-native-tls"] }
+falkordb = { version = "0.3.0", features = ["tokio-native-tls"] }
 ```
 
 ### TCP Keepalive
@@ -298,7 +298,7 @@ This crate fully supports instrumentation using the [`tracing`](https://docs.rs/
 it, simply, enable the `tracing` feature:
 
 ```toml
-falkordb = { version = "0.1.10", features = ["tracing"] }
+falkordb = { version = "0.3.0", features = ["tracing"] }
 ```
 
 Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the
@@ -314,7 +314,7 @@ This client supports running an embedded FalkorDB server, which is useful for:
 To use the embedded feature, enable it in your `Cargo.toml`:
 
 ```toml
-falkordb = { version = "0.1.10", features = ["embedded"] }
+falkordb = { version = "0.3.0", features = ["embedded"] }
 ```
 
 #### Requirements

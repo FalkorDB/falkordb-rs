@@ -548,19 +548,18 @@ mod tests {
                     .delete()
                     .await
                     .ok();
-                match client
+                let mut graph = client
                     .copy_graph_op("imdb", "imdb_op_copy_async_execute")
                     .execute()
-                    .await
-                {
-                    Ok(mut graph) => Ok(graph
+                    .await?;
+                Ok::<_, crate::FalkorDBError>(
+                    graph
                         .query("MATCH (a:actor) RETURN a")
                         .execute()
                         .await?
                         .data
-                        .collect::<Vec<_>>()),
-                    Err(error) => Err(error),
-                }
+                        .collect::<Vec<_>>(),
+                )
             },
             |rows| matches!(rows, Ok(rows) if !rows.is_empty()),
         )

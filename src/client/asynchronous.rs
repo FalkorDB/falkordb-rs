@@ -591,8 +591,8 @@ mod tests {
     use super::*;
     use crate::{
         test_utils::{
-            create_async_test_client, retry_until_async_fn_with_timeout, TestAsyncGraphHandle,
-            COPY_RETRY_TIMEOUT,
+            create_async_test_client, imdb_async_test_client, retry_until_async_fn_with_timeout,
+            TestAsyncGraphHandle, COPY_RETRY_TIMEOUT,
         },
         FalkorClientBuilder,
     };
@@ -790,7 +790,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_select_graph_and_query() {
-        let client = create_async_test_client().await;
+        let client = imdb_async_test_client().await;
 
         let mut graph = client.select_graph("imdb");
         assert_eq!(graph.graph_name(), "imdb".to_string());
@@ -806,7 +806,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_copy_graph() {
-        let client = create_async_test_client().await;
+        let client = imdb_async_test_client().await;
 
         let mut original_graph = client.select_graph("imdb");
 
@@ -858,7 +858,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_copy_graph_op_wait() {
-        let client = create_async_test_client().await;
+        let client = imdb_async_test_client().await;
 
         let mut original_graph = client.select_graph("imdb");
         let expected = original_graph
@@ -905,7 +905,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_copy_graph_op_execute() {
-        let client = create_async_test_client().await;
+        let client = imdb_async_test_client().await;
 
         let _copy_guard = TestAsyncGraphHandle {
             inner: client.select_graph("imdb_op_copy_async_execute"),

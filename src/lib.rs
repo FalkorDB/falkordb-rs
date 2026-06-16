@@ -108,6 +108,58 @@ pub(crate) mod test_utils {
             .expect("Could not create client")
     }
 
+    /// Name of the shared, read-only graph fixture loaded by
+    /// `resources/populate_graph.py`.
+    pub(crate) const IMDB_FIXTURE_GRAPH: &str = "imdb";
+
+    /// Shown when the shared `imdb` fixture is missing, so that a fixture problem is never
+    /// mistaken for a code regression introduced by a change.
+    const IMDB_FIXTURE_HINT: &str = "the shared `imdb` test graph is empty or missing. Run \
+        `resources/populate_graph.py` against the test server first (CI does this in the \
+        coverage job's \"Populate test graph\" step). This indicates a missing test fixture, \
+        NOT a code regression.";
+
+    /// Number of `actor` nodes in the shared `imdb` fixture, or `0` when the graph is empty
+    /// or the query fails.
+    fn imdb_actor_count(graph: &mut SyncGraph) -> i64 {
+        graph
+            .ro_query("MATCH (a:actor) RETURN count(a)")
+            .execute()
+            .ok()
+            .and_then(|mut res| res.data.next())
+            .and_then(|row| row.into_iter().next())
+            .and_then(|value| value.to_i64())
+            .unwrap_or(0)
+    }
+
+    /// Create a sync client and assert the shared `imdb` fixture is populated, so every
+    /// fixture-dependent test fails fast with an actionable message (rather than a cryptic
+    /// assertion or a vacuous pass on an empty graph) when the fixture is missing.
+    pub(crate) fn imdb_test_client() -> FalkorSyncClient {
+        let client = create_test_client();
+        let mut graph = client.select_graph(IMDB_FIXTURE_GRAPH);
+        assert!(imdb_actor_count(&mut graph) > 0, "{IMDB_FIXTURE_HINT}");
+        client
+    }
+
+    /// Async counterpart of [`imdb_test_client`].
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn imdb_async_test_client() -> FalkorAsyncClient {
+        let client = create_async_test_client().await;
+        let mut graph = client.select_graph(IMDB_FIXTURE_GRAPH);
+        let count = graph
+            .ro_query("MATCH (a:actor) RETURN count(a)")
+            .execute()
+            .await
+            .ok()
+            .and_then(|mut res| res.data.next())
+            .and_then(|row| row.into_iter().next())
+            .and_then(|value| value.to_i64())
+            .unwrap_or(0);
+        assert!(count > 0, "{IMDB_FIXTURE_HINT}");
+        client
+    }
+
     pub(crate) fn open_empty_test_graph(graph_name: &str) -> TestSyncGraphHandle {
         let client = create_test_client();
 

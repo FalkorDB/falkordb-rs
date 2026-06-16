@@ -281,11 +281,11 @@ graph.query("CREATE (:Actor {name: 'Tom Hanks'})").execute().expect("Failed to w
 let mut nodes = graph.ro_query("MATCH (a:Actor) RETURN a.name").execute().expect("Failed to read");
 ```
 
-This behaviour is fully backward compatible: against a single node (or any
+This behavior is fully backward compatible: against a single node (or any
 deployment without readable replicas), `ro_query` / `call_procedure_ro`
 transparently fall back to the primary connection, and `reads_from_replicas()`
 returns `false`. See [`examples/readonly_replica.rs`](examples/readonly_replica.rs)
-for a complete runnable example.
+for a complete working example.
 
 ### Tracing
 

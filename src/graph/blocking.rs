@@ -581,9 +581,7 @@ mod tests {
             .list_indices()
             .expect("Could not list indices")
             .data;
-        assert!(!indices
-            .iter()
-            .any(|index| index.index_label == "person" && index.field_types.contains_key("age")));
+        assert!(!indices.iter().any(|index| index.index_label == "person"));
     }
 
     #[test]
@@ -658,10 +656,14 @@ mod tests {
                 10,
             )));
 
-        assert!(matches!(
+        assert_eq!(
             result,
-            Err(FalkorDBError::ConstraintFailed { .. })
-        ));
+            Err(FalkorDBError::ConstraintFailed {
+                label: "person".to_string(),
+                properties: vec!["email".to_string()],
+                constraint_type: ConstraintType::Unique,
+            })
+        );
     }
 
     #[test]

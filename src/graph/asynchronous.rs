@@ -607,9 +607,7 @@ mod tests {
             .await
             .expect("Could not list indices")
             .data;
-        assert!(!indices
-            .iter()
-            .any(|index| index.index_label == "person" && index.field_types.contains_key("age")));
+        assert!(!indices.iter().any(|index| index.index_label == "person"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -692,10 +690,14 @@ mod tests {
             )))
             .await;
 
-        assert!(matches!(
+        assert_eq!(
             result,
-            Err(FalkorDBError::ConstraintFailed { .. })
-        ));
+            Err(FalkorDBError::ConstraintFailed {
+                label: "person".to_string(),
+                properties: vec!["email".to_string()],
+                constraint_type: ConstraintType::Unique,
+            })
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

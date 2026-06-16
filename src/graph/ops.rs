@@ -156,6 +156,7 @@ impl WaitOptions {
 }
 
 /// The outcome of a single poll attempt.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub(crate) enum Step<T> {
     /// The operation finished; return this value.
     Done(T),
@@ -166,6 +167,7 @@ pub(crate) enum Step<T> {
 }
 
 /// What to do after a [`Step::Retry`], computed against the deadline.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 enum Wakeup {
     /// Sleep for this long, then poll again.
     Sleep(Duration),
@@ -766,17 +768,17 @@ mod tests {
     fn next_wakeup_sleeps_then_times_out() {
         let options = WaitOptions::new();
         let future = Instant::now() + Duration::from_secs(60);
-        assert!(matches!(
+        assert_eq!(
             next_wakeup(&options, Some(future), 0),
-            Wakeup::Sleep(_)
-        ));
+            Wakeup::Sleep(Duration::from_millis(50))
+        );
         let past = Instant::now() - Duration::from_secs(1);
-        assert!(matches!(
-            next_wakeup(&options, Some(past), 0),
-            Wakeup::TimedOut
-        ));
+        assert_eq!(next_wakeup(&options, Some(past), 0), Wakeup::TimedOut);
         // No deadline (overflowing timeout) never times out.
-        assert!(matches!(next_wakeup(&options, None, 0), Wakeup::Sleep(_)));
+        assert_eq!(
+            next_wakeup(&options, None, 0),
+            Wakeup::Sleep(Duration::from_millis(50))
+        );
     }
 
     #[test]
@@ -837,10 +839,14 @@ mod tests {
                 }))
             },
         );
-        assert!(matches!(
+        assert_eq!(
             result,
-            Err(crate::FalkorDBError::ConstraintFailed { .. })
-        ));
+            Err(crate::FalkorDBError::ConstraintFailed {
+                label: "L".to_string(),
+                properties: vec!["p".to_string()],
+                constraint_type: ConstraintType::Unique,
+            })
+        );
     }
 
     #[test]
@@ -849,7 +855,7 @@ mod tests {
             poll_sync(&WaitOptions::new(), WaitOperation::IndexCreation, || {
                 Err(crate::FalkorDBError::ConnectionDown)
             });
-        assert!(matches!(result, Err(crate::FalkorDBError::ConnectionDown)));
+        assert_eq!(result, Err(crate::FalkorDBError::ConnectionDown));
     }
 
     #[test]
@@ -1117,34 +1123,33 @@ mod tests {
         assert!(drop.satisfied(&[]));
 
         // `step` maps the boolean readiness into a `Step` for both branches.
-        assert!(matches!(
-            create.step(std::slice::from_ref(&ready)),
-            Step::Done(())
-        ));
-        assert!(matches!(create.step(&[]), Step::Retry));
+        assert_eq!(create.step(std::slice::from_ref(&ready)), Step::Done(()));
+        assert_eq!(create.step(&[]), Step::Retry);
     }
 
     #[test]
     fn bool_step_maps_both_branches() {
-        assert!(matches!(bool_step(true), Step::Done(())));
-        assert!(matches!(bool_step(false), Step::Retry));
+        assert_eq!(bool_step(true), Step::Done(()));
+        assert_eq!(bool_step(false), Step::Retry);
     }
 
     #[test]
     fn classify_copy_result_maps_each_outcome() {
-        assert!(matches!(classify_copy_result::<u8>(Ok(7)), Step::Done(7)));
-        assert!(matches!(
+        assert_eq!(classify_copy_result::<u8>(Ok(7)), Step::Done(7));
+        assert_eq!(
             classify_copy_result::<u8>(Err(crate::FalkorDBError::RedisError(
                 "MISCONF could not fork".to_string()
             ))),
             Step::Retry
-        ));
-        assert!(matches!(
+        );
+        assert_eq!(
             classify_copy_result::<u8>(Err(crate::FalkorDBError::RedisError(
                 "some other failure".to_string()
             ))),
-            Step::Fail(_)
-        ));
+            Step::Fail(crate::FalkorDBError::RedisError(
+                "some other failure".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -1163,11 +1168,15 @@ mod tests {
             label: "P".to_string(),
             properties: vec!["id".to_string()],
         };
-        assert!(matches!(
+        assert_eq!(
             create.step(std::slice::from_ref(&failed)),
-            Step::Fail(crate::FalkorDBError::ConstraintFailed { .. })
-        ));
-        assert!(matches!(create.step(&[]), Step::Retry));
+            Step::Fail(crate::FalkorDBError::ConstraintFailed {
+                label: "P".to_string(),
+                properties: vec!["id".to_string()],
+                constraint_type: ConstraintType::Unique,
+            })
+        );
+        assert_eq!(create.step(&[]), Step::Retry);
 
         let active = constraint(
             ConstraintType::Unique,
@@ -1176,7 +1185,7 @@ mod tests {
             &["id"],
             ConstraintStatus::Active,
         );
-        assert!(matches!(create.step(&[active]), Step::Done(())));
+        assert_eq!(create.step(&[active]), Step::Done(()));
 
         let drop = ConstraintWait {
             drop: true,
@@ -1185,7 +1194,7 @@ mod tests {
             label: "P".to_string(),
             properties: vec!["id".to_string()],
         };
-        assert!(matches!(drop.step(&[]), Step::Done(())));
+        assert_eq!(drop.step(&[]), Step::Done(()));
     }
 
     #[test]
@@ -1287,10 +1296,14 @@ mod tests {
             },
         )
         .await;
-        assert!(matches!(
+        assert_eq!(
             result,
-            Err(crate::FalkorDBError::ConstraintFailed { .. })
-        ));
+            Err(crate::FalkorDBError::ConstraintFailed {
+                label: "P".to_string(),
+                properties: vec!["id".to_string()],
+                constraint_type: ConstraintType::Unique,
+            })
+        );
     }
 
     #[cfg(feature = "tokio")]
@@ -1303,7 +1316,7 @@ mod tests {
             |()| Box::pin(async { Err(crate::FalkorDBError::ParsingArray) }),
         )
         .await;
-        assert!(matches!(result, Err(crate::FalkorDBError::ParsingArray)));
+        assert_eq!(result, Err(crate::FalkorDBError::ParsingArray));
     }
 
     #[cfg(feature = "tokio")]

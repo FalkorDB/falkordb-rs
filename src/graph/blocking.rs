@@ -396,6 +396,18 @@ mod tests {
     };
 
     #[test]
+    fn test_call_procedure_ro_routes_read_only() {
+        // `call_procedure_ro` must build a read-only procedure call (GRAPH.RO_QUERY)
+        // and borrow from the read-only connection path. DB.INDEXES is a read-only
+        // procedure, so this exercises the read-only borrow branch end-to-end.
+        let mut graph = create_test_client().select_graph("imdb");
+        let result = graph
+            .call_procedure_ro::<QueryResult<Vec<FalkorIndex>>>("DB.INDEXES")
+            .execute();
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_create_drop_index() {
         let mut graph = open_empty_test_graph("test_create_drop_index");
 

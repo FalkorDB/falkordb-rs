@@ -180,15 +180,20 @@ impl FalkorSyncClient {
             return None;
         }
 
-        let (tx, rx) = mpsc::sync_channel(num_connections as usize);
+        let mut connections = Vec::with_capacity(num_connections as usize);
         for _ in 0..num_connections {
-            match client.get_replica_connection() {
-                Ok(conn) => {
-                    if tx.send(conn).is_err() {
-                        return None;
-                    }
-                }
-                Err(_) => return None,
+            connections.push(client.get_replica_connection().ok()?);
+        }
+        Self::pool_from_connections(connections)
+    }
+
+    /// Build a [`SyncConnectionPool`] pre-filled with the given connections. Returns
+    /// `None` if the connections cannot be enqueued.
+    fn pool_from_connections(connections: Vec<FalkorSyncConnection>) -> Option<SyncConnectionPool> {
+        let (tx, rx) = mpsc::sync_channel(connections.len().max(1));
+        for conn in connections {
+            if tx.send(conn).is_err() {
+                return None;
             }
         }
 
@@ -600,6 +605,40 @@ mod tests {
         let inner = create_empty_inner_sync_client();
         let result = inner.get_replica_connection();
         assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+    }
+
+    #[test]
+    fn test_pool_from_connections_and_borrow_readonly() {
+        // Exercise the read-only pool plumbing (filling the pool, borrowing from it,
+        // and returning the connection) with placeholder connections, so the success
+        // path is covered without needing a live replica deployment.
+        let pool = FalkorSyncClient::pool_from_connections(vec![
+            FalkorSyncConnection::None,
+            FalkorSyncConnection::None,
+        ])
+        .expect("pool should build from connections");
+
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(FalkorSyncConnection::None).ok();
+        let inner = Arc::new(FalkorSyncClientInner {
+            _inner: Mutex::new(FalkorClientProvider::None),
+            connection_pool_size: 0,
+            connection_pool_tx: tx,
+            connection_pool_rx: Mutex::new(rx),
+            readonly_pool: Some(pool),
+        });
+
+        assert!(inner.has_readonly_pool());
+
+        // Borrowing routes to the read-only pool; dropping returns the connection to it.
+        let borrowed = inner
+            .borrow_readonly_connection(inner.clone())
+            .expect("should borrow from the read-only pool");
+        drop(borrowed);
+        let borrowed_again = inner
+            .borrow_readonly_connection(inner.clone())
+            .expect("returned connection should be reusable");
+        drop(borrowed_again);
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub(crate) enum FalkorClientProvider {
         sentinel: Option<redis::sentinel::SentinelClient>,
         /// Sentinel client configured to hand out connections to replica nodes,
         /// used to route read-only queries away from the primary. `None` when the
-        /// deployment is not Sentinel-managed or has no readable replicas.
+        /// deployment is not Sentinel-managed.
         sentinel_replica: Option<redis::sentinel::SentinelClient>,
         #[cfg(feature = "embedded")]
         #[allow(dead_code)]
@@ -109,6 +109,23 @@ impl FalkorClientProvider {
         self.get_connection()
     }
 
+    /// Returns a replica-routed connection without fallback. This is used for
+    /// building and maintaining the dedicated read-only pool so that it never
+    /// gets populated with primary connections.
+    pub(crate) fn get_replica_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
+        match self {
+            FalkorClientProvider::Redis {
+                sentinel_replica: Some(replica),
+                ..
+            } => Ok(FalkorSyncConnection::Redis(
+                replica
+                    .get_connection()
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
+            )),
+            _ => Err(FalkorDBError::UnavailableProvider),
+        }
+    }
+
     /// Async counterpart of [`get_readonly_connection`](Self::get_readonly_connection).
     ///
     /// Falls back to the primary connection when the replica Sentinel is
@@ -132,6 +149,26 @@ impl FalkorClientProvider {
         }
 
         self.get_async_connection().await
+    }
+
+    /// Async counterpart of [`get_replica_connection`](Self::get_replica_connection).
+    /// Returns a replica-routed connection without falling back to primary.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn get_async_replica_connection(
+        &mut self
+    ) -> FalkorResult<FalkorAsyncConnection> {
+        match self {
+            FalkorClientProvider::Redis {
+                sentinel_replica: Some(replica),
+                ..
+            } => Ok(FalkorAsyncConnection::Redis(
+                replica
+                    .get_async_connection()
+                    .await
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
+            )),
+            _ => Err(FalkorDBError::UnavailableProvider),
+        }
     }
 
     /// Whether this provider can route read-only queries to replica nodes.

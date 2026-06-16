@@ -123,7 +123,7 @@ impl BorrowedSyncConnection {
         {
             Err(FalkorDBError::ConnectionDown) => {
                 let new_conn = if self.readonly {
-                    self.client.get_readonly_connection()
+                self.client.get_replica_connection()
                 } else {
                     self.client.get_connection()
                 };

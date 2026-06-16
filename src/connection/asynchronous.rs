@@ -118,7 +118,7 @@ impl BorrowedAsyncConnection {
         {
             Err(FalkorDBError::ConnectionDown) => {
                 let new_conn = if self.readonly {
-                    self.client.get_async_readonly_connection().await
+                    self.client.get_async_replica_connection().await
                 } else {
                     self.client.get_async_connection().await
                 };

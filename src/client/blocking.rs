@@ -101,6 +101,13 @@ impl FalkorSyncClientInner {
     pub(crate) fn get_readonly_connection(&self) -> FalkorResult<FalkorSyncConnection> {
         self._inner.lock().get_readonly_connection()
     }
+
+    /// Obtain a fresh connection routed to a replica node without fallback.
+    /// Used for read-only pool creation and reconnection so the read-only pool
+    /// never receives primary connections.
+    pub(crate) fn get_replica_connection(&self) -> FalkorResult<FalkorSyncConnection> {
+        self._inner.lock().get_replica_connection()
+    }
 }
 
 impl ProvidesSyncConnections for FalkorSyncClientInner {
@@ -181,7 +188,7 @@ impl FalkorSyncClient {
 
         let (tx, rx) = mpsc::sync_channel(num_connections as usize);
         for _ in 0..num_connections {
-            match client.get_readonly_connection() {
+            match client.get_replica_connection() {
                 Ok(conn) => {
                     if tx.send(conn).is_err() {
                         return None;

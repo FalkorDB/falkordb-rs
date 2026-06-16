@@ -135,6 +135,17 @@ impl FalkorAsyncClientInner {
             .get_async_readonly_connection()
             .await
     }
+
+    /// Obtain a fresh async connection routed to a replica node without fallback.
+    /// Used for read-only pool creation and reconnection so the read-only pool
+    /// never receives primary connections.
+    pub(crate) async fn get_async_replica_connection(&self) -> FalkorResult<FalkorAsyncConnection> {
+        self._inner
+            .lock()
+            .await
+            .get_async_replica_connection()
+            .await
+    }
 }
 
 impl ProvidesSyncConnections for FalkorAsyncClientInner {
@@ -217,7 +228,7 @@ impl FalkorAsyncClient {
 
         let (tx, rx) = mpsc::channel(num_connections as usize);
         for _ in 0..num_connections {
-            match client.get_async_readonly_connection().await {
+            match client.get_async_replica_connection().await {
                 Ok(conn) => {
                     if tx.send(conn).await.is_err() {
                         return None;

@@ -116,4 +116,4 @@ jobs:
           redis-cli -h 127.0.0.1 -p 6379 ping
 
       - name: Run async integration tests
-        run: cargo test --test integration_tests --features tokio --verbose
+        run: just integration --features tokio

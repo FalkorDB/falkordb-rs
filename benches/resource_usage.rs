@@ -38,7 +38,7 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use falkordb::{ConnectionStrategy, FalkorAsyncClient};
+use falkordb::{ConnectionStrategy, FalkorAsyncClient, FalkorDBError};
 use tokio::runtime::Runtime;
 
 mod common;
@@ -91,11 +91,14 @@ async fn run_workload(
                 let graph_name = graph_name.to_string();
                 tokio::spawn(async move {
                     let mut graph = client.select_graph(&graph_name);
-                    graph
-                        .ro_query("RETURN 1")
-                        .execute()
-                        .await
-                        .expect("resource benchmark query should succeed");
+                    match graph.ro_query("RETURN 1").execute().await {
+                        Ok(_) => {}
+                        // Server-side backpressure once FalkorDB's pending-query queue is
+                        // full; tolerate it rather than aborting the resource benchmark.
+                        Err(FalkorDBError::RedisError(msg))
+                            if msg.contains("pending queries exceeded") => {}
+                        Err(e) => panic!("resource benchmark query should succeed: {e:?}"),
+                    }
                 })
             })
             .collect();

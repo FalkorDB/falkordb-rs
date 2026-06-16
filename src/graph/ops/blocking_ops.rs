@@ -6,8 +6,8 @@
 //! Blocking builder terminals for the background-operation helpers.
 
 use super::{
-    is_transient_copy_error, owned_properties, poll_sync, property_refs, ConstraintOp, IndexOp,
-    Step, Wait, WaitOperation, WaitOptions,
+    classify_copy_result, owned_properties, poll_sync, property_refs, ConstraintOp, IndexOp, Wait,
+    WaitOperation, WaitOptions,
 };
 use crate::{
     ConstraintType, EntityType, FalkorResult, FalkorSyncClient, IndexType, LazyResultSet,
@@ -145,11 +145,9 @@ impl<'a> CopyGraphBuilder<'a> {
         options: WaitOptions,
     ) -> FalkorResult<SyncGraph> {
         poll_sync(&options, WaitOperation::GraphCopy, || {
-            match self.client.copy_graph(&self.source, &self.destination) {
-                Ok(graph) => Ok(Step::Done(graph)),
-                Err(error) if is_transient_copy_error(&error) => Ok(Step::Retry),
-                Err(error) => Ok(Step::Fail(error)),
-            }
+            Ok(classify_copy_result(
+                self.client.copy_graph(&self.source, &self.destination),
+            ))
         })
     }
 }
@@ -218,11 +216,7 @@ fn wait_sync(
     wait: &Wait,
 ) -> FalkorResult<()> {
     poll_sync(options, wait.operation(), || match wait {
-        Wait::Index(index_wait) => Ok(if index_wait.satisfied(&graph.list_indices()?.data) {
-            Step::Done(())
-        } else {
-            Step::Retry
-        }),
+        Wait::Index(index_wait) => Ok(index_wait.step(&graph.list_indices()?.data)),
         Wait::Constraint(constraint_wait) => {
             Ok(constraint_wait.step(&graph.list_constraints()?.data))
         }

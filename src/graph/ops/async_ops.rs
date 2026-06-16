@@ -6,8 +6,8 @@
 //! Async builder terminals for the background-operation helpers.
 
 use super::{
-    is_transient_copy_error, next_wakeup, owned_properties, property_refs, ConstraintOp, IndexOp,
-    Step, Wait, WaitOperation, WaitOptions, Wakeup,
+    classify_copy_result, owned_properties, poll_async, property_refs, ConstraintOp, IndexOp, Step,
+    Wait, WaitOperation, WaitOptions,
 };
 use crate::{
     AsyncGraph, ConstraintType, EntityType, FalkorAsyncClient, FalkorResult, IndexType,
@@ -15,7 +15,6 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::time::Instant;
 
 /// Builder for creating or dropping an index on an [`AsyncGraph`].
 ///
@@ -150,29 +149,14 @@ impl<'a> AsyncCopyGraphBuilder<'a> {
         self,
         options: WaitOptions,
     ) -> FalkorResult<AsyncGraph> {
-        let deadline = Instant::now() + options.timeout;
-        let mut attempts = 0u32;
-        loop {
-            match self
-                .client
-                .copy_graph(&self.source, &self.destination)
-                .await
-            {
-                Ok(graph) => return Ok(graph),
-                Err(error) if is_transient_copy_error(&error) => {}
-                Err(error) => return Err(error),
-            }
-            match next_wakeup(&options, deadline, attempts) {
-                Wakeup::TimedOut => {
-                    return Err(crate::FalkorDBError::Timeout {
-                        operation: WaitOperation::GraphCopy,
-                        timeout: options.timeout,
-                    })
-                }
-                Wakeup::Sleep(delay) => tokio::time::sleep(delay).await,
-            }
-            attempts += 1;
-        }
+        poll_async(&options, WaitOperation::GraphCopy, async || {
+            Ok(classify_copy_result(
+                self.client
+                    .copy_graph(&self.source, &self.destination)
+                    .await,
+            ))
+        })
+        .await
     }
 }
 
@@ -257,11 +241,7 @@ async fn evaluate_async(
     wait: &Wait,
 ) -> FalkorResult<Step<()>> {
     match wait {
-        Wait::Index(index_wait) => Ok(if index_wait.satisfied(&graph.list_indices().await?.data) {
-            Step::Done(())
-        } else {
-            Step::Retry
-        }),
+        Wait::Index(index_wait) => Ok(index_wait.step(&graph.list_indices().await?.data)),
         Wait::Constraint(constraint_wait) => {
             Ok(constraint_wait.step(&graph.list_constraints().await?.data))
         }
@@ -273,25 +253,10 @@ async fn wait_async(
     options: &WaitOptions,
     wait: &Wait,
 ) -> FalkorResult<()> {
-    let deadline = Instant::now() + options.timeout;
-    let mut attempts = 0u32;
-    loop {
-        match evaluate_async(graph, wait).await? {
-            Step::Done(value) => return Ok(value),
-            Step::Fail(error) => return Err(error),
-            Step::Retry => {}
-        }
-        match next_wakeup(options, deadline, attempts) {
-            Wakeup::TimedOut => {
-                return Err(crate::FalkorDBError::Timeout {
-                    operation: wait.operation(),
-                    timeout: options.timeout,
-                })
-            }
-            Wakeup::Sleep(delay) => tokio::time::sleep(delay).await,
-        }
-        attempts += 1;
-    }
+    poll_async(options, wait.operation(), async || {
+        evaluate_async(graph, wait).await
+    })
+    .await
 }
 
 impl AsyncGraph {

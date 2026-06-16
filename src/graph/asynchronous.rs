@@ -638,6 +638,25 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_constraint_op_execute_is_non_blocking() {
+        let mut graph = open_empty_async_test_graph("test_constraint_op_execute_async").await;
+
+        graph
+            .inner
+            .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
+            .execute()
+            .await
+            .expect("Could not create constraint");
+
+        graph
+            .inner
+            .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
+            .wait()
+            .await
+            .expect("Constraint did not become operational");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_unique_constraint_op_wait() {
         let mut graph = open_empty_async_test_graph("test_unique_constraint_op_wait_async").await;
 

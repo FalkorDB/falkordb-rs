@@ -207,6 +207,37 @@ pub(crate) fn poll_sync<T>(
     }
 }
 
+/// Asynchronously polls `attempt` until it is [`Step::Done`]/[`Step::Fail`] or the timeout
+/// elapses. This is the async counterpart of [`poll_sync`] and shares the exact same backoff and
+/// deadline logic; it is generic over an async closure so the index/constraint wait (which needs
+/// `&mut AsyncGraph`) and the graph-copy wait (which needs `&FalkorAsyncClient`) can both reuse it.
+#[cfg(feature = "tokio")]
+pub(crate) async fn poll_async<T>(
+    options: &WaitOptions,
+    operation: WaitOperation,
+    mut attempt: impl AsyncFnMut() -> crate::FalkorResult<Step<T>>,
+) -> crate::FalkorResult<T> {
+    let deadline = Instant::now() + options.timeout;
+    let mut attempts = 0u32;
+    loop {
+        match attempt().await? {
+            Step::Done(value) => return Ok(value),
+            Step::Fail(error) => return Err(error),
+            Step::Retry => {}
+        }
+        match next_wakeup(options, deadline, attempts) {
+            Wakeup::TimedOut => {
+                return Err(crate::FalkorDBError::Timeout {
+                    operation,
+                    timeout: options.timeout,
+                })
+            }
+            Wakeup::Sleep(delay) => tokio::time::sleep(delay).await,
+        }
+        attempts += 1;
+    }
+}
+
 /// `true` if `error` is a transient `GRAPH.COPY` failure that should be retried (the server was
 /// temporarily unable to `fork`). FalkorDB's own tests retry copies on this condition.
 pub(crate) fn is_transient_copy_error(error: &crate::FalkorDBError) -> bool {
@@ -216,6 +247,17 @@ pub(crate) fn is_transient_copy_error(error: &crate::FalkorDBError) -> bool {
             message.to_lowercase().contains("could not fork")
         }
         _ => false,
+    }
+}
+
+/// Maps the result of a single `GRAPH.COPY` attempt into a [`Step`]: success completes the wait,
+/// a transient `could not fork` failure retries, and any other error fails immediately. Shared by
+/// the sync and async copy builders.
+pub(crate) fn classify_copy_result<T>(result: crate::FalkorResult<T>) -> Step<T> {
+    match result {
+        Ok(value) => Step::Done(value),
+        Err(error) if is_transient_copy_error(&error) => Step::Retry,
+        Err(error) => Step::Fail(error),
     }
 }
 
@@ -351,6 +393,13 @@ impl IndexWait {
                 self.index_type,
             )
         }
+    }
+
+    fn step(
+        &self,
+        indices: &[FalkorIndex],
+    ) -> Step<()> {
+        bool_step(self.satisfied(indices))
     }
 }
 
@@ -747,13 +796,13 @@ mod tests {
         let options = WaitOptions::with_timeout(Duration::ZERO);
         let result: crate::FalkorResult<()> =
             poll_sync(&options, WaitOperation::GraphCopy, || Ok(Step::Retry));
-        match result {
-            Err(crate::FalkorDBError::Timeout { operation, timeout }) => {
-                assert_eq!(operation, WaitOperation::GraphCopy);
-                assert_eq!(timeout, Duration::ZERO);
-            }
-            other => panic!("expected timeout, got {other:?}"),
-        }
+        assert!(matches!(
+            result,
+            Err(crate::FalkorDBError::Timeout {
+                operation: WaitOperation::GraphCopy,
+                timeout,
+            }) if timeout == Duration::ZERO
+        ));
     }
 
     #[test]
@@ -1005,6 +1054,36 @@ mod tests {
         };
         assert!(!drop.satisfied(std::slice::from_ref(&ready)));
         assert!(drop.satisfied(&[]));
+
+        // `step` maps the boolean readiness into a `Step` for both branches.
+        assert!(matches!(
+            create.step(std::slice::from_ref(&ready)),
+            Step::Done(())
+        ));
+        assert!(matches!(create.step(&[]), Step::Retry));
+    }
+
+    #[test]
+    fn bool_step_maps_both_branches() {
+        assert!(matches!(bool_step(true), Step::Done(())));
+        assert!(matches!(bool_step(false), Step::Retry));
+    }
+
+    #[test]
+    fn classify_copy_result_maps_each_outcome() {
+        assert!(matches!(classify_copy_result::<u8>(Ok(7)), Step::Done(7)));
+        assert!(matches!(
+            classify_copy_result::<u8>(Err(crate::FalkorDBError::RedisError(
+                "MISCONF could not fork".to_string()
+            ))),
+            Step::Retry
+        ));
+        assert!(matches!(
+            classify_copy_result::<u8>(Err(crate::FalkorDBError::RedisError(
+                "some other failure".to_string()
+            ))),
+            Step::Fail(_)
+        ));
     }
 
     #[test]
@@ -1088,5 +1167,84 @@ mod tests {
             properties: vec![],
         });
         assert_eq!(constraint_drop.operation(), WaitOperation::ConstraintDrop);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn poll_async_returns_first_done() {
+        let value = poll_async(
+            &WaitOptions::new(),
+            WaitOperation::IndexCreation,
+            async || Ok::<_, crate::FalkorDBError>(Step::Done(7)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(value, 7);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn poll_async_retries_until_done() {
+        let options = WaitOptions::new().poll_interval(Duration::from_millis(1));
+        let mut calls = 0u32;
+        let value = poll_async(&options, WaitOperation::IndexCreation, async || {
+            calls += 1;
+            Ok::<_, crate::FalkorDBError>(if calls < 3 {
+                Step::Retry
+            } else {
+                Step::Done(calls)
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, 3);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn poll_async_propagates_fail() {
+        let result: crate::FalkorResult<()> = poll_async(
+            &WaitOptions::new(),
+            WaitOperation::ConstraintCreation,
+            async || {
+                Ok(Step::Fail(crate::FalkorDBError::ConstraintFailed {
+                    label: "P".to_string(),
+                    properties: vec!["id".to_string()],
+                    constraint_type: ConstraintType::Unique,
+                }))
+            },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(crate::FalkorDBError::ConstraintFailed { .. })
+        ));
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn poll_async_propagates_attempt_error() {
+        let result: crate::FalkorResult<()> = poll_async(
+            &WaitOptions::new(),
+            WaitOperation::IndexCreation,
+            async || Err(crate::FalkorDBError::ParsingArray),
+        )
+        .await;
+        assert!(matches!(result, Err(crate::FalkorDBError::ParsingArray)));
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn poll_async_times_out() {
+        let options = WaitOptions::new().timeout(Duration::ZERO);
+        let result: crate::FalkorResult<()> =
+            poll_async(&options, WaitOperation::GraphCopy, async || Ok(Step::Retry)).await;
+        assert!(matches!(
+            result,
+            Err(crate::FalkorDBError::Timeout {
+                operation: WaitOperation::GraphCopy,
+                timeout,
+            }) if timeout == Duration::ZERO
+        ));
     }
 }

@@ -609,6 +609,23 @@ mod tests {
     }
 
     #[test]
+    fn test_constraint_op_execute_is_non_blocking() {
+        let mut graph = open_empty_test_graph("test_constraint_op_execute");
+
+        graph
+            .inner
+            .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
+            .execute()
+            .expect("Could not create constraint");
+
+        graph
+            .inner
+            .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
+            .wait()
+            .expect("Constraint did not become operational");
+    }
+
+    #[test]
     fn test_unique_constraint_op_wait() {
         let mut graph = open_empty_test_graph("test_unique_constraint_op_wait");
 

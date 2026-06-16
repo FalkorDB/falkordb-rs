@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.2.1...v0.2.2) - 2026-06-16
+
+### Added
+
+- route read-only queries to replica nodes via Sentinel ([#220](https://github.com/FalkorDB/falkordb-rs/pull/220))
+- ergonomic builder API for waiting on background operations ([#221](https://github.com/FalkorDB/falkordb-rs/pull/221))
+- *(builder)* expose TCP keepalive / TcpSettings ([#189](https://github.com/FalkorDB/falkordb-rs/pull/189))
+
+### Other
+
+- bump README install examples to 0.3.0 ([#222](https://github.com/FalkorDB/falkordb-rs/pull/222))
+- Fix flaky test_copy_graph and make embedded tests pass on macOS ([#219](https://github.com/FalkorDB/falkordb-rs/pull/219))
+- *(deps)* combine dependabot dependency bumps ([#218](https://github.com/FalkorDB/falkordb-rs/pull/218))
+- *(deps)* combine dependabot bumps (codecov-action 7.0.0, which 8.0.3) ([#213](https://github.com/FalkorDB/falkordb-rs/pull/213))
+- *(deps)* bump github/codeql-action from 4.36.0 to 4.36.2 ([#211](https://github.com/FalkorDB/falkordb-rs/pull/211))
+- *(deps)* bump actions/checkout from 6.0.2 to 6.0.3 ([#209](https://github.com/FalkorDB/falkordb-rs/pull/209))
+- *(deps)* bump cargo-deny-action to 2.0.20 and redis to 1.2.2 ([#208](https://github.com/FalkorDB/falkordb-rs/pull/208))
+- *(deps)* combined dependabot updates ([#207](https://github.com/FalkorDB/falkordb-rs/pull/207))
+- *(deps)* bump openssl in the cargo group across 1 directory ([#197](https://github.com/FalkorDB/falkordb-rs/pull/197))
+- *(deps)* bump github/codeql-action from 4.35.2 to 4.35.3 ([#195](https://github.com/FalkorDB/falkordb-rs/pull/195))
+- *(deps)* bump the cargo group across 1 directory with 2 updates
+- *(deps)* combine all dependency updates ([#190](https://github.com/FalkorDB/falkordb-rs/pull/190))
+- *(workflows)* pin GitHub Actions dependencies to commit SHAs ([#175](https://github.com/FalkorDB/falkordb-rs/pull/175))
+- *(deps)* bump codecov/codecov-action from 5 to 6 ([#176](https://github.com/FalkorDB/falkordb-rs/pull/176))
+- *(deps)* consolidate all dependency updates ([#177](https://github.com/FalkorDB/falkordb-rs/pull/177))
+
 ### Added
 
 - Route read-only queries (`ro_query` / `call_procedure_ro`) to replica nodes

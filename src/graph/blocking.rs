@@ -581,7 +581,7 @@ mod tests {
             .list_indices()
             .expect("Could not list indices")
             .data;
-        assert!(!indices.iter().any(|index| index.index_label == "person"));
+        assert!(indices.is_empty());
     }
 
     #[test]
@@ -615,6 +615,17 @@ mod tests {
             .create_mandatory_constraint_op(EntityType::Node, "person", &["name"])
             .execute()
             .expect("Could not create constraint");
+    }
+
+    #[test]
+    fn test_drop_index_op_wait_errors_when_missing() {
+        let mut graph = open_empty_test_graph("test_drop_index_op_missing");
+
+        let result = graph
+            .inner
+            .drop_index_op(IndexType::Range, EntityType::Node, "person", &["age"])
+            .wait();
+        assert!(result.is_err());
     }
 
     #[test]

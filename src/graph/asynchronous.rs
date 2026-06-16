@@ -607,7 +607,7 @@ mod tests {
             .await
             .expect("Could not list indices")
             .data;
-        assert!(!indices.iter().any(|index| index.index_label == "person"));
+        assert!(indices.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -645,6 +645,18 @@ mod tests {
             .execute()
             .await
             .expect("Could not create constraint");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_drop_index_op_wait_errors_when_missing() {
+        let mut graph = open_empty_async_test_graph("test_drop_index_op_missing_async").await;
+
+        let result = graph
+            .inner
+            .drop_index_op(IndexType::Range, EntityType::Node, "person", &["age"])
+            .wait()
+            .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]

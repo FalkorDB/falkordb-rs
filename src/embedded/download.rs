@@ -618,6 +618,74 @@ mod tests {
     }
 
     #[test]
+    fn test_sha256_hex_of_file_missing() {
+        // Hashing a path that doesn't exist surfaces an actionable error.
+        let err = sha256_hex_of_file(Path::new("/nonexistent/falkordb/module.so")).unwrap_err();
+        assert!(format!("{err}").contains("for checksum"), "got: {err}");
+    }
+
+    /// Reserve then release a local port so connecting to it is refused.
+    fn closed_port_url() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        format!("http://127.0.0.1:{port}/falkordb-x64.so")
+    }
+
+    #[test]
+    fn test_download_and_verify_connection_error() {
+        // A failed HTTP request is mapped to an embedded-server error.
+        let url = closed_port_url();
+        let temp = unique_temp("connerr.part");
+        let err = download_and_verify(
+            &url,
+            &Platform::LinuxX64Glibc,
+            "v0.0.0-conn",
+            &temp,
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("Failed to download"),
+            "got: {err}"
+        );
+        let _ = fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn test_install_from_url_cleans_up_on_failure() {
+        // On a download failure nothing is left behind: no installed module and
+        // no stray temp/.part file in the cache dir.
+        let url = closed_port_url();
+        let cache_dir = unique_temp("installfail");
+        let platform = Platform::LinuxX64Glibc;
+        let version = "v0.0.0-fail";
+        let final_path = cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
+
+        let result = install_from_url(
+            &url,
+            &platform,
+            version,
+            &final_path,
+            Duration::from_secs(2),
+        );
+        assert!(result.is_err());
+        assert!(
+            !final_path.exists(),
+            "no module should be installed on failure"
+        );
+        let leftover = fs::read_dir(final_path.parent().unwrap())
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .any(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            })
+            .unwrap_or(false);
+        assert!(!leftover, "temp .part file should be cleaned up on failure");
+
+        let _ = fs::remove_dir_all(&cache_dir);
+    }
+
+    #[test]
     fn test_download_and_verify_detects_checksum_mismatch() {
         // A known platform/version has a pinned checksum; serving the wrong
         // bytes must be rejected.

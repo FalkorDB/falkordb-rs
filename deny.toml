@@ -7,6 +7,13 @@ skip = [
     "hashbrown",
     "r-efi",
     "windows-sys",
+    # `webpki-roots` 0.26 is a thin shim that re-exports 0.26-compatible roots from
+    # `webpki-roots` 1.0, so both versions appear together. Pulled only by `ureq` (the
+    # `embedded` feature's HTTPS downloader); harmless and resolves once `ureq` updates.
+    "webpki-roots",
+    # `sha2` (embedded download checksum verification) pulls `cpufeatures` 0.2 while
+    # `redis`'s `rand`/`chacha20` pull 0.3. Tiny CPU-feature-detection shim; benign.
+    "cpufeatures",
 ]
 
 [sources]
@@ -28,6 +35,10 @@ allow = [
     "MIT",
     "ISC",
     "Unicode-3.0",
+    # Mozilla CA root store bundled by `webpki-roots` (via `ureq`, used only by the
+    # `embedded` feature's HTTPS downloader). CDLA-Permissive-2.0 is a permissive,
+    # no-copyleft data license.
+    "CDLA-Permissive-2.0",
 ]
 
 

@@ -3,8 +3,16 @@ coverage:
     project:
       default:
         threshold: 2%
+    patch:
+      default:
+        # New code should be well covered, but allow some slack for diffs that
+        # include inherently hard-to-unit-test paths (network/IO error branches
+        # and platform-specific code).
+        threshold: 5%
 
-# Examples are illustrative and run against a live server, not under the
-# coverage harness, so they should not count toward coverage.
+# Examples and benchmarks are documentation / developer tooling and are not
+# exercised by the unit/integration test suite, so they are excluded from
+# coverage reporting.
 ignore:
   - "examples"
+  - "benches"

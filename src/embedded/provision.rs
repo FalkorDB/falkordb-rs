@@ -324,22 +324,13 @@ mod tests {
     #[test]
     fn test_all_platform_tags() {
         // Test all supported platforms have tags
-        assert_eq!(
-            Platform::LinuxX64Glibc.tag().unwrap(),
-            "linux-x64-glibc"
-        );
+        assert_eq!(Platform::LinuxX64Glibc.tag().unwrap(), "linux-x64-glibc");
         assert_eq!(
             Platform::LinuxArm64Glibc.tag().unwrap(),
             "linux-arm64-glibc"
         );
-        assert_eq!(
-            Platform::LinuxX64Musl.tag().unwrap(),
-            "linux-x64-musl"
-        );
-        assert_eq!(
-            Platform::LinuxArm64Musl.tag().unwrap(),
-            "linux-arm64-musl"
-        );
+        assert_eq!(Platform::LinuxX64Musl.tag().unwrap(), "linux-x64-musl");
+        assert_eq!(Platform::LinuxArm64Musl.tag().unwrap(), "linux-arm64-musl");
         assert_eq!(
             Platform::AmazonLinux2023X64.tag().unwrap(),
             "amazonlinux2023-x64"

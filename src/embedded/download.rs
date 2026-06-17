@@ -161,11 +161,7 @@ mod tests {
 
         for platform in platforms.iter() {
             let result = cached_module_path(platform, Some(&cache_dir));
-            assert!(
-                result.is_ok(),
-                "Failed for platform: {:?}",
-                platform
-            );
+            assert!(result.is_ok(), "Failed for platform: {:?}", platform);
             let path = result.unwrap();
             assert!(path.to_string_lossy().contains("v4.18.10"));
             assert!(path.exists() == false); // Path doesn't need to exist in unit test

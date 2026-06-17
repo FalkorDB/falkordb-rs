@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.7.0...v0.8.0) - 2026-06-17
+
+### Added
+
+- [**breaking**] async-native streaming results (Stream<Item = FalkorResult<Row>>) ([#234](https://github.com/FalkorDB/falkordb-rs/pull/234))
+
 ### Added
 
 - [**breaking**] async-native streaming results: on the async client, `QueryResult::data` is now a

@@ -234,6 +234,14 @@ mod tests {
         assert_eq!(convert::<u32>(FalkorValue::I64(5)).unwrap(), 5);
         assert!(convert::<i32>(FalkorValue::I64(i64::MAX)).is_err());
         assert!(convert::<u32>(FalkorValue::I64(-1)).is_err());
+        // a non-integer value is a type error rather than a range error
+        assert_eq!(
+            convert::<u32>(FalkorValue::String("x".into())),
+            Err(FalkorDBError::TypeError {
+                expected: "u32",
+                got: "String"
+            })
+        );
     }
 
     #[test]
@@ -262,18 +270,54 @@ mod tests {
         let converted: HashMap<String, i64> = convert(FalkorValue::Map(map)).unwrap();
         assert_eq!(converted.get("a"), Some(&1));
 
+        // a non-map value reports the requested Rust type
+        assert_eq!(
+            convert::<HashMap<String, i64>>(FalkorValue::I64(1)),
+            Err(FalkorDBError::TypeError {
+                expected: "HashMap",
+                got: "I64"
+            })
+        );
+
         assert!(convert::<Node>(FalkorValue::Node(Node::default())).is_ok());
         assert!(convert::<Node>(FalkorValue::I64(1)).is_err());
     }
 
     #[test]
     fn test_type_error_reports_variant() {
-        match convert::<i64>(FalkorValue::Bool(true)) {
-            Err(FalkorDBError::TypeError { expected, got }) => {
-                assert_eq!(expected, "i64");
-                assert_eq!(got, "Bool");
-            }
-            other => panic!("unexpected: {other:?}"),
+        assert_eq!(
+            convert::<i64>(FalkorValue::Bool(true)),
+            Err(FalkorDBError::TypeError {
+                expected: "i64",
+                got: "Bool"
+            })
+        );
+    }
+
+    #[test]
+    fn test_variant_name_covers_every_variant() {
+        use crate::value::graph_entities::{Edge, Node};
+        use crate::value::path::Path;
+        use crate::value::point::Point;
+        use crate::value::vec32::Vec32;
+
+        let cases: [(FalkorValue, &str); 13] = [
+            (FalkorValue::Node(Node::default()), "Node"),
+            (FalkorValue::Edge(Edge::default()), "Edge"),
+            (FalkorValue::Array(vec![]), "Array"),
+            (FalkorValue::Map(HashMap::new()), "Map"),
+            (FalkorValue::Vec32(Vec32 { values: vec![] }), "Vec32"),
+            (FalkorValue::String(String::new()), "String"),
+            (FalkorValue::Bool(true), "Bool"),
+            (FalkorValue::I64(0), "I64"),
+            (FalkorValue::F64(0.0), "F64"),
+            (FalkorValue::Point(Point::default()), "Point"),
+            (FalkorValue::Path(Path::default()), "Path"),
+            (FalkorValue::None, "None"),
+            (FalkorValue::Unparseable(String::new()), "Unparseable"),
+        ];
+        for (value, name) in cases {
+            assert_eq!(variant_name(&value), name);
         }
     }
 }

@@ -181,16 +181,13 @@ mod tests {
         let mut result_set =
             LazyResultSet::new(header, vec![node_row()], graph.get_graph_schema_mut());
 
-        match result_set.next() {
+        assert_eq!(
+            result_set.next(),
             Some(Err(FalkorDBError::RowShapeMismatch {
-                header_len,
-                value_len,
-            })) => {
-                assert_eq!(header_len, 2);
-                assert_eq!(value_len, 1);
-            }
-            other => panic!("expected RowShapeMismatch, got {other:?}"),
-        }
+                header_len: 2,
+                value_len: 1
+            }))
+        );
     }
 
     #[test]

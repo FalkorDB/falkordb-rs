@@ -6,7 +6,7 @@
 use crate::{
     graph::HasGraphSchema,
     parser::{parse_header, redis_value_as_vec, SchemaParsable},
-    Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParams, FalkorResult,
+    Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParams, FalkorResult, GraphSchema,
     IntoFalkorParam, IntoFalkorParams, LazyResultSet, QueryResult, SyncGraph,
 };
 use std::sync::Arc;
@@ -20,6 +20,57 @@ use crate::AsyncGraph;
 
 #[cfg(feature = "serde")]
 use crate::TypedLazyResultSet;
+
+/// Builds a [`QueryResult`] over a [`LazyResultSet`] from an already-parsed header and the raw row
+/// values, sharing one `Arc` header with the result set.
+fn build_lazy_query_result<'g>(
+    header: Arc<[String]>,
+    rows: Vec<redis::Value>,
+    stats: redis::Value,
+    graph_schema: &'g mut GraphSchema,
+) -> FalkorResult<QueryResult<LazyResultSet<'g>>> {
+    let data = LazyResultSet::new(Arc::clone(&header), rows, graph_schema);
+    QueryResult::from_response(header, data, stats)
+}
+
+/// Turns the top-level query response array into a [`QueryResult`]: one element is stats only, two
+/// is a header with no rows, three is header + rows + stats. Any other length is malformed.
+fn dispatch_query_response<'g>(
+    res: Vec<redis::Value>,
+    graph_schema: &'g mut GraphSchema,
+) -> FalkorResult<QueryResult<LazyResultSet<'g>>> {
+    match res.len() {
+        1 => {
+            let stats =
+                res.into_iter()
+                    .next()
+                    .ok_or(FalkorDBError::ParsingArrayToStructElementCount(
+                        "One element exist but using next() failed",
+                    ))?;
+
+            build_lazy_query_result(Vec::new().into(), Vec::new(), stats, graph_schema)
+        }
+        2 => {
+            // The match arm guarantees the length, so the fixed-size conversion cannot fail.
+            let [header, stats]: [redis::Value; 2] =
+                res.try_into().expect("length checked to be exactly two");
+
+            let header: Arc<[String]> = parse_header(header)?.into();
+            build_lazy_query_result(header, Vec::new(), stats, graph_schema)
+        }
+        3 => {
+            let [header, data, stats]: [redis::Value; 3] =
+                res.try_into().expect("length checked to be exactly three");
+
+            let header: Arc<[String]> = parse_header(header)?.into();
+            let rows = redis_value_as_vec(data)?;
+            build_lazy_query_result(header, rows, stats, graph_schema)
+        }
+        _ => Err(FalkorDBError::ParsingArrayToStructElementCount(
+            "Invalid number of elements returned from query",
+        )),
+    }
+}
 
 #[cfg_attr(
     feature = "tracing",
@@ -146,58 +197,7 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
         }
 
         let res = redis_value_as_vec(value)?;
-
-        match res.len() {
-            1 => {
-                let stats = res.into_iter().next().ok_or(
-                    FalkorDBError::ParsingArrayToStructElementCount(
-                        "One element exist but using next() failed",
-                    ),
-                )?;
-
-                let header: Arc<[String]> = Vec::new().into();
-                let data = LazyResultSet::new(
-                    Arc::clone(&header),
-                    Default::default(),
-                    self.graph.get_graph_schema_mut(),
-                );
-                QueryResult::from_response(header, data, stats)
-            }
-            2 => {
-                let [header, stats]: [redis::Value; 2] = res.try_into().map_err(|_| {
-                    FalkorDBError::ParsingArrayToStructElementCount(
-                        "Two elements exist but couldn't be parsed to an array",
-                    )
-                })?;
-
-                let header: Arc<[String]> = parse_header(header)?.into();
-                let data = LazyResultSet::new(
-                    Arc::clone(&header),
-                    Default::default(),
-                    self.graph.get_graph_schema_mut(),
-                );
-                QueryResult::from_response(header, data, stats)
-            }
-            3 => {
-                let [header, data, stats]: [redis::Value; 3] = res.try_into().map_err(|_| {
-                    FalkorDBError::ParsingArrayToStructElementCount(
-                        "3 elements exist but couldn't be parsed to an array",
-                    )
-                })?;
-
-                let header: Arc<[String]> = parse_header(header)?.into();
-                let rows = redis_value_as_vec(data)?;
-                let data = LazyResultSet::new(
-                    Arc::clone(&header),
-                    rows,
-                    self.graph.get_graph_schema_mut(),
-                );
-                QueryResult::from_response(header, data, stats)
-            }
-            _ => Err(FalkorDBError::ParsingArrayToStructElementCount(
-                "Invalid number of elements returned from query",
-            ))?,
-        }
+        dispatch_query_response(res, self.graph.get_graph_schema_mut())
     }
 }
 
@@ -648,6 +648,54 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, AsyncGraph> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::blocking::create_empty_inner_sync_client;
+
+    /// A header `redis::Value` describing a single column named `name`.
+    fn header_with_one_column(name: &str) -> redis::Value {
+        redis::Value::Array(vec![redis::Value::Array(vec![
+            redis::Value::Int(1),
+            redis::Value::BulkString(name.as_bytes().to_vec()),
+        ])])
+    }
+
+    #[test]
+    fn dispatch_one_element_is_stats_only() {
+        let mut schema = GraphSchema::new("test_dispatch_one", create_empty_inner_sync_client());
+        let mut result =
+            dispatch_query_response(vec![redis::Value::Array(vec![])], &mut schema).unwrap();
+        assert!(result.header.is_empty());
+        assert!(result.data.next().is_none());
+    }
+
+    #[test]
+    fn dispatch_two_elements_is_header_without_rows() {
+        let mut schema = GraphSchema::new("test_dispatch_two", create_empty_inner_sync_client());
+        let res = vec![header_with_one_column("col"), redis::Value::Array(vec![])];
+        let mut result = dispatch_query_response(res, &mut schema).unwrap();
+        assert_eq!(result.header.len(), 1);
+        assert_eq!(result.header[0], "col");
+        assert!(result.data.next().is_none());
+    }
+
+    #[test]
+    fn dispatch_three_elements_has_header_and_rows() {
+        let mut schema = GraphSchema::new("test_dispatch_three", create_empty_inner_sync_client());
+        let res = vec![
+            header_with_one_column("col"),
+            redis::Value::Array(vec![]), // zero data rows
+            redis::Value::Array(vec![]), // stats
+        ];
+        let mut result = dispatch_query_response(res, &mut schema).unwrap();
+        assert_eq!(result.header.len(), 1);
+        assert_eq!(result.header[0], "col");
+        assert!(result.data.next().is_none());
+    }
+
+    #[test]
+    fn dispatch_invalid_length_is_error() {
+        let mut schema = GraphSchema::new("test_dispatch_bad", create_empty_inner_sync_client());
+        assert!(dispatch_query_response(vec![redis::Value::Nil; 4], &mut schema).is_err());
+    }
 
     #[test]
     fn test_generate_procedure_call_no_args_no_yields() {

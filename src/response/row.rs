@@ -262,10 +262,12 @@ mod tests {
     fn try_get_missing_vs_null() {
         let row = sample();
         // absent column -> MissingColumn, even for Option
-        match row.try_get::<Option<String>>("nope") {
-            Err(FalkorDBError::MissingColumn { name }) => assert_eq!(name, "nope"),
-            other => panic!("unexpected: {other:?}"),
-        }
+        assert_eq!(
+            row.try_get::<Option<String>>("nope"),
+            Err(FalkorDBError::MissingColumn {
+                name: "nope".to_string()
+            })
+        );
         // present-but-null -> Ok(None)
         assert_eq!(row.try_get::<Option<String>>("sequel").unwrap(), None);
     }
@@ -273,25 +275,22 @@ mod tests {
     #[test]
     fn try_get_type_error() {
         let row = sample();
-        match row.try_get::<i64>("title") {
-            Err(FalkorDBError::TypeError { expected, got }) => {
-                assert_eq!(expected, "i64");
-                assert_eq!(got, "String");
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
+        assert_eq!(
+            row.try_get::<i64>("title"),
+            Err(FalkorDBError::TypeError {
+                expected: "i64",
+                got: "String"
+            })
+        );
     }
 
     #[test]
     fn try_get_at_out_of_bounds() {
         let row = sample();
-        match row.try_get_at::<i64>(10) {
-            Err(FalkorDBError::ColumnIndexOutOfBounds { index, len }) => {
-                assert_eq!(index, 10);
-                assert_eq!(len, 4);
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
+        assert_eq!(
+            row.try_get_at::<i64>(10),
+            Err(FalkorDBError::ColumnIndexOutOfBounds { index: 10, len: 4 })
+        );
     }
 
     #[test]

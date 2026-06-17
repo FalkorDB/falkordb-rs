@@ -88,7 +88,7 @@ let rows: Vec<Row> = result.data.try_collect().await?;
 Mapping each row to a typed value composes the same way:
 
 ```rust
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 
 let titles: Vec<String> = result
     .data
@@ -187,10 +187,8 @@ errors collapsed to a single `FalkorValue::Unparseable`) if you are not ready to
 `Row` values:
 
 ```rust
-use futures::StreamExt;
-
-let mut rows = result.data.into_values_lossy();
-while let Some(row) = rows.next().await {
+// `into_values_lossy()` returns a plain `Iterator`, so iterate it synchronously (no `.await`).
+for row in result.data.into_values_lossy() {
     // row: Vec<FalkorValue>
 }
 ```

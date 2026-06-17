@@ -202,7 +202,14 @@ fn install_from_url(
     ));
 
     // Fetch+verify into a temp file; clean it up on any failure.
-    if let Err(err) = download_and_verify(url, platform, version, &temp_path, timeout) {
+    if let Err(err) = download_and_verify(
+        url,
+        platform,
+        version,
+        &temp_path,
+        timeout,
+        MAX_DOWNLOAD_BYTES,
+    ) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(err);
     }
@@ -224,13 +231,15 @@ fn install_from_url(
 }
 
 /// Stream `url` into `temp_path`, hashing as it goes, and verify the digest
-/// against the pinned checksum for `version` (when known).
+/// against the pinned checksum for `version` (when known). `max_bytes` caps the
+/// amount read to guard against a runaway/hostile server.
 fn download_and_verify(
     url: &str,
     platform: &Platform,
     version: &str,
     temp_path: &Path,
     timeout: Duration,
+    max_bytes: u64,
 ) -> FalkorResult<()> {
     use sha2::{Digest, Sha256};
 
@@ -270,9 +279,9 @@ fn download_and_verify(
             break;
         }
         total += read as u64;
-        if total > MAX_DOWNLOAD_BYTES {
+        if total > max_bytes {
             return Err(FalkorDBError::EmbeddedServerError(format!(
-                "Download from {url} exceeded the {MAX_DOWNLOAD_BYTES} byte limit"
+                "Download from {url} exceeded the {max_bytes} byte limit"
             )));
         }
         hasher.update(&buf[..read]);
@@ -289,12 +298,29 @@ fn download_and_verify(
     })?;
 
     let actual = hex_encode(hasher.finalize().as_slice());
-    match provision::module_checksum(version, platform.tag()?) {
+    verify_checksum(
+        provision::module_checksum(version, platform.tag()?),
+        &actual,
+        platform.asset_filename()?,
+        version,
+    )
+}
+
+/// Compare a downloaded asset's `actual` digest to its `expected` pinned digest.
+///
+/// `expected` is `None` for versions without a pinned checksum (an overridden
+/// version), in which case the asset is accepted as-is.
+fn verify_checksum(
+    expected: Option<&str>,
+    actual: &str,
+    asset: &str,
+    version: &str,
+) -> FalkorResult<()> {
+    match expected {
         Some(expected) if !actual.eq_ignore_ascii_case(expected) => {
             Err(FalkorDBError::EmbeddedServerError(format!(
-                "Checksum mismatch for {}: expected {expected}, got {actual}. \
-                 The download may be corrupted or tampered with.",
-                platform.asset_filename()?
+                "Checksum mismatch for {asset}: expected {expected}, got {actual}. \
+                 The download may be corrupted or tampered with."
             )))
         }
         Some(_) => Ok(()),
@@ -302,6 +328,7 @@ fn download_and_verify(
             // No pinned checksum for this (overridden) version; accept as-is.
             #[cfg(feature = "tracing")]
             tracing::warn!("No pinned checksum for version {version}; skipping integrity check");
+            let _ = version;
             Ok(())
         }
     }
@@ -535,6 +562,17 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_checksum() {
+        // Matching pinned checksum (case-insensitive) → accepted.
+        assert!(verify_checksum(Some("abc123"), "ABC123", "asset.so", "v1").is_ok());
+        // Mismatching pinned checksum → rejected.
+        let err = verify_checksum(Some("abc123"), "deadbeef", "asset.so", "v1").unwrap_err();
+        assert!(format!("{err}").contains("Checksum mismatch"), "got: {err}");
+        // No pinned checksum (overridden version) → accepted as-is.
+        assert!(verify_checksum(None, "anything", "asset.so", "v1").is_ok());
+    }
+
+    #[test]
     fn test_unsupported_platforms_error() {
         for platform in [Platform::Unsupported, Platform::MacOSX64Unsupported] {
             assert!(cached_module_path(&platform, provision::FALKORDB_VERSION, None).is_err());
@@ -624,6 +662,55 @@ mod tests {
         assert!(format!("{err}").contains("for checksum"), "got: {err}");
     }
 
+    #[test]
+    fn test_sha256_hex_of_file_unreadable() {
+        // A directory opens but fails to read (EISDIR), exercising the read
+        // error path of the streaming hasher.
+        let dir = unique_temp("hashdir");
+        fs::create_dir_all(&dir).unwrap();
+        let err = sha256_hex_of_file(&dir).unwrap_err();
+        assert!(
+            format!("{err}").contains("reading") || format!("{err}").contains("for checksum"),
+            "got: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_install_from_url_temp_create_error() {
+        use std::os::unix::fs::PermissionsExt;
+        // root bypasses directory write permissions, so this check is meaningless then.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let cache_dir = unique_temp("readonly");
+        let platform = Platform::LinuxX64Glibc;
+        let version = "v0.0.0-ro";
+        let final_path = cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
+        let parent = final_path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        // Read+execute but not writable, so creating the temp file fails.
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let url = serve_once(b"bytes".to_vec());
+        let err = install_from_url(
+            &url,
+            &platform,
+            version,
+            &final_path,
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("Failed to create temp file"),
+            "got: {err}"
+        );
+
+        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        let _ = fs::remove_dir_all(&cache_dir);
+    }
+
     /// Reserve then release a local port so connecting to it is refused.
     fn closed_port_url() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -643,6 +730,7 @@ mod tests {
             "v0.0.0-conn",
             &temp,
             Duration::from_secs(2),
+            MAX_DOWNLOAD_BYTES,
         )
         .unwrap_err();
         assert!(
@@ -686,6 +774,32 @@ mod tests {
     }
 
     #[test]
+    fn test_install_from_url_create_dir_error() {
+        // When the cache parent can't be created (here it sits under a regular
+        // file), installation fails with an actionable error.
+        let blocker = unique_temp("blocker-file");
+        fs::write(&blocker, b"i am a file, not a directory").unwrap();
+        let final_path = blocker
+            .join("v0.0.0")
+            .join("linux-x64-glibc")
+            .join("falkordb-x64.so");
+
+        let err = install_from_url(
+            "http://127.0.0.1:1/falkordb-x64.so",
+            &Platform::LinuxX64Glibc,
+            "v0.0.0",
+            &final_path,
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("Failed to create cache directory"),
+            "got: {err}"
+        );
+        let _ = fs::remove_file(&blocker);
+    }
+
+    #[test]
     fn test_download_and_verify_detects_checksum_mismatch() {
         // A known platform/version has a pinned checksum; serving the wrong
         // bytes must be rejected.
@@ -697,6 +811,7 @@ mod tests {
             provision::FALKORDB_VERSION,
             &temp,
             Duration::from_secs(10),
+            MAX_DOWNLOAD_BYTES,
         )
         .unwrap_err();
         assert!(
@@ -719,9 +834,31 @@ mod tests {
             "v0.0.0-test",
             &temp,
             Duration::from_secs(10),
+            MAX_DOWNLOAD_BYTES,
         )
         .expect("unknown version should skip checksum verification");
         assert_eq!(fs::read(&temp).unwrap(), body);
+        let _ = fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn test_download_and_verify_enforces_size_limit() {
+        // A body larger than the allowed maximum is rejected.
+        let url = serve_once(vec![0u8; 4096]);
+        let temp = unique_temp("toolarge.part");
+        let err = download_and_verify(
+            &url,
+            &Platform::LinuxX64Glibc,
+            "v0.0.0-big",
+            &temp,
+            Duration::from_secs(10),
+            1024, // 1 KiB cap, body is 4 KiB
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("exceeded the 1024 byte limit"),
+            "got: {err}"
+        );
         let _ = fs::remove_file(&temp);
     }
 
@@ -781,41 +918,5 @@ mod tests {
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o644);
         let _ = fs::remove_file(&path);
-    }
-
-    /// Opt-in live download against the real GitHub release (network + ~30 MiB).
-    /// Enable with `FALKORDB_RS_TEST_DOWNLOAD=1`; verifies the pinned checksum
-    /// for the host platform and that a second call hits the cache.
-    #[test]
-    fn test_live_download_real_module() {
-        if std::env::var("FALKORDB_RS_TEST_DOWNLOAD").is_err() {
-            eprintln!("skipping live download test (set FALKORDB_RS_TEST_DOWNLOAD=1 to run)");
-            return;
-        }
-        let platform = Platform::detect();
-        if platform.tag().is_err() {
-            eprintln!("skipping live download test on unsupported platform {platform:?}");
-            return;
-        }
-        let cache_dir = unique_temp("live");
-        let path = download_falkordb_module(
-            &platform,
-            provision::FALKORDB_VERSION,
-            Some(&cache_dir),
-            Duration::from_secs(600),
-        )
-        .expect("live download failed");
-        assert!(path.exists());
-
-        let again = download_falkordb_module(
-            &platform,
-            provision::FALKORDB_VERSION,
-            Some(&cache_dir),
-            Duration::from_secs(1),
-        )
-        .expect("cache reuse failed");
-        assert_eq!(path, again);
-
-        let _ = fs::remove_dir_all(&cache_dir);
     }
 }

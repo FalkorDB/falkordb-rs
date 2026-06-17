@@ -107,32 +107,32 @@ impl Platform {
     /// dedicated assets and detects musl (Alpine) vs glibc. Returns
     /// `Platform::Unsupported` for any unsupported OS/architecture.
     pub fn detect() -> Self {
-        #[cfg(not(unix))]
-        {
-            // Windows support is out of scope for now.
-            return Platform::Unsupported;
-        }
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+        // `/etc/os-release` is only meaningful on Linux; reading it elsewhere
+        // just yields `None`.
+        let os_release = if os == "linux" {
+            std::fs::read_to_string("/etc/os-release").ok()
+        } else {
+            None
+        };
+        Self::classify(os, arch, os_release.as_deref(), is_musl())
+    }
 
-        #[cfg(unix)]
-        {
-            let os = std::env::consts::OS;
-            let arch = std::env::consts::ARCH;
-
-            match (os, arch) {
-                // The Linux arm is compiled on every Unix (the runtime never
-                // reaches it on macOS), which keeps `classify_linux` and its
-                // helpers exercised on all platforms.
-                ("linux", arch) => {
-                    let os_release = std::fs::read_to_string("/etc/os-release").ok();
-                    classify_linux(arch, is_musl(), os_release.as_deref())
-                }
-                ("macos", "aarch64") => Platform::MacOSArm64,
-                ("macos", "x86_64") => {
-                    // No native x86_64 binary; would need Rosetta 2
-                    Platform::MacOSX64Unsupported
-                }
-                _ => Platform::Unsupported,
-            }
+    /// Pure OS/arch → [`Platform`] mapping, split out from [`detect`] so every
+    /// branch is unit-testable on any host (not just the one running the tests).
+    fn classify(
+        os: &str,
+        arch: &str,
+        os_release: Option<&str>,
+        compile_musl: bool,
+    ) -> Self {
+        match (os, arch) {
+            ("linux", arch) => classify_linux(arch, compile_musl, os_release),
+            ("macos", "aarch64") => Platform::MacOSArm64,
+            // No native x86_64 macOS binary; would need Rosetta 2.
+            ("macos", "x86_64") => Platform::MacOSX64Unsupported,
+            _ => Platform::Unsupported,
         }
     }
 
@@ -318,6 +318,41 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_all_os_arches() {
+        // Every OS/arch arm is reachable here regardless of the host running
+        // the tests.
+        assert_eq!(
+            Platform::classify("macos", "aarch64", None, false),
+            Platform::MacOSArm64
+        );
+        assert_eq!(
+            Platform::classify("macos", "x86_64", None, false),
+            Platform::MacOSX64Unsupported
+        );
+        assert_eq!(
+            Platform::classify("linux", "x86_64", None, false),
+            Platform::LinuxX64Glibc
+        );
+        assert_eq!(
+            Platform::classify("linux", "aarch64", None, false),
+            Platform::LinuxArm64Glibc
+        );
+        // Unsupported OSes and arches.
+        assert_eq!(
+            Platform::classify("freebsd", "x86_64", None, false),
+            Platform::Unsupported
+        );
+        assert_eq!(
+            Platform::classify("windows", "x86_64", None, false),
+            Platform::Unsupported
+        );
+        assert_eq!(
+            Platform::classify("linux", "riscv64", None, false),
+            Platform::Unsupported
+        );
+    }
+
+    #[test]
     fn test_module_checksum() {
         // Every supported tag has a 64-char hex SHA-256 for the pinned version.
         let tags = [
@@ -459,6 +494,12 @@ mod tests {
         let amzn2 = "ID=amzn\nVERSION_ID=2\n";
         assert_eq!(
             classify_linux("x86_64", false, Some(amzn2)),
+            Platform::LinuxX64Glibc
+        );
+        // RHEL-family but an unsupported major (e.g. 7) → generic glibc.
+        let rhel7 = "ID=rhel\nVERSION_ID=\"7.9\"\n";
+        assert_eq!(
+            classify_linux("x86_64", false, Some(rhel7)),
             Platform::LinuxX64Glibc
         );
     }

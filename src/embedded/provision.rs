@@ -9,8 +9,8 @@
 //! binaries via download from official sources, with local caching, integrity
 //! verification, and concurrent-safe installation.
 
-use std::collections::HashMap;
 use crate::{FalkorDBError, FalkorResult};
+use std::collections::HashMap;
 
 /// FalkorDB version to provision (pinned for reproducibility and security).
 pub const FALKORDB_VERSION: &str = "v4.18.10";
@@ -20,21 +20,45 @@ pub const FALKORDB_VERSION: &str = "v4.18.10";
 pub fn falkordb_checksums() -> HashMap<&'static str, &'static str> {
     let mut map = HashMap::new();
     // Linux glibc - placeholders (replace with actual checksums from releases)
-    map.insert("linux-x64-glibc", "0000000000000000000000000000000000000000000000000000000000000001");
+    map.insert(
+        "linux-x64-glibc",
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    );
     // Linux aarch64 glibc
-    map.insert("linux-arm64-glibc", "0000000000000000000000000000000000000000000000000000000000000002");
+    map.insert(
+        "linux-arm64-glibc",
+        "0000000000000000000000000000000000000000000000000000000000000002",
+    );
     // Linux x86_64 musl (Alpine)
-    map.insert("linux-x64-musl", "0000000000000000000000000000000000000000000000000000000000000003");
+    map.insert(
+        "linux-x64-musl",
+        "0000000000000000000000000000000000000000000000000000000000000003",
+    );
     // Linux aarch64 musl (Alpine)
-    map.insert("linux-arm64-musl", "0000000000000000000000000000000000000000000000000000000000000004");
+    map.insert(
+        "linux-arm64-musl",
+        "0000000000000000000000000000000000000000000000000000000000000004",
+    );
     // Amazon Linux 2023
-    map.insert("amazonlinux2023-x64", "0000000000000000000000000000000000000000000000000000000000000005");
+    map.insert(
+        "amazonlinux2023-x64",
+        "0000000000000000000000000000000000000000000000000000000000000005",
+    );
     // RHEL 8
-    map.insert("rhel8-x64", "0000000000000000000000000000000000000000000000000000000000000006");
+    map.insert(
+        "rhel8-x64",
+        "0000000000000000000000000000000000000000000000000000000000000006",
+    );
     // RHEL 9
-    map.insert("rhel9-x64", "0000000000000000000000000000000000000000000000000000000000000007");
+    map.insert(
+        "rhel9-x64",
+        "0000000000000000000000000000000000000000000000000000000000000007",
+    );
     // macOS aarch64 (Apple Silicon)
-    map.insert("macos-arm64", "0000000000000000000000000000000000000000000000000000000000000008");
+    map.insert(
+        "macos-arm64",
+        "0000000000000000000000000000000000000000000000000000000000000008",
+    );
     map
 }
 
@@ -182,21 +206,22 @@ pub fn check_macos_libomp() -> FalkorResult<bool> {
             "/opt/homebrew/opt/libomp/lib/libomp.dylib",
             "/usr/local/opt/libomp/lib/libomp.dylib",
         ];
-        
+
         for path in &libomp_paths {
             if std::path::Path::new(path).exists() {
                 return Ok(true);
             }
         }
-        
+
         // Not found
         Err(FalkorDBError::EmbeddedServerError(
             "FalkorDB module requires OpenMP (libomp) on macOS. \
              Install it with: brew install libomp\n\
-             Then try again. See https://www.falkordb.com/ for more information.".to_string(),
+             Then try again. See https://www.falkordb.com/ for more information."
+                .to_string(),
         ))
     }
-    
+
     #[cfg(not(target_os = "macos"))]
     {
         Ok(false)
@@ -236,7 +261,10 @@ mod tests {
         assert_eq!(platform.asset_filename().unwrap(), "falkordb-x64.so");
 
         let platform = Platform::MacOSArm64;
-        assert_eq!(platform.asset_filename().unwrap(), "falkordb-macos-arm64v8.so");
+        assert_eq!(
+            platform.asset_filename().unwrap(),
+            "falkordb-macos-arm64v8.so"
+        );
 
         // Test unsupported
         let platform = Platform::Unsupported;

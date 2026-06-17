@@ -93,3 +93,5 @@ RSS
 runnable
 serverless
 subprocess
+MCP
+WASM

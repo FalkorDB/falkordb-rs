@@ -28,8 +28,8 @@ use crate::{FalkorDBError, FalkorResult};
 #[cfg(feature = "tracing")]
 use tracing;
 
-pub mod provision;
 pub mod download;
+pub mod provision;
 
 // Maximum length for Unix socket paths (typically 104-108 bytes on most Unix systems)
 const MAX_SOCKET_PATH_LENGTH: usize = 104;
@@ -218,7 +218,7 @@ impl EmbeddedServer {
 
     fn find_falkordb_module(config: &EmbeddedConfig) -> FalkorResult<PathBuf> {
         // Resolution order: explicit path → cache (if auto_download) → system locations → download (if auto_download) → error
-        
+
         // Step 1: Check for explicit path
         if let Some(ref path) = config.falkordb_module_path {
             #[cfg(feature = "tracing")]
@@ -248,7 +248,9 @@ impl EmbeddedServer {
             tracing::debug!("auto_download is enabled, checking cache");
             let platform = provision::Platform::detect();
             if let Ok(true) = download::has_cached_module(&platform, config.cache_dir.as_deref()) {
-                if let Ok(cached_path) = download::cached_module_path(&platform, config.cache_dir.as_deref()) {
+                if let Ok(cached_path) =
+                    download::cached_module_path(&platform, config.cache_dir.as_deref())
+                {
                     #[cfg(feature = "tracing")]
                     tracing::info!("Using cached FalkorDB module at: {}", cached_path.display());
                     return Ok(cached_path);
@@ -269,7 +271,10 @@ impl EmbeddedServer {
         for path in common_paths {
             if path.exists() {
                 #[cfg(feature = "tracing")]
-                tracing::info!("Found FalkorDB module at system location: {}", path.display());
+                tracing::info!(
+                    "Found FalkorDB module at system location: {}",
+                    path.display()
+                );
                 return Ok(path);
             }
         }
@@ -279,7 +284,11 @@ impl EmbeddedServer {
             #[cfg(feature = "tracing")]
             tracing::info!("FalkorDB module not found locally, attempting download");
             let platform = provision::Platform::detect();
-            match download::download_falkordb_module(&platform, config.cache_dir.as_deref(), Duration::from_secs(60)) {
+            match download::download_falkordb_module(
+                &platform,
+                config.cache_dir.as_deref(),
+                Duration::from_secs(60),
+            ) {
                 Ok(path) => {
                     #[cfg(feature = "tracing")]
                     tracing::info!("Downloaded FalkorDB module to: {}", path.display());
@@ -297,7 +306,8 @@ impl EmbeddedServer {
         if config.auto_download {
             Err(FalkorDBError::EmbeddedServerError(
                 "FalkorDB module (falkordb.so) not found in common locations and download failed. \
-                 Please install FalkorDB or specify the path in EmbeddedConfig".to_string()
+                 Please install FalkorDB or specify the path in EmbeddedConfig"
+                    .to_string(),
             ))
         } else {
             Err(FalkorDBError::EmbeddedServerError(

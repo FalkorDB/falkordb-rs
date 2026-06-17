@@ -341,7 +341,9 @@ impl<'de> Deserializer<'de> for RowDeserializer<'_> {
     where
         V: Visitor<'de>,
     {
-        let pairs = self.header.iter().cloned().zip(self.values);
+        // Borrow `&str` keys from the header rather than cloning each `String` per row.
+        let RowDeserializer { header, values } = self;
+        let pairs = header.iter().map(String::as_str).zip(values);
         MapDeserializer::new(pairs).deserialize_any(visitor)
     }
 

@@ -11,6 +11,7 @@ use std::{collections::HashMap, fmt::Debug};
 use vec32::Vec32;
 
 pub(crate) mod config;
+pub(crate) mod from_value;
 pub(crate) mod graph_entities;
 pub(crate) mod param;
 pub(crate) mod path;
@@ -27,6 +28,8 @@ mod de_proptest;
 mod param_proptest;
 
 pub use param::{to_cypher_param, FalkorParams, IntoFalkorParam, IntoFalkorParams, RawParam};
+
+pub use from_value::FromFalkorValue;
 
 #[cfg(feature = "serde")]
 pub use de::{from_falkor_row, from_falkor_value, FalkorValueDeserializer};

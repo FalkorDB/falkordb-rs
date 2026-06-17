@@ -164,6 +164,36 @@ pub enum FalkorDBError {
         /// A human-readable description of why encoding failed.
         message: String,
     },
+    /// A result row did not contain a column with the requested name.
+    #[error("result row has no column named '{name}'")]
+    MissingColumn {
+        /// The requested column name.
+        name: String,
+    },
+    /// A result row was indexed past its number of columns.
+    #[error("column index {index} is out of bounds for a row with {len} column(s)")]
+    ColumnIndexOutOfBounds {
+        /// The requested column index.
+        index: usize,
+        /// The number of columns in the row.
+        len: usize,
+    },
+    /// A result row's value count did not match the result header's column count.
+    #[error("result row shape mismatch: header has {header_len} column(s) but the row has {value_len} value(s)")]
+    RowShapeMismatch {
+        /// The number of columns in the header.
+        header_len: usize,
+        /// The number of values in the row.
+        value_len: usize,
+    },
+    /// A [`crate::FalkorValue`] could not be converted into the requested Rust type.
+    #[error("expected a value of type {expected}, but got {got}")]
+    TypeError {
+        /// The Rust type that was requested.
+        expected: &'static str,
+        /// The [`crate::FalkorValue`] variant that was found.
+        got: &'static str,
+    },
 }
 
 #[cfg(feature = "serde")]

@@ -55,13 +55,59 @@ let mut nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN
             .execute()
             .expect("Failed executing query");
 
-// Can also be collected, like any other iterator
-while let Some(node) = nodes.data.next() {
-   println ! ("{:?}", node);
+// Each item is a `FalkorResult<Row>`; read columns by index or name.
+while let Some(row) = nodes.data.next() {
+   let row = row.expect("row failed to parse");
+   println!("{:?}", row.get_at(0));
 }
 ```
 
 ## Features
+
+### Header-aware result rows
+
+`QueryResult::data` iterates the result set as `FalkorResult<Row>`. Each `Row` pairs the query
+header (the column aliases) with that row's values, so you read columns by **name or index** and a
+row that fails to parse surfaces as an `Err` instead of being silently swallowed:
+
+```rust,no_run
+use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
+
+let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
+    .expect("Invalid connection info");
+let client = FalkorClientBuilder::new()
+    .with_connection_info(connection_info)
+    .build()
+    .expect("Failed to build client");
+let mut graph = client.select_graph("imdb");
+
+let mut result = graph
+    .query("MATCH (m:Movie) RETURN m.title AS title, m.year AS year")
+    .execute()
+    .expect("Failed executing query");
+
+for row in result.data.by_ref() {
+    let row = row.expect("row failed to parse");
+    // Read a column by alias and convert it in one step (strictly, via `FromFalkorValue`).
+    let title: String = row.try_get("title").expect("title column");
+    let year: i64 = row.try_get("year").expect("year column");
+    println!("{title} ({year})");
+}
+```
+
+`Row` offers borrowing accessors (`get`, `get_at`, `get_all`), typed accessors
+(`try_get::<T>`, `try_get_at::<T>`), and consuming conversions (`into_values`, `into_map`). Typed
+access is **strict** — no silent lossy casts — via the [`FromFalkorValue`] conversion trait. Because
+`collect` short-circuits on the first `Err`, a whole result set can be gathered with
+`result.data.collect::<falkordb::FalkorResult<Vec<_>>>()`.
+
+FalkorDB rejects a query whose result columns are not uniquely named, so rows from a query always
+have distinct columns; if a `Row` ever does hold duplicates, the access paths are still defined
+(`get`/`try_get` return the first match, `get_all` returns every match, `into_map` keeps the last).
+To opt back into the pre-0.7 behavior (bare `Vec<FalkorValue>` rows, parse errors collapsed to
+`FalkorValue::Unparseable`), call `result.data.into_values_lossy()`. A runnable version lives in
+[`examples/rows.rs`](examples/rows.rs). Upgrading from 0.6? See the
+[0.7 migration guide](docs/migrating-to-0.7.md).
 
 ### Type-safe query parameters
 
@@ -213,8 +259,9 @@ let mut nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN
             .expect("Failed executing query");
 
 // Graph operations are asynchronous, but parsing is still concurrent:
-while let Some(node) = nodes.data.next() {
-     println ! ("{:?}", node);
+while let Some(row) = nodes.data.next() {
+     let row = row.expect("row failed to parse");
+     println!("{:?}", row.get_at(0));
 }
 ```
 
@@ -422,6 +469,7 @@ let mut graph = client.select_graph("imdb");
 let mut result = graph.query("MATCH (m:Movie) RETURN m").execute()
     .expect("Failed executing query");
 for row in result.data.by_ref() {
+    let row = row.expect("row failed to parse");
     if let Some(node) = row.into_iter().next() {
         let movie: Movie = node.deserialize_into().expect("Failed to map node");
         println!("{} ({})", movie.title, movie.year);

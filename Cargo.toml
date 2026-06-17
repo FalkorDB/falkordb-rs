@@ -86,3 +86,6 @@ required-features = ["serde"]
 
 [[example]]
 name = "typed_params"
+
+[[example]]
+name = "rows"

@@ -60,9 +60,9 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`FalkorDBError::SerdeError`] if the row cannot be mapped onto the target type, or if
-/// a multi-column row's `values` length does not match the `header` length (a malformed result
-/// shape that would otherwise be silently truncated by the header/value zip).
+/// Returns [`FalkorDBError::SerdeError`] if the row cannot be mapped onto the target type, or if the
+/// `values` length does not match the `header` length (a malformed result shape that would otherwise
+/// be silently truncated by the header/value zip).
 pub fn from_falkor_row<T>(
     header: &[String],
     mut values: Vec<FalkorValue>,
@@ -70,20 +70,23 @@ pub fn from_falkor_row<T>(
 where
     T: serde::de::DeserializeOwned,
 {
-    // A single value (the common case, and also how a failed row parse is reported, as a lone
-    // `Unparseable`) is mapped on its own so the parse error surfaces with its real message.
-    if values.len() == 1 {
-        let value = values.pop().expect("length checked to be exactly one");
-        return T::deserialize(value.into_deserializer());
-    }
-    // Otherwise the row is zipped with the header by name, so a length mismatch would silently
-    // drop columns or values; reject it instead of deserializing a truncated row.
+    // The row is zipped with the header by name, so a length mismatch would silently drop columns
+    // or values; reject it before deserializing. (Checked up front so the single-column fast path
+    // below cannot mask a mismatch where the header claims a different number of columns.)
     if header.len() != values.len() {
         return Err(FalkorDBError::SerdeError(format!(
             "result row shape mismatch: header has {} column(s) but the row has {} value(s)",
             header.len(),
             values.len(),
         )));
+    }
+    // A single-column row is mapped on its own (so `RETURN m` maps the node and `RETURN n.name` maps
+    // the scalar). Keyed on the header length, not merely the value count, so the shape is trusted.
+    if header.len() == 1 {
+        let value = values
+            .pop()
+            .expect("length checked to equal a header length of one");
+        return T::deserialize(value.into_deserializer());
     }
     T::deserialize(RowDeserializer { header, values })
 }

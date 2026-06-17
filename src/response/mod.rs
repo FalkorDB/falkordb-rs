@@ -3,16 +3,17 @@
  * Licensed under the MIT License.
  */
 
-use crate::{
-    parser::{parse_header, redis_value_as_untyped_string_vec},
-    FalkorResult,
-};
+use crate::{parser::redis_value_as_untyped_string_vec, FalkorResult};
 use std::str::FromStr;
+use std::sync::Arc;
 
 pub(crate) mod constraint;
 pub(crate) mod execution_plan;
 pub(crate) mod index;
 pub(crate) mod lazy_result_set;
+pub(crate) mod row;
+#[cfg(test)]
+mod row_proptest;
 pub(crate) mod slowlog_entry;
 #[cfg(feature = "serde")]
 pub(crate) mod typed_result_set;
@@ -48,8 +49,9 @@ enum StatisticType {
 /// A response struct which also contains the returned header and stats data
 #[derive(Clone, Debug, Default)]
 pub struct QueryResult<T> {
-    /// Header for the result data, usually contains the scalar aliases for the columns
-    pub header: Vec<String>,
+    /// Header for the result data: the column aliases, shared cheaply with each
+    /// [`Row`](crate::Row) the result set yields.
+    pub header: Arc<[String]>,
     /// The actual data returned from the database
     pub data: T,
     /// Various statistics regarding the request, such as execution time and number of successful operations
@@ -57,10 +59,10 @@ pub struct QueryResult<T> {
 }
 
 impl<T> QueryResult<T> {
-    /// Creates a [`QueryResult`] from the specified data, and raw stats, where raw headers are optional
+    /// Creates a [`QueryResult`] from the specified data, an already-parsed `header`, and raw stats.
     ///
     /// # Arguments
-    /// * `headers`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Array`], where each element is expected to be of variant [`redis::Value::BulkString`], [`redis::Value::VerbatimString`] or [`redis::Value::SimpleString`]
+    /// * `header`: the column aliases, parsed once and shared with the result set's rows
     /// * `data`: The actual data
     /// * `stats`: a [`redis::Value`] that is expected to be of variant [`redis::Value::Array`], where each element is expected to be of variant [`redis::Value::BulkString`], [`redis::Value::VerbatimString`] or [`redis::Value::SimpleString`]
     #[cfg_attr(
@@ -68,15 +70,12 @@ impl<T> QueryResult<T> {
         tracing::instrument(name = "New Falkor Response", skip_all, level = "trace")
     )]
     pub fn from_response(
-        headers: Option<redis::Value>,
+        header: Arc<[String]>,
         data: T,
         stats: redis::Value,
     ) -> FalkorResult<Self> {
         Ok(Self {
-            header: match headers {
-                Some(headers) => parse_header(headers)?,
-                None => vec![],
-            },
+            header,
             data,
             stats: redis_value_as_untyped_string_vec(stats)?,
         })
@@ -171,11 +170,10 @@ impl<'a> QueryResult<crate::LazyResultSet<'a>> {
     ///
     /// The [`header`](Self::header) and [`stats`](Self::stats) are preserved; only `data` is
     /// replaced by a [`TypedLazyResultSet`](crate::TypedLazyResultSet) that maps each row with
-    /// [`from_falkor_row`](crate::from_falkor_row).
+    /// [`Row::deserialize`](crate::Row::deserialize).
     pub(crate) fn into_typed<T>(self) -> QueryResult<typed_result_set::TypedLazyResultSet<'a, T>> {
-        let header: std::sync::Arc<[String]> = std::sync::Arc::from(self.header.as_slice());
         QueryResult {
-            data: typed_result_set::TypedLazyResultSet::new(header, self.data),
+            data: typed_result_set::TypedLazyResultSet::new(self.data),
             header: self.header,
             stats: self.stats,
         }
@@ -244,7 +242,7 @@ mod tests {
     #[test]
     fn test_query_result_clone() {
         let result = QueryResult {
-            header: vec!["col1".to_string()],
+            header: vec!["col1".to_string()].into(),
             data: vec!["value1".to_string()],
             stats: vec!["Nodes created: 5".to_string()],
         };
@@ -258,7 +256,7 @@ mod tests {
     #[test]
     fn test_query_result_debug() {
         let result = QueryResult {
-            header: vec!["name".to_string()],
+            header: vec!["name".to_string()].into(),
             data: vec!["Alice".to_string()],
             stats: vec!["Query internal execution time: 0.5 milliseconds".to_string()],
         };
@@ -271,7 +269,7 @@ mod tests {
     #[test]
     fn test_get_labels_added() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Labels added: 10".to_string()],
         };
@@ -281,7 +279,7 @@ mod tests {
     #[test]
     fn test_get_labels_removed() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Labels removed: 5".to_string()],
         };
@@ -291,7 +289,7 @@ mod tests {
     #[test]
     fn test_get_nodes_created() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Nodes created: 20".to_string()],
         };
@@ -301,7 +299,7 @@ mod tests {
     #[test]
     fn test_get_nodes_deleted() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Nodes deleted: 8".to_string()],
         };
@@ -311,7 +309,7 @@ mod tests {
     #[test]
     fn test_get_properties_set() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Properties set: 15".to_string()],
         };
@@ -321,7 +319,7 @@ mod tests {
     #[test]
     fn test_get_properties_removed() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Properties removed: 3".to_string()],
         };
@@ -331,7 +329,7 @@ mod tests {
     #[test]
     fn test_get_indices_created() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Indices created: 2".to_string()],
         };
@@ -341,7 +339,7 @@ mod tests {
     #[test]
     fn test_get_indices_deleted() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Indices deleted: 1".to_string()],
         };
@@ -351,7 +349,7 @@ mod tests {
     #[test]
     fn test_get_relationship_created() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Relationships created: 12".to_string()],
         };
@@ -361,7 +359,7 @@ mod tests {
     #[test]
     fn test_get_relationship_deleted() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Relationships deleted: 7".to_string()],
         };
@@ -371,7 +369,7 @@ mod tests {
     #[test]
     fn test_get_internal_execution_time() {
         let result = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Query internal execution time: 1.234 milliseconds".to_string()],
         };
@@ -381,7 +379,7 @@ mod tests {
     #[test]
     fn test_get_statistics_none() {
         let result: QueryResult<()> = QueryResult {
-            header: vec![],
+            header: Vec::new().into(),
             data: (),
             stats: vec!["Some other stat: 100".to_string()],
         };

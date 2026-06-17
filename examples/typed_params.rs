@@ -9,7 +9,7 @@
 //!
 //! Requires a running FalkorDB instance (defaults to `127.0.0.1:6379`).
 
-use falkordb::{FalkorClientBuilder, FalkorConnectionInfo, FalkorValue};
+use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 use std::collections::BTreeMap;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,13 +46,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Collections work too: `WHERE x IN $list`.
     let mut titles = graph
-        .query("MATCH (m:Movie) WHERE m.year IN $years RETURN m.title ORDER BY m.year")
+        .query("MATCH (m:Movie) WHERE m.year IN $years RETURN m.title AS title ORDER BY m.year")
         .with_param("years", [1999, 2003])
         .execute()?;
     for row in titles.data.by_ref() {
-        if let Some(FalkorValue::String(title)) = row.into_iter().next() {
-            println!("matched: {title}");
-        }
+        // Read the column by its alias and convert it in one step.
+        let title: String = row?.try_get("title")?;
+        println!("matched: {title}");
     }
 
     // Points can't be bound directly — pass the components as a map and wrap with `point()`.
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_param("p", coords)
         .execute()?;
     if let Some(row) = located.data.next() {
-        println!("point: {:?}", row.into_iter().next());
+        println!("point: {:?}", row?.get_at(0));
     }
 
     graph.delete()?;

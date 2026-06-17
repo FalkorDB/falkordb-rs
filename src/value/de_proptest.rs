@@ -156,19 +156,21 @@ proptest! {
         let _: Result<Sample, _> = from_falkor_value(value);
     }
 
-    /// #3a — a single-column row maps exactly like the lone value; the header is irrelevant.
+    /// #3a — a single-column row maps exactly like the lone value.
     #[test]
-    fn prop_single_column_row_matches_value(header in vec(".*", 0..5), value in falkor_strategy()) {
+    fn prop_single_column_row_matches_value(column in ".*", value in falkor_strategy()) {
+        let header = vec![column];
         let from_row: Option<Json> = from_falkor_row(&header, vec![value.clone()]).ok();
         let from_value: Option<Json> = from_falkor_value(value).ok();
         prop_assert_eq!(from_row, from_value);
     }
 
-    /// #3b — a multi-column row whose length disagrees with the header is always rejected.
+    /// #3b — a row whose value count disagrees with the header length is always rejected,
+    /// including the single-value case when the header does not also have exactly one column.
     #[test]
     fn prop_length_mismatch_is_rejected(
         (header_len, values_len) in (0usize..6, 0usize..6)
-            .prop_filter("multi-column with mismatched lengths", |(h, v)| *v != 1 && h != v)
+            .prop_filter("mismatched lengths", |(h, v)| h != v)
     ) {
         let header: Vec<String> = (0..header_len).map(|i| format!("c{i}")).collect();
         let values: Vec<FalkorValue> = (0..values_len).map(|i| FalkorValue::I64(i as i64)).collect();

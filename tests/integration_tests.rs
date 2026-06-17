@@ -279,9 +279,13 @@ mod typed_params {
             .with_param("n", Option::<i64>::None)
             .execute()
             .expect("query should succeed");
-        let row = result.data.next().expect("expected a row");
+        let row = result
+            .data
+            .next()
+            .expect("expected a row")
+            .expect("row should parse");
         assert_eq!(
-            row,
+            row.into_values(),
             vec![
                 FalkorValue::String("it's a \"test\"".to_string()),
                 FalkorValue::I64(42),
@@ -310,7 +314,11 @@ mod typed_params {
             .query("MATCH (t:Tag) RETURN t.name")
             .execute()
             .expect("read should succeed");
-        let row = result.data.next().expect("the node must still exist");
+        let row = result
+            .data
+            .next()
+            .expect("the node must still exist")
+            .expect("row should parse");
         assert_eq!(
             row.into_iter().next(),
             Some(FalkorValue::String(payload.to_string()))
@@ -335,9 +343,11 @@ mod typed_params {
         let count = result
             .data
             .next()
-            .and_then(|row| row.into_iter().next())
-            .and_then(|v| v.to_i64());
-        assert_eq!(count, Some(2));
+            .expect("expected a row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
+        assert_eq!(count, 2);
         let _ = graph.delete();
     }
 
@@ -352,11 +362,12 @@ mod typed_params {
             .with_param("p", coords)
             .execute()
             .expect("point($p) workaround should succeed");
-        let value = result
+        let row = result
             .data
             .next()
-            .and_then(|row| row.into_iter().next())
-            .expect("expected a point");
+            .expect("expected a row")
+            .expect("row should parse");
+        let value = row.into_iter().next().expect("expected a point");
         assert!(matches!(value, FalkorValue::Point(_)));
         let _ = graph.delete();
     }
@@ -390,9 +401,11 @@ mod typed_params {
         let value = result
             .data
             .next()
-            .and_then(|row| row.into_iter().next())
-            .and_then(|v| v.to_i64());
-        assert_eq!(value, Some(42));
+            .expect("expected a row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
+        assert_eq!(value, 42);
         let _ = graph.delete();
     }
 
@@ -406,7 +419,11 @@ mod typed_params {
             .with_raw_param("v", "[1, 2, 3]")
             .execute()
             .expect("query should succeed");
-        let row = result.data.next().expect("expected a row");
+        let row = result
+            .data
+            .next()
+            .expect("expected a row")
+            .expect("row should parse");
         assert_eq!(
             row.into_iter().next(),
             Some(FalkorValue::Array(vec![
@@ -439,9 +456,11 @@ mod typed_params {
         let value = result
             .data
             .next()
-            .and_then(|row| row.into_iter().next())
-            .and_then(|v| v.to_i64());
-        assert_eq!(value, Some(7));
+            .expect("expected a row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
+        assert_eq!(value, 7);
         let _ = graph.delete();
     }
 
@@ -461,9 +480,11 @@ mod typed_params {
         let value = result
             .data
             .next()
-            .and_then(|row| row.into_iter().next())
-            .and_then(|v| v.to_i64());
-        assert_eq!(value, Some(7));
+            .expect("expected a row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
+        assert_eq!(value, 7);
         let _ = graph.delete();
     }
 
@@ -480,6 +501,107 @@ mod typed_params {
             result,
             Err(falkordb::FalkorDBError::ParamEncoding { .. })
         ));
+        let _ = graph.delete();
+    }
+}
+
+mod header_aware_rows {
+    use super::{get_test_connection_info, skip_if_no_server};
+    use falkordb::{FalkorClientBuilder, FalkorDBError, FalkorResult, FalkorValue, Row};
+
+    fn graph_for(name: &str) -> Option<falkordb::SyncGraph> {
+        if skip_if_no_server() {
+            return None;
+        }
+        let conn_info = get_test_connection_info().ok()?;
+        let client = FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+            .ok()?;
+        let mut graph = client.select_graph(name);
+        let _ = graph.delete();
+        Some(graph)
+    }
+
+    #[test]
+    fn test_row_by_alias_and_index() {
+        let Some(mut graph) = graph_for("test_rows_by_alias") else {
+            return;
+        };
+        let mut result = graph
+            .query("RETURN 'Trinity' AS name, 37 AS age")
+            .execute()
+            .expect("query should succeed");
+        let row = result
+            .data
+            .next()
+            .expect("expected a row")
+            .expect("row should parse");
+
+        // Header is preserved and shared.
+        assert_eq!(row.columns(), ["name", "age"]);
+
+        // By alias, typed.
+        assert_eq!(row.try_get::<String>("name").unwrap(), "Trinity");
+        assert_eq!(row.try_get::<i64>("age").unwrap(), 37);
+
+        // By index, typed and borrowing.
+        assert_eq!(row.try_get_at::<i64>(1).unwrap(), 37);
+        assert_eq!(
+            row.get_at(0),
+            Some(&FalkorValue::String("Trinity".to_string()))
+        );
+
+        // A wrong type is a TypeError, not a silent coercion.
+        assert!(matches!(
+            row.try_get::<i64>("name"),
+            Err(FalkorDBError::TypeError { .. })
+        ));
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_row_missing_column_errors() {
+        let Some(mut graph) = graph_for("test_rows_missing_column") else {
+            return;
+        };
+        let mut result = graph
+            .query("RETURN 1 AS x")
+            .execute()
+            .expect("query should succeed");
+        let row = result
+            .data
+            .next()
+            .expect("expected a row")
+            .expect("row should parse");
+
+        match row.try_get::<i64>("does_not_exist") {
+            Err(FalkorDBError::MissingColumn { name }) => assert_eq!(name, "does_not_exist"),
+            other => panic!("expected MissingColumn, got {other:?}"),
+        }
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_collect_rows_short_circuits_into_result() {
+        let Some(mut graph) = graph_for("test_rows_collect") else {
+            return;
+        };
+        let result = graph
+            .query("UNWIND range(1, 5) AS i RETURN i AS n ORDER BY i")
+            .execute()
+            .expect("query should succeed");
+
+        // The whole set collects into a single `FalkorResult<Vec<Row>>` (short-circuiting on Err).
+        let rows: Vec<Row> = result
+            .data
+            .collect::<FalkorResult<Vec<Row>>>()
+            .expect("all rows should parse");
+        let values: Vec<i64> = rows
+            .iter()
+            .map(|row| row.try_get_at::<i64>(0).unwrap())
+            .collect();
+        assert_eq!(values, vec![1, 2, 3, 4, 5]);
         let _ = graph.delete();
     }
 }
@@ -645,7 +767,11 @@ mod serde_typed_mapping {
             .execute()
             .expect("query should succeed");
 
-        let row = result.data.next().expect("expected a row");
+        let row = result
+            .data
+            .next()
+            .expect("expected a row")
+            .expect("row should parse");
         let node = row.into_iter().next().expect("expected a node column");
         let movie: Movie = node.deserialize_into().expect("deserialize should succeed");
 
@@ -688,7 +814,11 @@ mod serde_typed_mapping {
             .execute()
             .expect("query should succeed");
 
-        let row = result.data.next().expect("expected a row");
+        let row = result
+            .data
+            .next()
+            .expect("expected a row")
+            .expect("row should parse");
         let value = row.into_iter().next().expect("expected a column");
         let number: i64 = value
             .deserialize_into()

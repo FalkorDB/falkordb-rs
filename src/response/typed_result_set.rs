@@ -5,11 +5,9 @@
 
 //! Typed iteration over a query result set, available with the `serde` feature.
 
-use crate::value::from_falkor_row;
-use crate::{FalkorResult, LazyResultSet};
+use crate::{FalkorResult, LazyResultSet, Row};
 use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 /// A typed view over a [`LazyResultSet`] that deserializes each row into `T` on demand.
 ///
@@ -22,22 +20,17 @@ use std::sync::Arc;
 /// let movies: Vec<Movie> = result.data.collect::<Result<_, _>>()?;
 /// ```
 ///
-/// Each row is mapped with [`from_falkor_row`]: a single-column row deserializes as that
-/// column's value (so `RETURN m` maps the node and `RETURN n.name` maps the scalar), while a
-/// multi-column row deserializes as a map from column name to value, or as a sequence.
+/// Each row is mapped with [`Row::deserialize`]: a single-column row deserializes as that column's
+/// value (so `RETURN m` maps the node and `RETURN n.name` maps the scalar), while a multi-column row
+/// deserializes as a map from column name to value, or as a sequence.
 pub struct TypedLazyResultSet<'a, T> {
-    header: Arc<[String]>,
     inner: LazyResultSet<'a>,
     _marker: PhantomData<fn() -> T>,
 }
 
 impl<'a, T> TypedLazyResultSet<'a, T> {
-    pub(crate) fn new(
-        header: Arc<[String]>,
-        inner: LazyResultSet<'a>,
-    ) -> Self {
+    pub(crate) fn new(inner: LazyResultSet<'a>) -> Self {
         Self {
-            header,
             inner,
             _marker: PhantomData,
         }
@@ -67,6 +60,6 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         self.inner
             .next()
-            .map(|row| from_falkor_row(&self.header, row))
+            .map(|row| row.and_then(Row::deserialize::<T>))
     }
 }

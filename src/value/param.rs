@@ -885,4 +885,124 @@ mod tests {
         params.encode_preamble(&mut out).unwrap();
         assert_eq!(out, "");
     }
+
+    #[test]
+    fn test_encode_misc_value_types() {
+        assert_eq!(enc(Cow::Borrowed("hi")), "'hi'");
+        assert_eq!(enc(Cow::<str>::Owned("hi".to_string())), "'hi'");
+        assert_eq!(enc(Box::new(5i64)), "5");
+        assert_eq!(enc(42usize), "42");
+        assert_eq!(enc(7isize), "7");
+    }
+
+    #[test]
+    fn test_encode_tuples_of_various_arities() {
+        assert_eq!(enc((1i64,)), "[1]");
+        assert_eq!(enc((1i64, 2i64)), "[1, 2]");
+        assert_eq!(enc((1i64, 2i64, 3i64, 4i64)), "[1, 2, 3, 4]");
+        assert_eq!(enc((1i64, 2i64, 3i64, 4i64, 5i64)), "[1, 2, 3, 4, 5]");
+        assert_eq!(
+            enc((1i64, 2i64, 3i64, 4i64, 5i64, 6i64)),
+            "[1, 2, 3, 4, 5, 6]"
+        );
+    }
+
+    #[test]
+    fn test_encode_hashmap() {
+        let mut map = HashMap::new();
+        map.insert("only", 1i64);
+        assert_eq!(enc(map), "{only: 1}");
+    }
+
+    #[test]
+    fn test_encode_falkor_value_variants() {
+        assert_eq!(enc(FalkorValue::I64(5)), "5");
+        assert_eq!(enc(FalkorValue::F64(2.5)), "2.5");
+        assert_eq!(enc(FalkorValue::Bool(true)), "true");
+        assert_eq!(enc(FalkorValue::String("x".to_string())), "'x'");
+        assert_eq!(enc(FalkorValue::None), "null");
+        assert_eq!(
+            enc(FalkorValue::Array(vec![
+                FalkorValue::I64(1),
+                FalkorValue::I64(2)
+            ])),
+            "[1, 2]"
+        );
+        let mut map = HashMap::new();
+        map.insert("k".to_string(), FalkorValue::I64(9));
+        assert_eq!(enc(FalkorValue::Map(map)), "{k: 9}");
+        assert_eq!(
+            enc(FalkorValue::Point(Point {
+                latitude: 1.0,
+                longitude: 2.0
+            })),
+            "{latitude: 1.0, longitude: 2.0}"
+        );
+        assert_eq!(
+            enc(FalkorValue::Vec32(Vec32 { values: vec![1.0] })),
+            "[1.0]"
+        );
+    }
+
+    #[test]
+    fn test_encode_falkor_value_edge_and_unparseable_error() {
+        use crate::value::graph_entities::Edge;
+        assert!(to_cypher_param(&FalkorValue::Edge(Edge::default())).is_err());
+        assert!(to_cypher_param(&FalkorValue::Unparseable("boom".to_string())).is_err());
+    }
+
+    fn preamble_of(params: FalkorParams) -> String {
+        let mut out = String::new();
+        params.encode_preamble(&mut out).expect("should encode");
+        out
+    }
+
+    #[test]
+    fn test_into_falkor_params_impls() {
+        assert_eq!(
+            preamble_of(vec![("a", 1i64), ("b", 2i64)].into_falkor_params()),
+            "CYPHER a=1 b=2 "
+        );
+        assert_eq!(
+            preamble_of([("a", 1i64)].into_falkor_params()),
+            "CYPHER a=1 "
+        );
+        assert_eq!(
+            preamble_of(BTreeMap::from([("a", 1i64)]).into_falkor_params()),
+            "CYPHER a=1 "
+        );
+        assert_eq!(
+            preamble_of(HashMap::from([("a", 1i64)]).into_falkor_params()),
+            "CYPHER a=1 "
+        );
+        assert!(().into_falkor_params().is_empty());
+        let mut identity = FalkorParams::new();
+        identity.add_param("a", 1i64);
+        assert!(!identity.into_falkor_params().is_empty());
+    }
+
+    #[test]
+    fn test_params_add_raw_and_merge() {
+        let mut raw = FalkorParams::new();
+        raw.add_raw("expr", "point({latitude: 1, longitude: 2})".to_string());
+        assert_eq!(
+            preamble_of(raw),
+            "CYPHER expr=point({latitude: 1, longitude: 2}) "
+        );
+
+        let mut base = FalkorParams::new();
+        base.add_param("a", 1i64);
+        let mut extra = FalkorParams::new();
+        extra.add_param("a", 9i64); // overrides on merge
+        extra.add_param("b", 2i64);
+        base.merge(extra);
+        assert_eq!(preamble_of(base), "CYPHER a=9 b=2 ");
+    }
+
+    #[test]
+    fn test_add_raw_validates_name() {
+        let mut params = FalkorParams::new();
+        params.add_raw("bad name", "1".to_string());
+        assert!(params.first_error().is_some());
+    }
 }

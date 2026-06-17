@@ -376,6 +376,74 @@ mod typed_params {
         );
         let _ = graph.delete();
     }
+
+    #[test]
+    fn test_with_params_collection() {
+        let Some(mut graph) = graph_for("test_params_collection") else {
+            return;
+        };
+        let mut result = graph
+            .query("RETURN $a + $b")
+            .with_params([("a", 10i64), ("b", 32i64)])
+            .execute()
+            .expect("query should succeed");
+        let value = result
+            .data
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .and_then(|v| v.to_i64());
+        assert_eq!(value, Some(42));
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_with_raw_param() {
+        let Some(mut graph) = graph_for("test_params_raw") else {
+            return;
+        };
+        let mut result = graph
+            .query("RETURN $v")
+            .with_raw_param("v", "[1, 2, 3]")
+            .execute()
+            .expect("query should succeed");
+        let row = result.data.next().expect("expected a row");
+        assert_eq!(
+            row.into_iter().next(),
+            Some(FalkorValue::Array(vec![
+                FalkorValue::I64(1),
+                FalkorValue::I64(2),
+                FalkorValue::I64(3),
+            ]))
+        );
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_try_with_param() {
+        let Some(mut graph) = graph_for("test_params_try") else {
+            return;
+        };
+        // A non-finite float fails eagerly, before building the query.
+        assert!(graph
+            .query("RETURN $x")
+            .try_with_param("x", f64::NAN)
+            .is_err());
+
+        // A valid value succeeds and executes.
+        let mut result = graph
+            .query("RETURN $x")
+            .try_with_param("x", 7i64)
+            .expect("valid param should be accepted")
+            .execute()
+            .expect("query should succeed");
+        let value = result
+            .data
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .and_then(|v| v.to_i64());
+        assert_eq!(value, Some(7));
+        let _ = graph.delete();
+    }
 }
 
 #[cfg(feature = "tokio")]

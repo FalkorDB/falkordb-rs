@@ -6,13 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.3.0...v0.4.0) - 2026-06-17
+
 ### Added
 
+- typed result mapping via `serde` ([#227](https://github.com/FalkorDB/falkordb-rs/pull/227)):
+  an opt-in `serde` feature with `FalkorValue::deserialize_into` / `from_falkor_value`, a
+  header-aware `QueryBuilder::query_as::<T>()` returning a `TypedLazyResultSet<T>`, and the
+  `from_falkor_row` helper. Covered by property-based tests (run with `just proptest`).
 - async client connection multiplexing via an explicit `ConnectionStrategy`
   (`Pooled` / `Multiplexed`), with `with_connection_strategy`, `with_max_inflight`, and a
-  `connection_strategy()` accessor. The async client now defaults to multiplexed
-  connections (source-compatible, behavior-changing); Sentinel deployments transparently
-  fall back to pooling.
+  `connection_strategy()` accessor ([#224](https://github.com/FalkorDB/falkordb-rs/pull/224)).
+
+### Changed
+
+- **Not fully backward compatible:** the asynchronous client now defaults to
+  `ConnectionStrategy::Multiplexed` instead of an exclusive borrow pool. This is
+  source-compatible but behavior-changing. To keep the previous behavior, set it explicitly,
+  e.g. `FalkorClientBuilder::new_async().with_connection_strategy(ConnectionStrategy::Pooled { size })`.
+  Sentinel deployments transparently fall back to pooling.
 
 ## [0.3.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.2.1...v0.3.0) - 2026-06-16
 

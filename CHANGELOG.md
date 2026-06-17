@@ -6,13 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.5.0...v0.6.0) - 2026-06-17
+
 ### Added
 
-- type-safe, injection-proof query parameters: `QueryBuilder::with_param`, `try_with_param`,
-  `with_params`, and `with_raw_param`, backed by the sealed `IntoFalkorParam` /
-  `IntoFalkorParams` traits and the `to_cypher_param` helper. Values (integers, floats, boolean
-  values, strings, `Option`, arrays/`Vec`, string-keyed maps, `Point`/`Vec32`, `FalkorValue`) are
-  encoded as escaped Cypher literals, and parameter names are validated.
+- [**breaking**] type-safe, injection-proof query parameters ([#230](https://github.com/FalkorDB/falkordb-rs/pull/230)):
+  `QueryBuilder::with_param`, `try_with_param`, `with_params`, and `with_raw_param`, backed by the
+  sealed `IntoFalkorParam` / `IntoFalkorParams` traits and the `to_cypher_param` helper. Values
+  (integers, floats, boolean values, strings, `Option`, arrays/`Vec`, string-keyed maps,
+  `Point`/`Vec32`, `FalkorValue`) are encoded as escaped Cypher literals, and parameter names are
+  validated.
 
 ### Changed
 

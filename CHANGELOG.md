@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.3.0...v0.3.1) - 2026-06-17
+
+### Added
+
+- typed result mapping via serde ([#227](https://github.com/FalkorDB/falkordb-rs/pull/227))
+- async connection multiplexing via ConnectionStrategy ([#224](https://github.com/FalkorDB/falkordb-rs/pull/224))
+
 ### Added
 
 - async client connection multiplexing via an explicit `ConnectionStrategy`

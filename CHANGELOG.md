@@ -8,11 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- type-safe, injection-proof query parameters: `QueryBuilder::with_param`, `try_with_param`,
-  `with_params`, and `with_raw_param`, backed by the sealed `IntoFalkorParam` /
-  `IntoFalkorParams` traits and the `to_cypher_param` helper. Values (integers, floats, boolean
-  values, strings, `Option`, arrays/`Vec`, string-keyed maps, `Point`/`Vec32`, `FalkorValue`) are
-  encoded as escaped Cypher literals, and parameter names are validated.
 - header-aware result rows: the default `QueryResult::data` now yields `FalkorResult<Row>`, where
   a `Row` pairs the result header with that row's values. Columns can be read by name or index,
   untyped (`get`, `get_at`, `get_all`) or typed (`try_get::<T>`, `try_get_at::<T>`), plus
@@ -30,18 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Not backward compatible:** `QueryBuilder::with_params` no longer takes
-  `&HashMap<String, String>` of raw, pre-quoted values. Pass typed values instead — e.g.
-  `.with_param("title", "The Matrix").with_param("year", 1999)` or
-  `.with_params([("year", 1999)])`. String values are now encoded as Cypher *strings* (quoted and
-  escaped); numbers that used to be passed as strings (`"30"`) should be passed as numbers (`30`),
-  and any value that was a raw Cypher expression should use `with_raw_param`. Procedure-call
-  arguments are likewise encoded safely.
 - **Not backward compatible:** the default result iterator (`QueryResult::data`, i.e.
   `LazyResultSet`) now yields `FalkorResult<Row>` instead of `Vec<FalkorValue>`. A row that fails
   to parse is surfaced as an `Err` (which you can `?` or `collect::<FalkorResult<Vec<Row>>>()`)
   rather than being silently swallowed into a `[FalkorValue::Unparseable]` row. `QueryResult::header`
-  is now `Arc<[String]>` (was `Vec<String>`), shared cheaply with every `Row`. Migration:
+  is now `Arc<[String]>` (was `Vec<String>`), shared cheaply with every `Row`. See the
+  **[0.7 migration guide](docs/migrating-to-0.7.md)** for step-by-step upgrade instructions.
+  Quick reference:
 
   | Before (≤ 0.6) | After (0.7) |
   | --- | --- |
@@ -51,6 +41,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | a silently swallowed `Unparseable` row | a real `Err` you `?` or handle |
   | the old lossy `Vec<FalkorValue>` rows | `result.data.into_values_lossy()` |
   | `result.header: Vec<String>` | `result.header: Arc<[String]>` (`&result.header[..]` still works) |
+
+## [0.6.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.5.0...v0.6.0) - 2026-06-17
+
+### Added
+
+- [**breaking**] type-safe, injection-proof query parameters ([#230](https://github.com/FalkorDB/falkordb-rs/pull/230)):
+  `QueryBuilder::with_param`, `try_with_param`, `with_params`, and `with_raw_param`, backed by the
+  sealed `IntoFalkorParam` / `IntoFalkorParams` traits and the `to_cypher_param` helper. Values
+  (integers, floats, boolean values, strings, `Option`, arrays/`Vec`, string-keyed maps,
+  `Point`/`Vec32`, `FalkorValue`) are encoded as escaped Cypher literals, and parameter names are
+  validated.
+
+### Changed
+
+- **Not backward compatible:** `QueryBuilder::with_params` no longer takes
+  `&HashMap<String, String>` of raw, pre-quoted values. Pass typed values instead — e.g.
+  `.with_param("title", "The Matrix").with_param("year", 1999)` or
+  `.with_params([("year", 1999)])`. String values are now encoded as Cypher *strings* (quoted and
+  escaped); numbers that used to be passed as strings (`"30"`) should be passed as numbers (`30`),
+  and any value that was a raw Cypher expression should use `with_raw_param`. Procedure-call
+  arguments are likewise encoded safely.
 
 ## [0.5.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.4.0...v0.5.0) - 2026-06-17
 

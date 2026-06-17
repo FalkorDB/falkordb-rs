@@ -105,7 +105,8 @@ Duplicate column aliases (`RETURN a AS x, b AS x`) are handled explicitly: `get`
 the first match, `get_all` returns every match, and `into_map` keeps the last. To opt back into the
 pre-0.7 behavior (bare `Vec<FalkorValue>` rows, parse errors collapsed to
 `FalkorValue::Unparseable`), call `result.data.into_values_lossy()`. A runnable version lives in
-[`examples/rows.rs`](examples/rows.rs).
+[`examples/rows.rs`](examples/rows.rs). Upgrading from 0.6? See the
+[0.7 migration guide](docs/migrating-to-0.7.md).
 
 ### Type-safe query parameters
 

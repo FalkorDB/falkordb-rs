@@ -102,3 +102,9 @@ PII
 backoff
 cardinality
 virally
+LLM
+GPT
+MSRV
+enum
+pre
+structs

@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Added
+
+- batch / pipelined execution: `graph.batch()` queues several queries and dispatches them over a
+  single Redis pipeline in **one round-trip**, returning one result per query in submission order
+  (`BatchResult = FalkorResult<Vec<BatchItemResult>>`, where `BatchItemResult =
+  FalkorResult<QueryResult<Vec<Row>>>`). Queue with `query`/`ro_query` (or `push` an owned
+  `BatchQuery`), set per-query params/timeout, then `execute()` (sync) / `execute().await` (async).
+  A failing query (bad Cypher or a parameter that cannot be encoded) is isolated to its own slot;
+  the rest still run. A pipeline is not a transaction. Available on both `SyncGraph` and `AsyncGraph`.
+
 ### Fixed
 
 - `slowlog()` (sync and async) now surfaces a parse error for a malformed entry instead of

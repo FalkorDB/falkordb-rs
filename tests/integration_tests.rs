@@ -1239,3 +1239,230 @@ mod async_streaming {
         );
     }
 }
+
+mod batch_pipelining {
+    use super::{get_test_connection_info, skip_if_no_server};
+    use falkordb::{BatchQuery, FalkorClientBuilder, FalkorDBError};
+
+    fn graph_for(name: &str) -> Option<falkordb::SyncGraph> {
+        if skip_if_no_server() {
+            return None;
+        }
+        let conn_info = get_test_connection_info().ok()?;
+        let client = FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+            .ok()?;
+        let mut graph = client.select_graph(name);
+        let _ = graph.delete();
+        Some(graph)
+    }
+
+    #[test]
+    fn bulk_create_then_count_in_one_round_trip() {
+        let Some(mut graph) = graph_for("test_batch_bulk") else {
+            return;
+        };
+        let mut batch = graph.batch();
+        for i in 1..=5 {
+            batch.query("CREATE (:N {v: $v})").with_param("v", i);
+        }
+        batch.ro_query("MATCH (n:N) RETURN count(n) AS n");
+        let results = batch.execute().expect("batch dispatched");
+
+        assert_eq!(results.len(), 6);
+        for r in &results[..5] {
+            assert!(r.is_ok(), "create failed: {r:?}");
+        }
+        let count: i64 = results[5].as_ref().expect("count ok").data[0]
+            .try_get("n")
+            .expect("n");
+        assert_eq!(count, 5);
+        graph.delete().expect("delete");
+    }
+
+    #[test]
+    fn invalid_query_is_isolated_and_siblings_commit() {
+        let Some(mut graph) = graph_for("test_batch_isolated") else {
+            return;
+        };
+        let mut batch = graph.batch();
+        batch.query("CREATE (:N {v: 1})");
+        batch.query("THIS IS NOT CYPHER"); // invalid -> per-item Err
+        batch.query("CREATE (:N {v: 2})");
+        let results = batch.execute().expect("batch dispatched");
+
+        assert!(results[0].is_ok());
+        assert!(
+            matches!(results[1], Err(FalkorDBError::RedisError(_))),
+            "bad cypher must surface as that item's Err, got {:?}",
+            results[1]
+        );
+        assert!(results[2].is_ok());
+
+        // Both valid siblings committed despite the middle failure.
+        let mut count = graph
+            .ro_query("MATCH (n:N) RETURN count(n) AS n")
+            .execute()
+            .expect("count");
+        let n: i64 = count.data.next().unwrap().unwrap().try_get("n").unwrap();
+        assert_eq!(n, 2);
+        graph.delete().expect("delete");
+    }
+
+    #[test]
+    fn param_encode_error_is_isolated() {
+        let Some(mut graph) = graph_for("test_batch_param_err") else {
+            return;
+        };
+        let mut batch = graph.batch();
+        batch.query("CREATE (:N {v: 1})");
+        batch
+            .query("CREATE (:N {v: $v})")
+            .with_param("invalid name!", 1); // never encodes -> never sent
+        batch.query("CREATE (:N {v: 2})");
+        let results = batch.execute().expect("batch dispatched");
+
+        assert!(results[0].is_ok());
+        assert!(results[1].is_err(), "param encode error -> per-item Err");
+        assert!(results[2].is_ok());
+        graph.delete().expect("delete");
+    }
+
+    #[test]
+    fn empty_batch_returns_empty() {
+        let Some(mut graph) = graph_for("test_batch_empty") else {
+            return;
+        };
+        let results = graph.batch().execute().expect("empty batch ok");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn write_then_read_new_label_in_same_batch() {
+        let Some(mut graph) = graph_for("test_batch_newlabel") else {
+            return;
+        };
+        let mut batch = graph.batch();
+        batch.query("CREATE (:Movie {title: 'Heat'})");
+        batch.ro_query("MATCH (m:Movie) RETURN m.title AS title");
+        let results = batch.execute().expect("batch dispatched");
+
+        assert!(results[0].is_ok());
+        let rows = &results[1].as_ref().expect("read ok").data;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].try_get::<String>("title").unwrap(), "Heat");
+        graph.delete().expect("delete");
+    }
+
+    #[test]
+    fn push_owned_batch_queries() {
+        let Some(mut graph) = graph_for("test_batch_push") else {
+            return;
+        };
+        let mut read = BatchQuery::read("MATCH (n:N) RETURN count(n) AS n");
+        read.with_timeout(5000);
+
+        let mut batch = graph.batch();
+        batch.push(BatchQuery::write("CREATE (:N {v: 1})"));
+        batch.push(read);
+        let results = batch.execute().expect("batch dispatched");
+
+        assert!(results[0].is_ok());
+        let n: i64 = results[1].as_ref().unwrap().data[0].try_get("n").unwrap();
+        assert_eq!(n, 1);
+        graph.delete().expect("delete");
+    }
+}
+
+#[cfg(feature = "tokio")]
+mod async_batch_pipelining {
+    use super::{get_test_connection_info, skip_if_no_server};
+    use falkordb::{AsyncGraph, ConnectionStrategy, FalkorClientBuilder, FalkorDBError};
+    use std::num::NonZeroU8;
+
+    async fn async_graph_for(name: &str) -> Option<AsyncGraph> {
+        if skip_if_no_server() {
+            return None;
+        }
+        let conn_info = get_test_connection_info().ok()?;
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_info(conn_info)
+            .build()
+            .await
+            .ok()?;
+        let mut graph = client.select_graph(name);
+        let _ = graph.delete().await;
+        Some(graph)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn async_bulk_create_then_count() {
+        let Some(mut graph) = async_graph_for("test_async_batch_bulk").await else {
+            return;
+        };
+        let mut batch = graph.batch();
+        for i in 1..=5 {
+            batch.query("CREATE (:N {v: $v})").with_param("v", i);
+        }
+        batch.ro_query("MATCH (n:N) RETURN count(n) AS n");
+        let results = batch.execute().await.expect("batch dispatched");
+
+        assert_eq!(results.len(), 6);
+        for r in &results[..5] {
+            assert!(r.is_ok());
+        }
+        let count: i64 = results[5].as_ref().expect("count ok").data[0]
+            .try_get("n")
+            .expect("n");
+        assert_eq!(count, 5);
+        graph.delete().await.expect("delete");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn async_invalid_query_is_isolated() {
+        let Some(mut graph) = async_graph_for("test_async_batch_isolated").await else {
+            return;
+        };
+        let mut batch = graph.batch();
+        batch.query("CREATE (:N {v: 1})");
+        batch.query("NOT CYPHER AT ALL");
+        batch.query("CREATE (:N {v: 2})");
+        let results = batch.execute().await.expect("batch dispatched");
+
+        assert!(results[0].is_ok());
+        assert!(matches!(results[1], Err(FalkorDBError::RedisError(_))));
+        assert!(results[2].is_ok());
+        graph.delete().await.expect("delete");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn async_batch_over_pooled_connection() {
+        // The pooled async strategy uses the non-multiplexed connection variant, so this exercises
+        // the pipeline dispatch path for that variant.
+        if skip_if_no_server() {
+            return;
+        }
+        let conn_info = get_test_connection_info().expect("conn info");
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_info(conn_info)
+            .with_connection_strategy(ConnectionStrategy::Pooled {
+                size: NonZeroU8::new(2).expect("valid pool size"),
+            })
+            .build()
+            .await
+            .expect("pooled client");
+        let mut graph = client.select_graph("test_async_batch_pooled");
+        let _ = graph.delete().await;
+
+        let mut batch = graph.batch();
+        batch.query("CREATE (:N {v: 1})");
+        batch.ro_query("MATCH (n:N) RETURN count(n) AS n");
+        let results = batch.execute().await.expect("batch dispatched");
+
+        assert!(results[0].is_ok());
+        let n: i64 = results[1].as_ref().unwrap().data[0].try_get("n").unwrap();
+        assert_eq!(n, 1);
+        graph.delete().await.expect("delete");
+    }
+}

@@ -71,6 +71,9 @@ serde = ["dep:serde"]
 name = "basic_usage"
 
 [[example]]
+name = "batch"
+
+[[example]]
 name = "async_api"
 required-features = ["tokio"]
 

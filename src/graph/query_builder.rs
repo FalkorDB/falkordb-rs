@@ -48,9 +48,24 @@ fn build_row_stream_result(
     QueryResult::from_response(header, data, stats)
 }
 
+/// Builds a [`QueryResult`] over an eagerly-parsed `Vec<Row>`, used by the batch API where N result
+/// sets coexist (so a borrowing [`LazyResultSet`] is not an option). A row that fails to parse
+/// collapses the whole result to that `Err`.
+pub(crate) fn build_vec_rows(
+    header: Arc<[String]>,
+    rows: Vec<redis::Value>,
+    stats: redis::Value,
+    graph_schema: &mut GraphSchema,
+) -> FalkorResult<QueryResult<Vec<crate::Row>>> {
+    let data = crate::response::row::parse_rows(Arc::clone(&header), rows, graph_schema)
+        .into_iter()
+        .collect::<FalkorResult<Vec<_>>>()?;
+    QueryResult::from_response(header, data, stats)
+}
+
 /// Unwraps a top-level query reply: a `ServerError` becomes a [`FalkorDBError::RedisError`],
 /// otherwise the reply is read as the response array.
-fn unwrap_query_response(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
+pub(crate) fn unwrap_query_response(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
     if let redis::Value::ServerError(e) = value {
         return Err(FalkorDBError::RedisError(
             e.details().unwrap_or("Unknown error").to_string(),
@@ -63,7 +78,7 @@ fn unwrap_query_response(value: redis::Value) -> FalkorResult<Vec<redis::Value>>
 /// is a header with no rows, three is header + rows + stats. Any other length is malformed. The
 /// `build` closure constructs the concrete result set (sync [`LazyResultSet`] or async
 /// [`RowStream`](crate::RowStream)) from the parsed header, rows, stats, and `schema` handle.
-fn dispatch_query_response<S, D>(
+pub(crate) fn dispatch_query_response<S, D>(
     res: Vec<redis::Value>,
     schema: S,
     build: impl FnOnce(

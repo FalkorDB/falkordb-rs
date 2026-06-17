@@ -6,8 +6,7 @@
 //! An owned, `Send + 'static` async result set implementing [`futures_core::Stream`], available
 //! with the `tokio` feature.
 
-use crate::parser::{parse_type, ParserTypeMarker};
-use crate::{FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Row};
+use crate::{FalkorResult, FalkorValue, GraphSchema, Row};
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -55,21 +54,9 @@ impl RowStream {
         raw_rows: Vec<redis::Value>,
         graph_schema: &mut GraphSchema,
     ) -> Self {
-        let rows = raw_rows
-            .into_iter()
-            .map(|raw| {
-                let values = parse_type(ParserTypeMarker::Array, raw, graph_schema)
-                    .and_then(FalkorValue::into_vec)?;
-                if values.len() != header.len() {
-                    return Err(FalkorDBError::RowShapeMismatch {
-                        header_len: header.len(),
-                        value_len: values.len(),
-                    });
-                }
-                Ok(Row::new(Arc::clone(&header), values))
-            })
-            .collect();
-        Self { rows }
+        Self {
+            rows: crate::response::row::parse_rows(header, raw_rows, graph_schema).into(),
+        }
     }
 
     /// Returns the number of rows remaining in the result set.
@@ -114,6 +101,7 @@ impl futures_core::Stream for RowStream {
 mod tests {
     use super::*;
     use crate::client::blocking::create_empty_inner_sync_client;
+    use crate::FalkorDBError;
 
     /// A single-column row holding one scalar `i64` (`ParserTypeMarker::I64 == 3`), which parses
     /// without needing any schema lookup.

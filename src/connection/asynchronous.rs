@@ -62,6 +62,30 @@ impl FalkorAsyncConnection {
         }
     }
 
+    /// Dispatch a whole [`redis::Pipeline`] in one round-trip, returning one [`redis::Value`] per
+    /// command (a failed command is a `Value::ServerError` in its slot, not a transport error).
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Connection Inner Execute Pipeline", skip_all, level = "debug")
+    )]
+    pub(crate) async fn execute_pipeline(
+        &mut self,
+        pipeline: &redis::Pipeline,
+    ) -> FalkorResult<Vec<redis::Value>> {
+        use redis::aio::ConnectionLike as _;
+        let count = pipeline.len();
+        match self {
+            FalkorAsyncConnection::Redis(redis_conn) => redis_conn
+                .req_packed_commands(pipeline, 0, count)
+                .await
+                .map_err(map_redis_err),
+            FalkorAsyncConnection::Managed(redis_conn) => redis_conn
+                .req_packed_commands(pipeline, 0, count)
+                .await
+                .map_err(map_redis_err),
+        }
+    }
+
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Connection Get Redis Info", skip_all, level = "info")
@@ -154,13 +178,41 @@ impl BorrowedAsyncConnection {
         subcommand: Option<&str>,
         params: Option<&[&str]>,
     ) -> FalkorResult<redis::Value> {
-        match self
+        let result = self
             .as_inner()?
             .execute_command(graph_name, command, subcommand, params)
-            .await
-        {
+            .await;
+        self.recover_on_connection_down(result).await
+        // `self` is dropped here, returning the connection (see the `Drop` impl below).
+    }
+
+    /// Dispatch a whole pipeline in one round-trip, with the same dead-connection recovery as
+    /// [`execute_command`](Self::execute_command).
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "Borrowed Connection Execute Pipeline",
+            skip_all,
+            level = "trace"
+        )
+    )]
+    pub(crate) async fn execute_pipeline(
+        mut self,
+        pipeline: &redis::Pipeline,
+    ) -> FalkorResult<Vec<redis::Value>> {
+        let result = self.as_inner()?.execute_pipeline(pipeline).await;
+        self.recover_on_connection_down(result).await
+    }
+
+    /// On a dead-connection error, swap in a fresh connection so a live one is returned to the pool
+    /// on drop, then re-surface `ConnectionDown` (or `NoConnection` if none is available); other
+    /// results pass through unchanged.
+    async fn recover_on_connection_down<T>(
+        &mut self,
+        result: FalkorResult<T>,
+    ) -> FalkorResult<T> {
+        match result {
             Err(FalkorDBError::ConnectionDown) => {
-                // Swap in a healthy connection so a live one is returned to the pool on drop.
                 if let Ok(new_conn) = self.client.fresh_connection(self.readonly).await {
                     self.conn = Some(new_conn);
                     return Err(FalkorDBError::ConnectionDown);
@@ -169,7 +221,6 @@ impl BorrowedAsyncConnection {
             }
             res => res,
         }
-        // `self` is dropped here, returning the connection (see the `Drop` impl below).
     }
 }
 

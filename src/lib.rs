@@ -30,6 +30,7 @@ pub use client::{blocking::FalkorSyncClient, builder::FalkorClientBuilder, Conne
 pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
 pub use graph::{
+    batch::{BatchBuilder, BatchItemResult, BatchQuery, BatchResult},
     blocking::SyncGraph,
     ops::{ConstraintOpBuilder, CopyGraphBuilder, IndexOpBuilder, WaitOperation, WaitOptions},
     query_builder::{ProcedureQueryBuilder, QueryBuilder},

@@ -5,24 +5,24 @@
 
 use crate::{
     client::asynchronous::FalkorAsyncClientInner,
-    graph::HasGraphSchema,
     graph::{generate_create_index_query, generate_drop_index_query},
     parser::redis_value_as_vec,
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
-    IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, QueryResult, SlowlogEntry,
+    IndexType, ProcedureQueryBuilder, QueryBuilder, QueryResult, RowStream, SlowlogEntry,
 };
+use parking_lot::RwLock;
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
-/// # Thread Safety
-/// This struct is NOT thread safe, and synchronization is up to the user.
-/// It does, however, allow the user to perform nonblocking operations
-/// Graph schema is not shared between instances of AsyncGraph, even with the same name, but cloning will maintain the current schema
+/// # Cloning &amp; sharing
+/// `AsyncGraph` is a cheap `Send + Clone` handle: cloning bumps a few `Arc`s and **shares one
+/// schema cache** between the clones, so it is safe to `clone()` per task instead of wrapping the
+/// graph in an `Arc<Mutex<_>>`. Each clone still drives queries with `&mut self`.
 #[derive(Clone)]
 pub struct AsyncGraph {
     client: Arc<FalkorAsyncClientInner>,
     graph_name: String,
-    graph_schema: GraphSchema,
+    graph_schema: Arc<RwLock<GraphSchema>>,
 }
 
 impl AsyncGraph {
@@ -32,7 +32,7 @@ impl AsyncGraph {
     ) -> Self {
         Self {
             graph_name: graph_name.to_string(),
-            graph_schema: GraphSchema::new(graph_name, client.clone()), // Required for requesting refreshes
+            graph_schema: Arc::new(RwLock::new(GraphSchema::new(graph_name, client.clone()))), // Required for requesting refreshes
             client,
         }
     }
@@ -47,6 +47,12 @@ impl AsyncGraph {
 
     pub(crate) fn get_client(&self) -> &Arc<FalkorAsyncClientInner> {
         &self.client
+    }
+
+    /// A cheap clone of the shared schema-cache handle. Cloned `AsyncGraph`s share one cache, and
+    /// each query takes the write lock to parse its reply (and refresh the schema on a cache miss).
+    pub(crate) fn schema_handle(&self) -> Arc<RwLock<GraphSchema>> {
+        self.graph_schema.clone()
     }
 
     #[cfg_attr(
@@ -74,7 +80,7 @@ impl AsyncGraph {
     )]
     pub async fn delete(&mut self) -> FalkorResult<()> {
         self.execute_command("GRAPH.DELETE", None, None).await?;
-        self.graph_schema.clear();
+        self.graph_schema.write().clear();
         Ok(())
     }
 
@@ -146,7 +152,7 @@ impl AsyncGraph {
     pub fn query<T: Display>(
         &mut self,
         query_string: T,
-    ) -> QueryBuilder<QueryResult<LazyResultSet>, T, Self> {
+    ) -> QueryBuilder<QueryResult<RowStream>, T, Self> {
         QueryBuilder::new(self, "GRAPH.QUERY", query_string)
     }
 
@@ -162,7 +168,7 @@ impl AsyncGraph {
     pub fn ro_query<'a>(
         &'a mut self,
         query_string: &'a str,
-    ) -> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, &'a str, Self> {
+    ) -> QueryBuilder<'a, QueryResult<RowStream>, &'a str, Self> {
         QueryBuilder::new(self, "GRAPH.RO_QUERY", query_string)
     }
 
@@ -222,7 +228,7 @@ impl AsyncGraph {
     /// * `options`:
     ///
     /// # Returns
-    /// A [`LazyResultSet`] containing information on the created index
+    /// A [`RowStream`](crate::RowStream) containing information on the created index
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Graph Create Index", skip_all, level = "info")
@@ -234,18 +240,14 @@ impl AsyncGraph {
         label: &str,
         properties: &[P],
         options: Option<&HashMap<String, String>>,
-    ) -> FalkorResult<QueryResult<LazyResultSet>> {
+    ) -> FalkorResult<QueryResult<RowStream>> {
         // Create index from these properties
         let query_str =
             generate_create_index_query(index_field_type, entity_type, label, properties, options);
 
-        QueryBuilder::<QueryResult<LazyResultSet>, String, Self>::new(
-            self,
-            "GRAPH.QUERY",
-            query_str,
-        )
-        .execute()
-        .await
+        QueryBuilder::<QueryResult<RowStream>, String, Self>::new(self, "GRAPH.QUERY", query_str)
+            .execute()
+            .await
     }
 
     /// Drop an existing index, by specifying its type, entity, label and specific properties
@@ -262,7 +264,7 @@ impl AsyncGraph {
         entity_type: EntityType,
         label: &str,
         properties: &[P],
-    ) -> FalkorResult<QueryResult<LazyResultSet>> {
+    ) -> FalkorResult<QueryResult<RowStream>> {
         let query_str = generate_drop_index_query(index_field_type, entity_type, label, properties);
         self.query(query_str).execute().await
     }
@@ -390,12 +392,6 @@ impl AsyncGraph {
 
         self.execute_command("GRAPH.CONSTRAINT", Some("DROP"), Some(params.as_slice()))
             .await
-    }
-}
-
-impl HasGraphSchema for AsyncGraph {
-    fn get_graph_schema_mut(&mut self) -> &mut GraphSchema {
-        &mut self.graph_schema
     }
 }
 

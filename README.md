@@ -237,6 +237,7 @@ The API uses an almost identical API, but the various functions need to be await
 
 ```rust,ignore
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
+use futures::StreamExt; // brings `.next().await` onto the result stream
 
 // Connect to FalkorDB
 let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
@@ -258,16 +259,67 @@ let mut nodes = graph.query("UNWIND range(0, 100) AS i CREATE (n { v:1 }) RETURN
             .await
             .expect("Failed executing query");
 
-// Graph operations are asynchronous, but parsing is still concurrent:
-while let Some(row) = nodes.data.next() {
+// `nodes.data` is a `Stream<Item = FalkorResult<Row>>`; pull rows with `.next().await`:
+while let Some(row) = nodes.data.next().await {
      let row = row.expect("row failed to parse");
      println!("{:?}", row.get_at(0));
 }
 ```
 
-Note that thread safety is still up to the user to ensure, I.e. an `AsyncGraph` cannot simply be sent to a task spawned
-by tokio and expected to be used later,
-it must be wrapped in an Arc<Mutex<_>> or something similar.
+The result set (`nodes.data`) is an owned, `Send + 'static` `Stream`, so it can be moved into a
+spawned task and driven with the full `StreamExt` / `TryStreamExt` toolbox. The graph
+handle itself is `Send + Clone`: cloning is cheap and **shares one schema cache**, so to use a graph
+from several concurrent tasks you just clone it — no `Arc<Mutex<_>>` wrapping required.
+
+### Async streaming
+
+Because results are a `Stream`, the standard combinators just work. Import the extension traits
+(`use futures::{StreamExt, TryStreamExt};`) and:
+
+```rust,ignore
+use futures::{StreamExt, TryStreamExt};
+// Collect a typed stream in one line (errors short-circuit):
+let years: Vec<i64> = graph
+    .query("MATCH (m:Movie) RETURN m.year AS year ORDER BY year")
+    .execute()
+    .await?
+    .data
+    .map(|row| row?.try_get::<i64>("year"))
+    .try_collect()
+    .await?;
+// Move a result stream into its own task (it is `Send + 'static`):
+let mut stream = graph.query("MATCH (n) RETURN n").execute().await?.data;
+let count = tokio::spawn(async move {
+    let mut n = 0usize;
+    while let Some(row) = stream.next().await {
+        row?;
+        n += 1;
+    }
+    Ok::<_, falkordb::FalkorDBError>(n)
+})
+.await
+.unwrap()?;
+// Fan out a follow-up query per row with bounded concurrency, over cloned handles:
+let enriched: Vec<i64> = graph
+    .query("MATCH (m:Movie) RETURN m.year AS year")
+    .execute()
+    .await?
+    .data
+    .map(|row| {
+        let mut g = graph.clone(); // cheap; shares the schema cache
+        async move {
+            let year: i64 = row?.try_get("year")?;
+            let mut r = g.query(format!("RETURN {year} + 1 AS next")).execute().await?;
+            r.data.try_next().await?.expect("a row").try_get::<i64>("next")
+        }
+    })
+    .buffer_unordered(8)
+    .try_collect()
+    .await?;
+```
+
+A runnable version lives in [`examples/async_stream.rs`](examples/async_stream.rs).
+
 
 ### Connection Strategy and Multiplexing
 
@@ -285,7 +337,7 @@ The asynchronous client chooses how it manages its underlying Redis connections 
 
 Select or tune the strategy on the builder:
 
-```rust,no_run
+```no_run
 use falkordb::{ConnectionStrategy, FalkorClientBuilder};
 use std::num::NonZeroU8;
 

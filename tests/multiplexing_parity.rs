@@ -17,6 +17,7 @@
 #![cfg(feature = "tokio")]
 
 use falkordb::{ConnectionStrategy, FalkorAsyncClient, FalkorClientBuilder, FalkorConnectionInfo};
+use futures::StreamExt;
 use std::num::NonZeroU8;
 
 fn skip_if_no_server() -> bool {
@@ -122,7 +123,7 @@ async fn test_core_operations_under_all_strategies() {
             .expect("write query should succeed");
 
         // Parameterized read.
-        let mut res = graph
+        let res = graph
             .query("MATCH (p:Person) WHERE p.age >= $min_age RETURN p.age")
             .with_param("min_age", 35)
             .execute()
@@ -130,13 +131,13 @@ async fn test_core_operations_under_all_strategies() {
             .expect("parameterized query should succeed");
         let ages: Vec<i64> = res
             .data
-            .by_ref()
             .map(|row| {
                 row.expect("row should parse")
                     .try_get_at::<i64>(0)
                     .expect("column 0 should be an i64")
             })
-            .collect();
+            .collect()
+            .await;
         assert_eq!(ages, vec![40], "strategy {strategy:?} parameterized read");
 
         // Read-only query.
@@ -148,6 +149,7 @@ async fn test_core_operations_under_all_strategies() {
         let count = ro
             .data
             .next()
+            .await
             .expect("expected a row")
             .expect("row should parse")
             .try_get_at::<i64>(0)
@@ -188,6 +190,7 @@ async fn test_high_concurrency_no_response_mismatch() {
                         .expect("concurrent query should succeed");
                     res.data
                         .next()
+                        .await
                         .expect("expected a row")
                         .expect("row should parse")
                         .try_get_at::<i64>(0)
@@ -236,6 +239,7 @@ async fn test_pooled_multiplexed_behavioral_equivalence() {
             let mut res = graph.query(query).execute().await.expect("query");
             res.data
                 .next()
+                .await
                 .expect("expected a row")
                 .expect("row should parse")
                 .try_get_at::<i64>(0)

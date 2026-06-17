@@ -37,6 +37,7 @@ use falkordb::{
     EmbeddedConfig, EmbeddedServer, EntityType, FalkorClientBuilder, FalkorConnectionInfo,
     IndexType,
 };
+use futures::StreamExt;
 
 /// Common locations the module may live in, mirroring the client's own search list.
 fn common_module_paths() -> Vec<PathBuf> {
@@ -236,6 +237,7 @@ mod async_flavours {
             let count = res
                 .data
                 .next()
+                .await
                 .expect("expected a row")
                 .expect("row should parse")
                 .try_get_at::<i64>(0)
@@ -250,6 +252,7 @@ mod async_flavours {
             let count = ro
                 .data
                 .next()
+                .await
                 .expect("expected a row")
                 .expect("row should parse")
                 .try_get_at::<i64>(0)
@@ -292,6 +295,7 @@ mod async_flavours {
                         .expect("concurrent query should succeed");
                     res.data
                         .next()
+                        .await
                         .expect("expected a row")
                         .expect("row should parse")
                         .try_get_at::<i64>(0)

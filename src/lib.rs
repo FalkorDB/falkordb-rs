@@ -53,8 +53,12 @@ pub use value::{
     RawParam,
 };
 
+#[cfg(feature = "tokio")]
+pub use response::row_stream::RowStream;
 #[cfg(feature = "serde")]
 pub use response::typed_result_set::TypedLazyResultSet;
+#[cfg(all(feature = "serde", feature = "tokio"))]
+pub use response::typed_row_stream::TypedRowStream;
 #[cfg(feature = "serde")]
 pub use value::{from_falkor_row, from_falkor_value, FalkorValueDeserializer};
 
@@ -159,6 +163,7 @@ pub(crate) mod test_utils {
     /// Async counterpart of [`imdb_test_client`].
     #[cfg(feature = "tokio")]
     pub(crate) async fn imdb_async_test_client() -> FalkorAsyncClient {
+        use futures::StreamExt;
         let client = create_async_test_client().await;
         let mut graph = client.select_graph(IMDB_FIXTURE_GRAPH);
         let mut result = graph
@@ -169,6 +174,7 @@ pub(crate) mod test_utils {
         let count = result
             .data
             .next()
+            .await
             .expect("imdb actor count query returned no rows")
             .expect("imdb actor count row failed to parse")
             .try_get_at::<i64>(0)

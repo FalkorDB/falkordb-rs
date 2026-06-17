@@ -609,6 +609,7 @@ mod header_aware_rows {
 #[cfg(feature = "tokio")]
 mod async_tests {
     use super::*;
+    use futures::TryStreamExt;
 
     #[tokio::test]
     async fn test_async_client_connection() {
@@ -706,7 +707,8 @@ mod async_tests {
             .await
             .expect("query should succeed")
             .data
-            .collect::<Result<_, _>>()
+            .try_collect()
+            .await
             .expect("row mapping should succeed");
 
         assert_eq!(
@@ -974,5 +976,266 @@ mod serde_typed_mapping {
         assert_eq!(counts, vec![1]);
 
         let _ = graph.delete();
+    }
+}
+
+#[cfg(feature = "tokio")]
+mod async_streaming {
+    use super::{get_test_connection_info, skip_if_no_server};
+    use falkordb::{AsyncGraph, FalkorClientBuilder, FalkorDBError, Row};
+    use futures::{StreamExt, TryStreamExt};
+
+    async fn async_graph_for(name: &str) -> Option<AsyncGraph> {
+        if skip_if_no_server() {
+            return None;
+        }
+        let conn_info = get_test_connection_info().ok()?;
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_info(conn_info)
+            .build()
+            .await
+            .ok()?;
+        let mut graph = client.select_graph(name);
+        let _ = graph.delete().await;
+        Some(graph)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_try_collect_typed_values() {
+        let Some(mut graph) = async_graph_for("test_async_stream_collect").await else {
+            return;
+        };
+        graph
+            .query("UNWIND range(1, 5) AS i CREATE (:N {v: i})")
+            .execute()
+            .await
+            .expect("create");
+
+        let result = graph
+            .query("MATCH (n:N) RETURN n.v AS v ORDER BY v")
+            .execute()
+            .await
+            .expect("query");
+        // The RowStream composes with StreamExt::map + TryStreamExt::try_collect.
+        let values: Vec<i64> = result
+            .data
+            .map(|row| row?.try_get::<i64>("v"))
+            .try_collect()
+            .await
+            .expect("collect");
+        assert_eq!(values, vec![1, 2, 3, 4, 5]);
+        let _ = graph.delete().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn row_stream_moves_into_spawned_task() {
+        let Some(mut graph) = async_graph_for("test_async_stream_spawn").await else {
+            return;
+        };
+        graph
+            .query("UNWIND range(1, 10) AS i CREATE (:N {v: i})")
+            .execute()
+            .await
+            .expect("create");
+
+        let result = graph
+            .query("MATCH (n:N) RETURN n.v AS v")
+            .execute()
+            .await
+            .expect("query");
+        // `RowStream` is Send + 'static: move it into a task while the graph stays usable.
+        let count: i64 = tokio::spawn(async move {
+            result
+                .data
+                .try_fold(
+                    0i64,
+                    |acc, _row| async move { Ok::<_, FalkorDBError>(acc + 1) },
+                )
+                .await
+        })
+        .await
+        .expect("join")
+        .expect("fold");
+        assert_eq!(count, 10);
+        // graph is still usable after moving the result into the task
+        graph.delete().await.expect("delete");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fan_out_with_buffer_unordered_over_cloned_handle() {
+        let Some(mut graph) = async_graph_for("test_async_stream_fanout").await else {
+            return;
+        };
+        graph
+            .query("UNWIND range(1, 5) AS i CREATE (:N {v: i})")
+            .execute()
+            .await
+            .expect("create");
+
+        let result = graph
+            .query("MATCH (n:N) RETURN n.v AS v")
+            .execute()
+            .await
+            .expect("query");
+        // For each row run a follow-up query on a *cloned* handle, with bounded concurrency.
+        let mut doubled: Vec<i64> = result
+            .data
+            .map(|row| {
+                let g = graph.clone();
+                async move {
+                    let mut g = g;
+                    let v: i64 = row?.try_get("v")?;
+                    let mut r = g.query(format!("RETURN {v} * 2")).execute().await?;
+                    let doubled: i64 = r.data.try_next().await?.expect("a row").try_get_at(0)?;
+                    Ok::<i64, FalkorDBError>(doubled)
+                }
+            })
+            .buffer_unordered(4)
+            .try_collect()
+            .await
+            .expect("fan-out");
+        doubled.sort_unstable();
+        assert_eq!(doubled, vec![2, 4, 6, 8, 10]);
+        graph.delete().await.expect("delete");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streaming_nodes_refreshes_schema_inline() {
+        let Some(mut graph) = async_graph_for("test_async_stream_nodes").await else {
+            return;
+        };
+        graph
+            .query(
+                "CREATE (:Movie {title: 'Heat', year: 1995}), (:Movie {title: 'Dune', year: 2021})",
+            )
+            .execute()
+            .await
+            .expect("create");
+
+        // Returning whole nodes forces compact-id parsing + a schema refresh during streaming.
+        let result = graph
+            .query("MATCH (m:Movie) RETURN m")
+            .execute()
+            .await
+            .expect("query");
+        let rows: Vec<Row> = result.data.try_collect().await.expect("stream nodes");
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert!(row.get_at(0).and_then(|v| v.as_node()).is_some());
+        }
+        graph.delete().await.expect("delete");
+    }
+
+    #[cfg(feature = "serde")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn typed_stream_query_as() {
+        #[derive(serde::Deserialize, PartialEq, Debug)]
+        struct Movie {
+            title: String,
+            year: i64,
+        }
+        let Some(mut graph) = async_graph_for("test_async_typed_stream").await else {
+            return;
+        };
+        graph
+            .query("CREATE (:Movie {title: 'Heat', year: 1995})")
+            .execute()
+            .await
+            .expect("create");
+
+        let result = graph
+            .query("MATCH (m:Movie) RETURN m")
+            .query_as::<Movie>()
+            .execute()
+            .await
+            .expect("query_as");
+        let movies: Vec<Movie> = result.data.try_collect().await.expect("collect");
+        assert_eq!(
+            movies,
+            vec![Movie {
+                title: "Heat".to_string(),
+                year: 1995
+            }]
+        );
+        graph.delete().await.expect("delete");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_streams_from_clones_share_schema() {
+        let Some(mut graph) = async_graph_for("test_async_stream_concurrent").await else {
+            return;
+        };
+        graph
+            .query("UNWIND range(1, 40) AS i CREATE (:Movie {year: i})")
+            .execute()
+            .await
+            .expect("create");
+
+        // Two cloned handles stream node results concurrently, sharing one schema cache (RwLock).
+        let g1 = graph.clone();
+        let g2 = graph.clone();
+        let t1 = tokio::spawn(async move {
+            let mut g = g1;
+            g.query("MATCH (m:Movie) RETURN m")
+                .execute()
+                .await?
+                .data
+                .try_collect::<Vec<Row>>()
+                .await
+        });
+        let t2 = tokio::spawn(async move {
+            let mut g = g2;
+            g.query("MATCH (m:Movie) RETURN m")
+                .execute()
+                .await?
+                .data
+                .try_collect::<Vec<Row>>()
+                .await
+        });
+        let (r1, r2) = tokio::join!(t1, t2);
+        assert_eq!(r1.expect("join1").expect("collect1").len(), 40);
+        assert_eq!(r2.expect("join2").expect("collect2").len(), 40);
+        graph.delete().await.expect("delete");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_is_parsed_eagerly_and_survives_graph_deletion() {
+        let Some(mut graph) = async_graph_for("test_async_stream_eager").await else {
+            return;
+        };
+        graph
+            .query("CREATE (:Movie {title: 'Heat', year: 1995})")
+            .execute()
+            .await
+            .expect("create");
+
+        // Take the result but do not consume the stream yet. Rows carry compact label/property ids
+        // that need the schema to decode.
+        let result = graph
+            .query("MATCH (m:Movie) RETURN m")
+            .execute()
+            .await
+            .expect("query");
+
+        // Delete the graph (which clears the shared schema cache) before draining the stream.
+        graph.delete().await.expect("delete");
+
+        // Because rows are parsed eagerly at execute() time, the node still decodes correctly
+        // against the query-time schema rather than failing or misparsing against the now-empty one.
+        let rows: Vec<Row> = result
+            .data
+            .try_collect()
+            .await
+            .expect("collect after delete");
+        assert_eq!(rows.len(), 1);
+        let node: falkordb::Node = rows[0].try_get_at(0).expect("node");
+        assert_eq!(node.labels, vec!["Movie".to_string()]);
+        assert_eq!(
+            node.properties
+                .get("title")
+                .and_then(|v| v.as_string())
+                .map(String::as_str),
+            Some("Heat")
+        );
     }
 }

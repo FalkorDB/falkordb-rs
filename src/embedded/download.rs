@@ -89,8 +89,11 @@ pub fn cached_module_path(
 ) -> FalkorResult<PathBuf> {
     validate_version(version)?;
     let cache_root = get_cache_dir(cache_dir)?;
-    let platform_tag = platform.tag()?;
+    // Evaluate `asset_filename()` before `tag()`: for unsupported platforms it
+    // carries the richer, more actionable error (supported platforms / arm64
+    // guidance), which would otherwise be masked by `tag()`'s short message.
     let asset_filename = platform.asset_filename()?;
+    let platform_tag = platform.tag()?;
 
     Ok(cache_root
         .join(version)
@@ -648,6 +651,30 @@ mod tests {
             )
             .is_err());
         }
+
+        // The richer `asset_filename()` guidance surfaces (not `tag()`'s short message).
+        let unsupported_msg = format!(
+            "{}",
+            cached_module_path(&Platform::Unsupported, provision::FALKORDB_VERSION, None)
+                .unwrap_err()
+        );
+        assert!(
+            unsupported_msg.contains("Supported platforms"),
+            "got: {unsupported_msg}"
+        );
+        let macos_msg = format!(
+            "{}",
+            cached_module_path(
+                &Platform::MacOSX64Unsupported,
+                provision::FALKORDB_VERSION,
+                None
+            )
+            .unwrap_err()
+        );
+        assert!(
+            macos_msg.contains("aarch64") || macos_msg.contains("arm64"),
+            "got: {macos_msg}"
+        );
     }
 
     #[test]

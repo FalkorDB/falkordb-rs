@@ -403,7 +403,10 @@ impl HasGraphSchema for AsyncGraph {
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{create_async_test_client, open_empty_async_test_graph, retry_until_async},
+        test_utils::{
+            create_async_test_client, imdb_async_test_client, open_empty_async_test_graph,
+            retry_until_async,
+        },
         ConstraintType, FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
 
@@ -461,7 +464,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_list_indices() {
-        let mut graph = create_async_test_client().await.select_graph("imdb");
+        let mut graph = imdb_async_test_client().await.select_graph("imdb");
         let indices = graph.list_indices().await.expect("Could not list indices");
 
         assert_eq!(indices.data.len(), 1);
@@ -799,7 +802,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_explain() {
-        let mut graph = create_async_test_client().await.select_graph("imdb");
+        let mut graph = imdb_async_test_client().await.select_graph("imdb");
 
         let execution_plan = graph.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().await.expect("Could not create execution plan");
         assert_eq!(execution_plan.plan().len(), 7);

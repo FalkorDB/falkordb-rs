@@ -12,9 +12,22 @@ use tokio::sync::mpsc;
 
 pub(crate) enum FalkorAsyncConnection {
     Redis(redis::aio::MultiplexedConnection),
+    /// A shared, auto-reconnecting multiplexed connection. Cheaply cloneable: each
+    /// clone shares the same underlying socket and routes responses back to the right
+    /// caller, so many clones can have commands in flight concurrently.
+    Managed(redis::aio::ConnectionManager),
 }
 
 impl FalkorAsyncConnection {
+    /// Clone this connection handle. Both variants are cheap, reference-counted handles
+    /// over a shared multiplexed socket, so the clone can carry commands concurrently.
+    pub(crate) fn clone_handle(&self) -> Self {
+        match self {
+            FalkorAsyncConnection::Redis(conn) => FalkorAsyncConnection::Redis(conn.clone()),
+            FalkorAsyncConnection::Managed(conn) => FalkorAsyncConnection::Managed(conn.clone()),
+        }
+    }
+
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Connection Inner Execute Command", skip_all, level = "debug")
@@ -26,18 +39,23 @@ impl FalkorAsyncConnection {
         subcommand: Option<&str>,
         params: Option<&[&str]>,
     ) -> FalkorResult<redis::Value> {
+        let mut cmd = redis::cmd(command);
+        cmd.arg(subcommand);
+        cmd.arg(graph_name);
+        if let Some(params) = params {
+            for param in params {
+                cmd.arg(*param);
+            }
+        }
         match self {
-            FalkorAsyncConnection::Redis(redis_conn) => {
-                let mut cmd = redis::cmd(command);
-                cmd.arg(subcommand);
-                cmd.arg(graph_name);
-                if let Some(params) = params {
-                    for param in params {
-                        cmd.arg(param.to_string());
-                    }
-                }
+            FalkorAsyncConnection::Redis(redis_conn) => redis_conn
+                .send_packed_command(&cmd)
+                .await
+                .map_err(map_redis_err),
+            FalkorAsyncConnection::Managed(redis_conn) => {
+                use redis::aio::ConnectionLike as _;
                 redis_conn
-                    .send_packed_command(&cmd)
+                    .req_packed_command(&cmd)
                     .await
                     .map_err(map_redis_err)
             }
@@ -66,18 +84,28 @@ impl FalkorAsyncConnection {
     }
 }
 
+/// How a [`BorrowedAsyncConnection`] returns its connection once it is done with it.
+enum ConnReturn {
+    /// Send the connection back to a bounded pool (the `Pooled` strategy).
+    Pool(mpsc::Sender<FalkorAsyncConnection>),
+    /// Drop the connection. Multiplexed connections are cheap `Arc` clones over a
+    /// shared socket, so there is nothing to return.
+    Discard,
+}
+
 /// A container for a connection that is borrowed from the pool.
 /// Upon going out of scope, it will return the connection to the pool.
 ///
 /// This is publicly exposed for user-implementations of [`FalkorParsable`](crate::FalkorParsable)
 pub struct BorrowedAsyncConnection {
     conn: Option<FalkorAsyncConnection>,
-    return_tx: mpsc::Sender<FalkorAsyncConnection>,
+    return_to: ConnReturn,
     client: Arc<FalkorAsyncClientInner>,
     readonly: bool,
 }
 
 impl BorrowedAsyncConnection {
+    /// Create a borrowed connection that returns to a bounded pool on drop.
     pub(crate) fn new(
         conn: FalkorAsyncConnection,
         return_tx: mpsc::Sender<FalkorAsyncConnection>,
@@ -86,7 +114,22 @@ impl BorrowedAsyncConnection {
     ) -> Self {
         Self {
             conn: Some(conn),
-            return_tx,
+            return_to: ConnReturn::Pool(return_tx),
+            client,
+            readonly,
+        }
+    }
+
+    /// Create a borrowed connection wrapping a multiplexed connection clone. The clone
+    /// is discarded on drop rather than returned to a pool.
+    pub(crate) fn new_multiplexed(
+        conn: FalkorAsyncConnection,
+        client: Arc<FalkorAsyncClientInner>,
+        readonly: bool,
+    ) -> Self {
+        Self {
+            conn: Some(conn),
+            return_to: ConnReturn::Discard,
             client,
             readonly,
         }
@@ -111,34 +154,45 @@ impl BorrowedAsyncConnection {
         subcommand: Option<&str>,
         params: Option<&[&str]>,
     ) -> FalkorResult<redis::Value> {
-        let res = match self
+        match self
             .as_inner()?
             .execute_command(graph_name, command, subcommand, params)
             .await
         {
             Err(FalkorDBError::ConnectionDown) => {
-                let new_conn = if self.readonly {
-                    self.client.get_async_replica_connection().await
-                } else {
-                    self.client.get_async_connection().await
-                };
-                if let Ok(new_conn) = new_conn {
+                // Swap in a healthy connection so a live one is returned to the pool on drop.
+                if let Ok(new_conn) = self.client.fresh_connection(self.readonly).await {
                     self.conn = Some(new_conn);
-                    tokio::spawn(async { self.return_to_pool().await });
                     return Err(FalkorDBError::ConnectionDown);
                 }
                 Err(FalkorDBError::NoConnection)
             }
             res => res,
-        };
-
-        tokio::spawn(async { self.return_to_pool().await });
-        res
+        }
+        // `self` is dropped here, returning the connection (see the `Drop` impl below).
     }
+}
 
-    pub(crate) async fn return_to_pool(self) {
-        if let Some(conn) = self.conn {
-            self.return_tx.send(conn).await.ok();
+impl Drop for BorrowedAsyncConnection {
+    /// Return the connection to its origin. Pooled connections are handed back through the
+    /// bounded channel, which always has a free slot because this borrow consumed one;
+    /// multiplexed clones are cheap shared handles and are simply dropped.
+    fn drop(&mut self) {
+        if let (Some(conn), ConnReturn::Pool(return_tx)) = (self.conn.take(), &self.return_to) {
+            match return_tx.try_send(conn) {
+                Ok(()) => {}
+                // The pool was dropped before this connection returned; nothing to reclaim.
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+                // Each borrow consumes a channel slot, so a return can never find it full.
+                // A full channel means the pool's slot accounting is broken: surface it in
+                // debug builds while still discarding the connection in release.
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    debug_assert!(
+                        false,
+                        "pool channel unexpectedly full while returning a borrowed connection"
+                    );
+                }
+            }
         }
     }
 }

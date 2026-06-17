@@ -4,11 +4,10 @@
  */
 
 use crate::{
-    client::FalkorClientProvider, FalkorConnectionInfo, FalkorDBError, FalkorResult,
-    FalkorSyncClient,
+    client::{ConnectionStrategy, FalkorClientProvider},
+    FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorSyncClient,
 };
-use redis::IntoConnectionInfo;
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::Duration;
 
 #[cfg(feature = "tokio")]
@@ -17,7 +16,9 @@ use crate::FalkorAsyncClient;
 /// A Builder-pattern implementation struct for creating a new Falkor client.
 pub struct FalkorClientBuilder<const R: char> {
     connection_info: Option<FalkorConnectionInfo>,
-    num_connections: NonZeroU8,
+    strategy: ConnectionStrategy,
+    #[cfg_attr(not(feature = "tokio"), allow(dead_code))]
+    max_inflight: Option<NonZeroUsize>,
     tcp_settings: Option<redis::io::tcp::TcpSettings>,
 }
 
@@ -40,10 +41,16 @@ impl<const R: char> FalkorClientBuilder<R> {
         }
     }
 
-    /// Specify how large a connection pool to maintain, for concurrent operations.
+    /// Specify how many underlying connections to maintain for concurrent operations.
+    ///
+    /// This updates the connection count of the builder's active
+    /// [`ConnectionStrategy`] (pool size for [`ConnectionStrategy::Pooled`], or number
+    /// of multiplexed sockets for [`ConnectionStrategy::Multiplexed`]). When combined
+    /// with `with_connection_strategy` (async builder only), the last setter wins.
     ///
     /// # Arguments
-    /// * `num_connections`: the numer of connections, a non-negative integer, between 1 and 32
+    /// * `num_connections`: the number of connections to maintain, a non-zero [`u8`]
+    ///   (so at most 255)
     ///
     /// # Returns
     /// The consumed and modified self.
@@ -52,7 +59,7 @@ impl<const R: char> FalkorClientBuilder<R> {
         num_connections: NonZeroU8,
     ) -> Self {
         Self {
-            num_connections,
+            strategy: self.strategy.with_connection_count(num_connections),
             ..self
         }
     }
@@ -130,9 +137,10 @@ impl<const R: char> FalkorClientBuilder<R> {
 
             // Create a Redis client that connects to the embedded server's Unix socket
             let socket_path = embedded_server.socket_path();
-            let redis_connection_info = redis::ConnectionAddr::Unix(socket_path.to_path_buf())
-                .into_connection_info()
-                .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
+            let redis_connection_info = redis::IntoConnectionInfo::into_connection_info(
+                redis::ConnectionAddr::Unix(socket_path.to_path_buf()),
+            )
+            .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
 
             let client = redis::Client::open(redis_connection_info.clone())
                 .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
@@ -185,7 +193,10 @@ impl FalkorClientBuilder<'S'> {
     pub fn new() -> Self {
         FalkorClientBuilder {
             connection_info: None,
-            num_connections: NonZeroU8::new(8).expect("Error creating perfectly valid u8"),
+            strategy: ConnectionStrategy::Pooled {
+                size: NonZeroU8::new(8).expect("Error creating perfectly valid u8"),
+            },
+            max_inflight: None,
             tcp_settings: None,
         }
     }
@@ -211,7 +222,11 @@ impl FalkorClientBuilder<'S'> {
                 }
             }
         }
-        FalkorSyncClient::create(client, actual_connection_info, self.num_connections.get())
+        FalkorSyncClient::create(
+            client,
+            actual_connection_info,
+            self.strategy.connection_count().get(),
+        )
     }
 }
 
@@ -224,8 +239,77 @@ impl FalkorClientBuilder<'A'> {
     pub fn new_async() -> Self {
         FalkorClientBuilder {
             connection_info: None,
-            num_connections: NonZeroU8::new(8).expect("Error creating perfectly valid u8"),
+            strategy: ConnectionStrategy::Multiplexed {
+                connections: NonZeroU8::new(8).expect("Error creating perfectly valid u8"),
+            },
+            max_inflight: None,
             tcp_settings: None,
+        }
+    }
+
+    /// Select the [`ConnectionStrategy`] the async client should use.
+    ///
+    /// Overrides the default ([`ConnectionStrategy::Multiplexed`] with 8 sockets). When
+    /// combined with [`with_num_connections`](FalkorClientBuilder::with_num_connections),
+    /// the last setter wins: this method replaces the whole strategy (including its
+    /// count), while `with_num_connections` only updates the active strategy's count.
+    ///
+    /// # Arguments
+    /// * `strategy`: the [`ConnectionStrategy`] to use.
+    ///
+    /// # Returns
+    /// The consumed and modified self.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use falkordb::{ConnectionStrategy, FalkorClientBuilder};
+    /// use std::num::NonZeroU8;
+    ///
+    /// # async fn doc() {
+    /// let client = FalkorClientBuilder::new_async()
+    ///     .with_connection_strategy(ConnectionStrategy::Multiplexed {
+    ///         connections: NonZeroU8::new(4).unwrap(),
+    ///     })
+    ///     .build()
+    ///     .await
+    ///     .expect("Failed to build client");
+    ///
+    /// // Many concurrent queries are pipelined over the 4 shared sockets.
+    /// let mut graph = client.select_graph("social");
+    /// let _ = graph.ro_query("RETURN 1").execute().await;
+    /// # }
+    /// ```
+    pub fn with_connection_strategy(
+        self,
+        strategy: ConnectionStrategy,
+    ) -> Self {
+        Self { strategy, ..self }
+    }
+
+    /// Bound the number of concurrently in-flight commands per multiplexed socket.
+    ///
+    /// Maps to the underlying `ConnectionManager` concurrency limit and only affects the
+    /// [`ConnectionStrategy::Multiplexed`] strategy (it is ignored for
+    /// [`ConnectionStrategy::Pooled`], whose pool size already caps in-flight commands).
+    /// Use it to apply backpressure; without it, multiplexed mode does not bound the
+    /// number of outstanding requests.
+    ///
+    /// A limit of zero would permanently stall the socket (no commands could ever
+    /// complete), so this method requires a [`NonZeroUsize`].
+    ///
+    /// # Arguments
+    /// * `max_inflight`: maximum number of in-flight commands per multiplexed socket,
+    ///   must be non-zero.
+    ///
+    /// # Returns
+    /// The consumed and modified self.
+    pub fn with_max_inflight(
+        self,
+        max_inflight: NonZeroUsize,
+    ) -> Self {
+        Self {
+            max_inflight: Some(max_inflight),
+            ..self
         }
     }
 
@@ -250,7 +334,13 @@ impl FalkorClientBuilder<'A'> {
                 }
             }
         }
-        FalkorAsyncClient::create(client, actual_connection_info, self.num_connections.get()).await
+        FalkorAsyncClient::create(
+            client,
+            actual_connection_info,
+            self.strategy,
+            self.max_inflight,
+        )
+        .await
     }
 }
 

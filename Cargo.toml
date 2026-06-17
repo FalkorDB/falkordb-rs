@@ -27,6 +27,20 @@ which = { version = "8.0", optional = true }
 
 [dev-dependencies]
 approx = "0.5.1"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
+[[bench]]
+name = "async_strategies"
+harness = false
+required-features = ["tokio"]
+
+[[bench]]
+name = "resource_usage"
+harness = false
+required-features = ["tokio"]
 
 [features]
 default = []
@@ -34,7 +48,7 @@ default = []
 native-tls = ["redis/tls-native-tls"]
 rustls = ["redis/tls-rustls"]
 
-tokio = ["dep:tokio", "redis/tokio-comp"]
+tokio = ["dep:tokio", "redis/tokio-comp", "redis/connection-manager"]
 tokio-native-tls = ["tokio", "redis/tokio-native-tls-comp"]
 tokio-rustls = ["tokio", "redis/tokio-rustls-comp"]
 
@@ -47,6 +61,10 @@ name = "basic_usage"
 
 [[example]]
 name = "async_api"
+required-features = ["tokio"]
+
+[[example]]
+name = "multiplexed_async"
 required-features = ["tokio"]
 
 [[example]]

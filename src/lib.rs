@@ -26,7 +26,7 @@ mod value;
 /// A [`Result`] which only returns [`FalkorDBError`] as its E type
 pub type FalkorResult<T> = Result<T, FalkorDBError>;
 
-pub use client::{blocking::FalkorSyncClient, builder::FalkorClientBuilder};
+pub use client::{blocking::FalkorSyncClient, builder::FalkorClientBuilder, ConnectionStrategy};
 pub use connection_info::FalkorConnectionInfo;
 pub use error::FalkorDBError;
 pub use graph::{
@@ -106,6 +106,66 @@ pub(crate) mod test_utils {
             .build()
             .await
             .expect("Could not create client")
+    }
+
+    /// Name of the shared, read-only graph fixture loaded by
+    /// `resources/populate_graph.py`.
+    pub(crate) const IMDB_FIXTURE_GRAPH: &str = "imdb";
+
+    /// Shown when the shared `imdb` fixture is missing, so that a fixture problem is never
+    /// mistaken for a code regression introduced by a change.
+    const IMDB_FIXTURE_HINT: &str = "the shared `imdb` test graph is empty or missing. Run \
+        `resources/populate_graph.py` against the test server first (CI does this in the \
+        coverage job's \"Populate test graph\" step). This indicates a missing test fixture, \
+        NOT a code regression.";
+
+    /// Number of `actor` nodes in the shared `imdb` fixture.
+    ///
+    /// A query or parsing failure here is a real connectivity/code problem (not a missing
+    /// fixture), so it panics with the underlying error rather than being collapsed into a
+    /// zero count. Only an actual count of `0` indicates an empty/missing fixture, which the
+    /// caller turns into the [`IMDB_FIXTURE_HINT`] message.
+    fn imdb_actor_count(graph: &mut SyncGraph) -> i64 {
+        let mut result = graph
+            .ro_query("MATCH (a:actor) RETURN count(a)")
+            .execute()
+            .expect("failed to query the imdb actor count (connection or query regression)");
+        result
+            .data
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .and_then(|value| value.to_i64())
+            .expect("imdb actor count query returned an unexpected shape")
+    }
+
+    /// Create a sync client and assert the shared `imdb` fixture is populated, so every
+    /// fixture-dependent test fails fast with an actionable message (rather than a cryptic
+    /// assertion or a vacuous pass on an empty graph) when the fixture is missing.
+    pub(crate) fn imdb_test_client() -> FalkorSyncClient {
+        let client = create_test_client();
+        let mut graph = client.select_graph(IMDB_FIXTURE_GRAPH);
+        assert!(imdb_actor_count(&mut graph) > 0, "{IMDB_FIXTURE_HINT}");
+        client
+    }
+
+    /// Async counterpart of [`imdb_test_client`].
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn imdb_async_test_client() -> FalkorAsyncClient {
+        let client = create_async_test_client().await;
+        let mut graph = client.select_graph(IMDB_FIXTURE_GRAPH);
+        let mut result = graph
+            .ro_query("MATCH (a:actor) RETURN count(a)")
+            .execute()
+            .await
+            .expect("failed to query the imdb actor count (connection or query regression)");
+        let count = result
+            .data
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .and_then(|value| value.to_i64())
+            .expect("imdb actor count query returned an unexpected shape");
+        assert!(count > 0, "{IMDB_FIXTURE_HINT}");
+        client
     }
 
     pub(crate) fn open_empty_test_graph(graph_name: &str) -> TestSyncGraphHandle {

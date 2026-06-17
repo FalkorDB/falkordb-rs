@@ -55,13 +55,13 @@ impl Iterator for LazyResultSet<'_> {
 #[cfg(test)]
 mod tests {
     use crate::graph::HasGraphSchema;
-    use crate::test_utils::create_test_client;
+    use crate::test_utils::imdb_test_client;
     use crate::{Edge, FalkorValue, LazyResultSet, Node};
     use std::collections::HashMap;
 
     #[test]
     fn test_lazy_result_set() {
-        let client = create_test_client();
+        let client = imdb_test_client();
         let mut graph = client.select_graph("imdb");
 
         let mut result_set = LazyResultSet::new(

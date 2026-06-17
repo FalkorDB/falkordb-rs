@@ -450,7 +450,8 @@ mod tests {
     use crate::FalkorValue::Node;
     use crate::{
         test_utils::{
-            create_test_client, retry_until_with_timeout, TestSyncGraphHandle, COPY_RETRY_TIMEOUT,
+            create_test_client, imdb_test_client, retry_until_with_timeout, TestSyncGraphHandle,
+            COPY_RETRY_TIMEOUT,
         },
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
     };
@@ -677,7 +678,7 @@ mod tests {
 
     #[test]
     fn test_select_graph_and_query() {
-        let client = create_test_client();
+        let client = imdb_test_client();
 
         let mut graph = client.select_graph("imdb");
         assert_eq!(graph.graph_name(), "imdb".to_string());
@@ -692,7 +693,7 @@ mod tests {
 
     #[test]
     fn test_copy_graph() {
-        let client = create_test_client();
+        let client = imdb_test_client();
 
         let mut original_graph = client.select_graph("imdb");
 
@@ -736,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_copy_graph_op_wait() {
-        let client = create_test_client();
+        let client = imdb_test_client();
 
         let mut original_graph = client.select_graph("imdb");
         let expected = original_graph
@@ -775,7 +776,7 @@ mod tests {
 
     #[test]
     fn test_copy_graph_op_execute() {
-        let client = create_test_client();
+        let client = imdb_test_client();
 
         let _copy_guard = TestSyncGraphHandle {
             inner: client.select_graph("imdb_op_copy_execute"),

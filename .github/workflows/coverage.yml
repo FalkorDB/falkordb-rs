@@ -57,14 +57,15 @@ jobs:
           done
           redis-cli -h 127.0.0.1 -p 6379 ping
       
-      - name: Populate test graph
-        run: pip install falkordb && ./resources/populate_graph.py
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, cargo-llvm-cov, nextest
+        with:
+          tool: just,cargo-llvm-cov,nextest
       
-      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # cargo-llvm-cov
-      - uses: taiki-e/install-action@3a0adc33ab45d7b9b9da91822dd2b3c0151704be # nextest
+      - name: Populate test graph
+        run: pip install falkordb && just db-populate
       
       - name: Generate Code Coverage
-        run: cargo llvm-cov nextest --all --features tokio,embedded --codecov --output-path codecov.json
+        run: just coverage
       
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0

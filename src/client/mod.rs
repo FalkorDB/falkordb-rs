@@ -9,6 +9,10 @@ use crate::{
     FalkorDBError, FalkorResult,
 };
 use std::collections::HashMap;
+use std::num::NonZeroU8;
+
+#[cfg(feature = "tokio")]
+use std::num::NonZeroUsize;
 
 #[cfg(feature = "tokio")]
 use crate::connection::asynchronous::FalkorAsyncConnection;
@@ -18,6 +22,69 @@ pub(crate) mod builder;
 
 #[cfg(feature = "tokio")]
 pub(crate) mod asynchronous;
+
+/// Selects how a client manages its underlying Redis connection(s).
+///
+/// The asynchronous client defaults to [`ConnectionStrategy::Multiplexed`], which
+/// pipelines many concurrent in-flight commands over a small number of shared,
+/// auto-reconnecting sockets. The synchronous client always uses
+/// [`ConnectionStrategy::Pooled`] (a blocking connection cannot be multiplexed).
+///
+/// # Example
+/// ```no_run
+/// use std::num::NonZeroU8;
+/// use falkordb::ConnectionStrategy;
+///
+/// // One shared multiplexed socket carrying many concurrent commands.
+/// let strategy = ConnectionStrategy::Multiplexed {
+///     connections: NonZeroU8::new(1).unwrap(),
+/// };
+/// assert_eq!(strategy.connection_count().get(), 1);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionStrategy {
+    /// A fixed pool of independent connections, each used by exactly one command at a
+    /// time (borrow/return). Provides strict per-command isolation and a natural cap on
+    /// the number of in-flight commands. This is the only strategy for the sync client.
+    Pooled {
+        /// Number of independent connections held in the pool.
+        size: NonZeroU8,
+    },
+
+    /// A small number of shared, cloneable, auto-reconnecting connections. Commands are
+    /// distributed round-robin across them and pipelined concurrently over each socket, so a
+    /// single connection can carry many in-flight commands at once. Default for the
+    /// asynchronous client.
+    Multiplexed {
+        /// Number of underlying multiplexed sockets to spread commands across.
+        connections: NonZeroU8,
+    },
+}
+
+impl ConnectionStrategy {
+    /// The number of underlying connections this strategy maintains (pool size or
+    /// number of multiplexed sockets).
+    pub fn connection_count(&self) -> NonZeroU8 {
+        match self {
+            ConnectionStrategy::Pooled { size } => *size,
+            ConnectionStrategy::Multiplexed { connections } => *connections,
+        }
+    }
+
+    /// Returns a copy of this strategy with its connection count replaced. Used by the
+    /// builder so `with_num_connections` can update whichever strategy is active.
+    pub(crate) fn with_connection_count(
+        self,
+        count: NonZeroU8,
+    ) -> Self {
+        match self {
+            ConnectionStrategy::Pooled { .. } => ConnectionStrategy::Pooled { size: count },
+            ConnectionStrategy::Multiplexed { .. } => {
+                ConnectionStrategy::Multiplexed { connections: count }
+            }
+        }
+    }
+}
 
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum FalkorClientProvider {
@@ -133,6 +200,85 @@ impl FalkorClientProvider {
                 ..
             }
         )
+    }
+
+    /// Whether this provider is managed by Redis Sentinel (its primary is resolved via a
+    /// Sentinel client). Multiplexed connections built from a Sentinel-resolved client
+    /// pin to a single node and do not re-resolve on failover, so the async client falls
+    /// back to the pooled strategy for Sentinel deployments.
+    #[cfg(feature = "tokio")]
+    pub(crate) fn has_sentinel(&self) -> bool {
+        matches!(
+            self,
+            FalkorClientProvider::Redis {
+                sentinel: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// Build an auto-reconnecting, multiplexed [`ConnectionManager`](redis::aio::ConnectionManager)
+    /// for the primary node. Sentinel deployments resolve the current master via the
+    /// Sentinel client; direct deployments use the configured client. `max_inflight`,
+    /// when set, bounds the number of concurrently in-flight commands per socket.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn get_async_connection_manager(
+        &mut self,
+        max_inflight: Option<NonZeroUsize>,
+    ) -> FalkorResult<FalkorAsyncConnection> {
+        let client = match self {
+            FalkorClientProvider::Redis {
+                sentinel: Some(sentinel),
+                ..
+            } => sentinel
+                .async_get_client()
+                .await
+                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
+            FalkorClientProvider::Redis { client, .. } => client.clone(),
+            #[cfg(test)]
+            FalkorClientProvider::None => return Err(FalkorDBError::UnavailableProvider),
+        };
+        Self::manager_from_client(client, max_inflight).await
+    }
+
+    /// Replica-routed counterpart of
+    /// [`get_async_connection_manager`](Self::get_async_connection_manager). Returns a
+    /// multiplexed manager pinned to a replica node, without falling back to the primary.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn get_async_replica_connection_manager(
+        &mut self,
+        max_inflight: Option<NonZeroUsize>,
+    ) -> FalkorResult<FalkorAsyncConnection> {
+        match self {
+            FalkorClientProvider::Redis {
+                sentinel_replica: Some(replica),
+                ..
+            } => {
+                let client = replica
+                    .async_get_client()
+                    .await
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+                Self::manager_from_client(client, max_inflight).await
+            }
+            _ => Err(FalkorDBError::UnavailableProvider),
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    async fn manager_from_client(
+        client: redis::Client,
+        max_inflight: Option<NonZeroUsize>,
+    ) -> FalkorResult<FalkorAsyncConnection> {
+        let manager = match max_inflight {
+            Some(limit) => {
+                let config =
+                    redis::aio::ConnectionManagerConfig::new().set_concurrency_limit(limit.get());
+                redis::aio::ConnectionManager::new_with_config(client, config).await
+            }
+            None => redis::aio::ConnectionManager::new(client).await,
+        }
+        .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        Ok(FalkorAsyncConnection::Managed(manager))
     }
 
     pub(crate) fn set_sentinel(
@@ -608,6 +754,99 @@ mod tests {
                 embedded_server: None,
             };
             let result = provider.get_async_replica_connection().await;
+            assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_connection_manager_none_provider_is_unavailable() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut provider = FalkorClientProvider::None;
+            let result = provider.get_async_connection_manager(None).await;
+            assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_connection_manager_routes_through_sentinel() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+            let sentinel = redis::sentinel::SentinelClient::build(
+                vec![connection_info],
+                "mymaster".to_string(),
+                None,
+                redis::sentinel::SentinelServerType::Master,
+            )
+            .unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: Some(sentinel),
+                sentinel_replica: None,
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            // The sentinel arm resolves the master through an unreachable sentinel, which
+            // fails fast with a RedisError rather than bypassing it.
+            let result = provider.get_async_connection_manager(None).await;
+            assert!(
+                matches!(result, Err(FalkorDBError::RedisError(_))),
+                "error should come from the sentinel resolution path"
+            );
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_replica_connection_manager_errors_when_replica_unreachable() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+            let replica = redis::sentinel::SentinelClient::build(
+                vec![connection_info],
+                "mymaster".to_string(),
+                None,
+                redis::sentinel::SentinelServerType::Replica,
+            )
+            .unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: None,
+                sentinel_replica: Some(replica),
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            let result = provider.get_async_replica_connection_manager(None).await;
+            assert!(
+                matches!(result, Err(FalkorDBError::RedisError(_))),
+                "error should come from the replica manager path"
+            );
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_get_async_replica_connection_manager_without_replica_does_not_use_primary() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+            let mut provider = FalkorClientProvider::Redis {
+                client,
+                sentinel: None,
+                sentinel_replica: None,
+                #[cfg(feature = "embedded")]
+                embedded_server: None,
+            };
+            let result = provider.get_async_replica_connection_manager(None).await;
             assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
         });
     }

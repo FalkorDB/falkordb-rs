@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- async client connection multiplexing via an explicit `ConnectionStrategy`
+  (`Pooled` / `Multiplexed`), with `with_connection_strategy`, `with_max_inflight`, and a
+  `connection_strategy()` accessor. The async client now defaults to multiplexed
+  connections (source-compatible, behavior-changing); Sentinel deployments transparently
+  fall back to pooling.
+
 ## [0.3.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.2.1...v0.3.0) - 2026-06-16
 
 ### Added

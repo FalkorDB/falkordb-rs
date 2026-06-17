@@ -370,9 +370,9 @@ mod tests {
         // On non-macOS, should return Ok(false)
         // On macOS, returns Ok(true) if libomp found, Err otherwise
         match result {
-            Ok(b) => {
+            Ok(_b) => {
                 #[cfg(not(target_os = "macos"))]
-                assert!(!b);
+                assert!(!_b);
             }
             Err(_) => {
                 #[cfg(target_os = "macos")]

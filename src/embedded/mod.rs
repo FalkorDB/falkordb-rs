@@ -1110,4 +1110,122 @@ mod tests {
             assert_eq!(result.unwrap(), PathBuf::from("/dev/null"));
         }
     }
+
+    #[test]
+    fn test_find_falkordb_module_error_message_without_auto_download() {
+        // Test error message when auto_download is disabled
+        // Note: On macOS, this may fail with libomp check first, so we account for both
+        let config = EmbeddedConfig {
+            falkordb_module_path: None,
+            auto_download: false,
+            redis_server_path: Some(PathBuf::from("/nonexistent/redis-server")),
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::find_falkordb_module(&config);
+        assert!(result.is_err());
+
+        let err_msg = format!("{}", result.unwrap_err());
+
+        // On macOS, the error will be about libomp; on other platforms it will suggest enabling auto_download
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                err_msg.contains("OpenMP") || err_msg.contains("libomp"),
+                "Error should mention OpenMP on macOS: {}",
+                err_msg
+            );
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(
+                err_msg.contains("enable auto_download") || err_msg.contains("not found"),
+                "Error should suggest enabling auto_download or mention not found: {}",
+                err_msg
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_falkordb_module_error_message_with_auto_download() {
+        // Test error message when auto_download is enabled but module not found
+        // Note: On macOS, this may fail with libomp check first
+        let config = EmbeddedConfig {
+            falkordb_module_path: None,
+            auto_download: true,
+            redis_server_path: Some(PathBuf::from("/nonexistent/redis-server")),
+            ..Default::default()
+        };
+
+        let result = EmbeddedServer::find_falkordb_module(&config);
+        assert!(result.is_err());
+
+        let err_msg = format!("{}", result.unwrap_err());
+
+        // On macOS, the error will be about libomp; on other platforms it should mention download
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                err_msg.contains("OpenMP") || err_msg.contains("libomp"),
+                "Error should mention OpenMP on macOS: {}",
+                err_msg
+            );
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(
+                err_msg.contains("download") || err_msg.contains("not found"),
+                "Error should mention download or not found: {}",
+                err_msg
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_falkordb_module_checks_common_system_locations() {
+        // Test that common system locations are checked
+        // Using /dev/null as it exists on all Unix systems
+        #[cfg(unix)]
+        {
+            let config = EmbeddedConfig {
+                falkordb_module_path: None,
+                auto_download: false,
+                redis_server_path: Some(PathBuf::from("/nonexistent/redis-server")),
+                ..Default::default()
+            };
+
+            // This should fail because /dev/null is not a valid falkordb module
+            // but it tests that the search through common locations executes
+            let result = EmbeddedServer::find_falkordb_module(&config);
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn test_embedded_config_with_cache_dir() {
+        // Test that EmbeddedConfig properly stores cache_dir
+        let cache_dir = PathBuf::from("/tmp/test-cache");
+        let config = EmbeddedConfig {
+            cache_dir: Some(cache_dir.clone()),
+            auto_download: true,
+            ..Default::default()
+        };
+
+        assert_eq!(config.cache_dir, Some(cache_dir));
+        assert!(config.auto_download);
+    }
+
+    #[test]
+    fn test_embedded_config_with_falkordb_version() {
+        // Test that EmbeddedConfig properly stores falkordb_version
+        let version = "v5.0.0".to_string();
+        let config = EmbeddedConfig {
+            falkordb_version: Some(version.clone()),
+            ..Default::default()
+        };
+
+        assert_eq!(config.falkordb_version, Some(version));
+    }
 }

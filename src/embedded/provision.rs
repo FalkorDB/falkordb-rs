@@ -148,17 +148,18 @@ impl Platform {
             Platform::Rhel9X64 => Ok("falkordb-rhel9-x64.so"),
             Platform::MacOSArm64 => Ok("falkordb-macos-arm64v8.so"),
             Platform::MacOSX64Unsupported => Err(FalkorDBError::EmbeddedServerError(
-                "macOS x86_64 is not natively supported. Please use Apple Silicon (aarch64) or run under Rosetta 2. \
-                 To proceed with the ARM64 binary, explicitly set falkordb_module_path in EmbeddedConfig.".to_string(),
+                "macOS on x86_64 is not supported for auto-provisioning: there is no x86_64 \
+                 FalkorDB module. On Apple Silicon, build and run your application as aarch64 \
+                 (arm64) rather than under Rosetta 2. Alternatively, set falkordb_module_path to \
+                 an arm64 `falkordb.so` and use an arm64 redis-server."
+                    .to_string(),
             )),
-            Platform::Unsupported => Err(FalkorDBError::EmbeddedServerError(
-                format!(
-                    "FalkorDB embedded server is not supported on {}/{}. \
+            Platform::Unsupported => Err(FalkorDBError::EmbeddedServerError(format!(
+                "FalkorDB embedded server is not supported on {}/{}. \
                      Supported platforms: Linux x86_64/aarch64 (glibc/musl), macOS aarch64.",
-                    std::env::consts::OS,
-                    std::env::consts::ARCH
-                ),
-            )),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ))),
         }
     }
 
@@ -657,7 +658,12 @@ mod tests {
         let macos_x64_err = Platform::MacOSX64Unsupported.asset_filename();
         assert!(macos_x64_err.is_err());
         let msg = format!("{}", macos_x64_err.unwrap_err());
-        assert!(msg.contains("macOS x86_64"));
+        // Mentions x86_64 and steers users to an arm64/aarch64 build (not Rosetta).
+        assert!(msg.contains("x86_64"), "got: {msg}");
+        assert!(
+            msg.contains("aarch64") || msg.contains("arm64"),
+            "got: {msg}"
+        );
 
         let macos_x64_tag_err = Platform::MacOSX64Unsupported.tag();
         assert!(macos_x64_tag_err.is_err());

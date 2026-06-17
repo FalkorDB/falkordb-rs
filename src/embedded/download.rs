@@ -57,12 +57,37 @@ fn get_cache_dir(override_dir: Option<&Path>) -> FalkorResult<PathBuf> {
     Ok(std::env::temp_dir().join("falkordb-rs-cache"))
 }
 
+/// Validate a user-supplied version string before it is used as a cache path
+/// segment or in the download URL.
+///
+/// Rejects empty/oversized values and anything outside `[A-Za-z0-9._-]` (in
+/// particular path separators) or containing a `..` traversal sequence, so a
+/// crafted `falkordb_version` cannot escape the cache root or corrupt the URL.
+fn validate_version(version: &str) -> FalkorResult<()> {
+    let safe = !version.is_empty()
+        && version.len() <= 64
+        && version != "."
+        && !version.contains("..")
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if safe {
+        Ok(())
+    } else {
+        Err(FalkorDBError::EmbeddedServerError(format!(
+            "Invalid FalkorDB version '{version}': only ASCII letters, digits, '.', '_' and '-' \
+             are allowed (no path separators or '..')."
+        )))
+    }
+}
+
 /// Get the path a cached FalkorDB module would occupy for `version`/`platform`.
 pub fn cached_module_path(
     platform: &Platform,
     version: &str,
     cache_dir: Option<&Path>,
 ) -> FalkorResult<PathBuf> {
+    validate_version(version)?;
     let cache_root = get_cache_dir(cache_dir)?;
     let platform_tag = platform.tag()?;
     let asset_filename = platform.asset_filename()?;
@@ -78,6 +103,7 @@ fn module_url(
     platform: &Platform,
     version: &str,
 ) -> FalkorResult<String> {
+    validate_version(version)?;
     Ok(format!(
         "https://github.com/FalkorDB/FalkorDB/releases/download/{}/{}",
         version,
@@ -552,6 +578,43 @@ mod tests {
         );
         // Unsupported platforms have no asset and thus no URL.
         assert!(module_url(&Platform::Unsupported, provision::FALKORDB_VERSION).is_err());
+    }
+
+    #[test]
+    fn test_validate_version() {
+        // Realistic versions are accepted.
+        for ok in ["v4.18.10", "v0.0.0-test", "4.18.10", "v4.18.10-rc.1"] {
+            assert!(validate_version(ok).is_ok(), "{ok} should be valid");
+        }
+        // Path traversal / separators / empty / oversized are rejected.
+        for bad in [
+            "",
+            "..",
+            "../../tmp",
+            "v1/../../etc",
+            "a/b",
+            "a\\b",
+            ".",
+            "v1 2",
+            "with space",
+        ] {
+            assert!(validate_version(bad).is_err(), "{bad:?} should be rejected");
+        }
+        assert!(
+            validate_version(&"v".repeat(65)).is_err(),
+            "oversized rejected"
+        );
+    }
+
+    #[test]
+    fn test_cached_module_path_rejects_unsafe_version() {
+        // A traversal version must not produce a path (it is rejected up front).
+        let result = cached_module_path(&Platform::LinuxX64Glibc, "../../etc", None);
+        assert!(result.is_err());
+        assert!(
+            format!("{}", result.unwrap_err()).contains("Invalid FalkorDB version"),
+            "should report an invalid version"
+        );
     }
 
     #[test]

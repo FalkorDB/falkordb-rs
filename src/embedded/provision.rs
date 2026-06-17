@@ -279,4 +279,116 @@ mod tests {
         let platform = Platform::MacOSArm64;
         assert_eq!(platform.tag().unwrap(), "macos-arm64");
     }
+
+    #[test]
+    fn test_all_platform_asset_filenames() {
+        // Test all supported platforms have asset filenames
+        assert_eq!(
+            Platform::LinuxX64Glibc.asset_filename().unwrap(),
+            "falkordb-x64.so"
+        );
+        assert_eq!(
+            Platform::LinuxArm64Glibc.asset_filename().unwrap(),
+            "falkordb-arm64v8.so"
+        );
+        assert_eq!(
+            Platform::LinuxX64Musl.asset_filename().unwrap(),
+            "falkordb-alpine-x64.so"
+        );
+        assert_eq!(
+            Platform::LinuxArm64Musl.asset_filename().unwrap(),
+            "falkordb-alpine-arm64v8.so"
+        );
+        assert_eq!(
+            Platform::AmazonLinux2023X64.asset_filename().unwrap(),
+            "falkordb-amazonlinux2023-x64.so"
+        );
+        assert_eq!(
+            Platform::Rhel8X64.asset_filename().unwrap(),
+            "falkordb-rhel8-x64.so"
+        );
+        assert_eq!(
+            Platform::Rhel9X64.asset_filename().unwrap(),
+            "falkordb-rhel9-x64.so"
+        );
+        assert_eq!(
+            Platform::MacOSArm64.asset_filename().unwrap(),
+            "falkordb-macos-arm64v8.so"
+        );
+
+        // Unsupported platforms return errors
+        assert!(Platform::Unsupported.asset_filename().is_err());
+        assert!(Platform::MacOSX64Unsupported.asset_filename().is_err());
+    }
+
+    #[test]
+    fn test_all_platform_tags() {
+        // Test all supported platforms have tags
+        assert_eq!(
+            Platform::LinuxX64Glibc.tag().unwrap(),
+            "linux-x64-glibc"
+        );
+        assert_eq!(
+            Platform::LinuxArm64Glibc.tag().unwrap(),
+            "linux-arm64-glibc"
+        );
+        assert_eq!(
+            Platform::LinuxX64Musl.tag().unwrap(),
+            "linux-x64-musl"
+        );
+        assert_eq!(
+            Platform::LinuxArm64Musl.tag().unwrap(),
+            "linux-arm64-musl"
+        );
+        assert_eq!(
+            Platform::AmazonLinux2023X64.tag().unwrap(),
+            "amazonlinux2023-x64"
+        );
+        assert_eq!(Platform::Rhel8X64.tag().unwrap(), "rhel8-x64");
+        assert_eq!(Platform::Rhel9X64.tag().unwrap(), "rhel9-x64");
+        assert_eq!(Platform::MacOSArm64.tag().unwrap(), "macos-arm64");
+
+        // Unsupported platforms return errors
+        assert!(Platform::Unsupported.tag().is_err());
+        assert!(Platform::MacOSX64Unsupported.tag().is_err());
+    }
+
+    #[test]
+    fn test_platform_equality() {
+        assert_eq!(Platform::LinuxX64Glibc, Platform::LinuxX64Glibc);
+        assert_ne!(Platform::LinuxX64Glibc, Platform::LinuxArm64Glibc);
+    }
+
+    #[test]
+    fn test_platform_debug() {
+        let platform = Platform::LinuxX64Glibc;
+        let debug_str = format!("{:?}", platform);
+        assert!(debug_str.contains("LinuxX64Glibc"));
+    }
+
+    #[test]
+    fn test_is_musl() {
+        let result = is_musl();
+        // Result depends on target environment; just verify it returns a bool
+        let _: bool = result;
+    }
+
+    #[test]
+    fn test_check_macos_libomp() {
+        let result = check_macos_libomp();
+        // On non-macOS, should return Ok(false)
+        // On macOS, returns Ok(true) if libomp found, Err otherwise
+        match result {
+            Ok(b) => {
+                #[cfg(not(target_os = "macos"))]
+                assert!(!b);
+            }
+            Err(_) => {
+                #[cfg(target_os = "macos")]
+                {
+                    // This is expected if libomp is not installed
+                }
+            }
+        }
+    }
 }

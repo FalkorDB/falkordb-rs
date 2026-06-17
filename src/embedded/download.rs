@@ -142,4 +142,79 @@ mod tests {
         assert!(path.to_string_lossy().contains("linux-x64-glibc"));
         assert!(path.to_string_lossy().contains("falkordb-x64.so"));
     }
+
+    #[test]
+    fn test_cached_module_path_all_platforms() {
+        let cache_dir = PathBuf::from("/tmp/test-cache");
+
+        // Test all supported platforms
+        let platforms = [
+            Platform::LinuxX64Glibc,
+            Platform::LinuxArm64Glibc,
+            Platform::LinuxX64Musl,
+            Platform::LinuxArm64Musl,
+            Platform::AmazonLinux2023X64,
+            Platform::Rhel8X64,
+            Platform::Rhel9X64,
+            Platform::MacOSArm64,
+        ];
+
+        for platform in platforms.iter() {
+            let result = cached_module_path(platform, Some(&cache_dir));
+            assert!(
+                result.is_ok(),
+                "Failed for platform: {:?}",
+                platform
+            );
+            let path = result.unwrap();
+            assert!(path.to_string_lossy().contains("v4.18.10"));
+            assert!(path.exists() == false); // Path doesn't need to exist in unit test
+        }
+    }
+
+    #[test]
+    fn test_has_cached_module_nonexistent() {
+        let platform = Platform::LinuxX64Glibc;
+        let cache_dir = PathBuf::from("/nonexistent/path");
+
+        let result = has_cached_module(&platform, Some(&cache_dir));
+        assert!(result.is_ok());
+        assert!(!result.unwrap()); // Module should not exist
+    }
+
+    #[test]
+    fn test_download_falkordb_module_not_implemented() {
+        let platform = Platform::LinuxX64Glibc;
+        let timeout = Duration::from_secs(60);
+
+        let result = download_falkordb_module(&platform, None, timeout);
+        assert!(result.is_err()); // Should return placeholder error
+        let err_msg = format!("{:?}", result);
+        assert!(err_msg.contains("not yet implemented"));
+    }
+
+    #[test]
+    fn test_download_falkordb_module_all_platforms() {
+        let timeout = Duration::from_secs(60);
+        let platforms = [
+            Platform::LinuxX64Glibc,
+            Platform::LinuxArm64Glibc,
+            Platform::LinuxX64Musl,
+            Platform::LinuxArm64Musl,
+            Platform::AmazonLinux2023X64,
+            Platform::Rhel8X64,
+            Platform::Rhel9X64,
+            Platform::MacOSArm64,
+        ];
+
+        for platform in platforms.iter() {
+            let result = download_falkordb_module(platform, None, timeout);
+            // All should fail with "not implemented" for now
+            assert!(
+                result.is_err(),
+                "Expected error for platform: {:?}",
+                platform
+            );
+        }
+    }
 }

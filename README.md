@@ -76,10 +76,11 @@ let res = graph
     .execute()?;
 ```
 
-Add several at once from an array, `Vec`, or map with `with_params`:
+Add several at once from an array, `Vec`, or map with `with_params` (the values share a single
+type; use chained `with_param` calls, as above, for a mix of types):
 
 ```rust,ignore
-.with_params([("title", "The Matrix"), ("year", 1999)])
+.with_params([("min_year", 1990), ("max_year", 2000)])
 ```
 
 Supported value types include integers, floats, boolean values, strings, `Option` (encoded as

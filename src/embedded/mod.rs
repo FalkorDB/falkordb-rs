@@ -25,14 +25,14 @@ use std::{fs, thread};
 
 use crate::{FalkorDBError, FalkorResult};
 
-#[cfg(feature = "tracing")]
-use tracing;
-
 pub mod download;
 pub mod provision;
 
 // Maximum length for Unix socket paths (typically 104-108 bytes on most Unix systems)
 const MAX_SOCKET_PATH_LENGTH: usize = 104;
+
+// How long to allow a module download to run before giving up.
+const MODULE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 // Counter for ensuring unique temp directories across multiple instances
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -41,10 +41,19 @@ static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// # Self-Contained Mode
 ///
-/// When `auto_download` is enabled (default when the `embedded` feature is on),
-/// missing binaries are automatically downloaded from official FalkorDB releases
-/// and cached locally. This makes the embedded server "just work" without requiring
-/// pre-installed dependencies.
+/// When `auto_download` is enabled (the default), a missing FalkorDB **module**
+/// (`falkordb.so`) is automatically downloaded from the official FalkorDB
+/// GitHub releases, checksum-verified and cached locally, so the embedded
+/// server "just works" without a pre-installed module.
+///
+/// The `redis-server` binary is **not** downloaded: it is always located on the
+/// host via `redis_server_path` or `PATH`. Install it from your package manager
+/// (e.g. `brew install redis`, `apt-get install redis-server`) or point
+/// `redis_server_path` at an existing FalkorDB/Redis install.
+///
+/// To use an already-installed FalkorDB module instead of downloading, either
+/// set `falkordb_module_path` explicitly or leave it unset — common system
+/// locations are searched before any download is attempted.
 ///
 /// # License Note
 ///
@@ -55,7 +64,8 @@ static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub struct EmbeddedConfig {
     /// Path to the redis-server executable. If None, searches in PATH.
     pub redis_server_path: Option<PathBuf>,
-    /// Path to the FalkorDB module (.so file). If None, searches in common locations or downloads.
+    /// Path to the FalkorDB module (.so file). If None, searches common
+    /// locations and (when `auto_download` is enabled) downloads it.
     pub falkordb_module_path: Option<PathBuf>,
     /// Directory for the database files. If None, creates a temporary directory.
     pub db_dir: Option<PathBuf>,
@@ -65,12 +75,14 @@ pub struct EmbeddedConfig {
     pub socket_path: Option<PathBuf>,
     /// Maximum time to wait for server startup.
     pub start_timeout: Duration,
-    /// Enable automatic downloading of missing binaries from official FalkorDB releases.
-    /// Defaults to `true` when the `embedded` feature is enabled.
-    /// If `false`, behaves like the original version (lookup-only, error if not found).
+    /// Enable automatic downloading of the missing FalkorDB **module** from the
+    /// official FalkorDB releases. Defaults to `true`. When `false`, behaves
+    /// like a lookup-only resolver (explicit path or system locations) and
+    /// errors if the module is not found. `redis-server` is never downloaded.
     pub auto_download: bool,
-    /// Override the default FalkorDB version to download.
-    /// If None, uses the pinned version from this release.
+    /// Override the FalkorDB version to download. If None, uses the version this
+    /// client pins ([`provision::FALKORDB_VERSION`]). Versions other than the
+    /// pinned one are downloaded without checksum verification (no pinned hash).
     pub falkordb_version: Option<String>,
     /// Override the cache directory for downloaded binaries.
     /// If None, uses platform-specific defaults or `FALKORDB_RS_CACHE_DIR` env var.
@@ -124,6 +136,12 @@ impl EmbeddedServer {
     /// - The server process fails to start
     /// - The server doesn't respond within the timeout period
     pub fn start(config: EmbeddedConfig) -> FalkorResult<Self> {
+        // Fail fast on an obviously-invalid explicit socket path before doing any
+        // environment-dependent work (binary lookup, libomp check, downloads).
+        if let Some(ref socket_path) = config.socket_path {
+            Self::validate_socket_path_len(socket_path)?;
+        }
+
         // Find redis-server executable
         let redis_server = Self::find_redis_server(&config)?;
 
@@ -134,14 +152,8 @@ impl EmbeddedServer {
         let (db_dir, temp_dir) = Self::setup_db_dir(&config)?;
         let socket_path = Self::setup_socket_path(&config, temp_dir.as_deref())?;
 
-        // Validate socket path length
-        if socket_path.as_os_str().len() > MAX_SOCKET_PATH_LENGTH {
-            return Err(FalkorDBError::EmbeddedServerError(format!(
-                "Socket path is too long ({} bytes, max {}). Please specify a shorter path in EmbeddedConfig.",
-                socket_path.as_os_str().len(),
-                MAX_SOCKET_PATH_LENGTH
-            )));
-        }
+        // Validate the resolved socket path length (covers the derived-path case).
+        Self::validate_socket_path_len(&socket_path)?;
 
         let config_file = Self::create_config_file(&db_dir, &socket_path, &config.db_filename)?;
 
@@ -198,6 +210,18 @@ impl EmbeddedServer {
         format!("unix://{}", self.socket_path.display())
     }
 
+    /// Returns an error if a Unix socket path exceeds the platform limit.
+    fn validate_socket_path_len(socket_path: &Path) -> FalkorResult<()> {
+        if socket_path.as_os_str().len() > MAX_SOCKET_PATH_LENGTH {
+            return Err(FalkorDBError::EmbeddedServerError(format!(
+                "Socket path is too long ({} bytes, max {}). Please specify a shorter path in EmbeddedConfig.",
+                socket_path.as_os_str().len(),
+                MAX_SOCKET_PATH_LENGTH
+            )));
+        }
+        Ok(())
+    }
+
     fn find_redis_server(config: &EmbeddedConfig) -> FalkorResult<PathBuf> {
         if let Some(ref path) = config.redis_server_path {
             if path.exists() {
@@ -217,9 +241,19 @@ impl EmbeddedServer {
     }
 
     fn find_falkordb_module(config: &EmbeddedConfig) -> FalkorResult<PathBuf> {
-        // Resolution order: explicit path → cache (if auto_download) → system locations → download (if auto_download) → error
+        // Resolution order: macOS libomp prerequisite → explicit path → cache
+        // (if auto_download) → system locations → download (if auto_download) → error.
 
-        // Step 1: Check for explicit path
+        // On macOS the module cannot be loaded without libomp regardless of where
+        // it comes from, so this prerequisite is checked even for an explicit path.
+        #[cfg(target_os = "macos")]
+        {
+            #[cfg(feature = "tracing")]
+            tracing::debug!("Checking macOS libomp requirement");
+            provision::check_macos_libomp()?;
+        }
+
+        // Step 1: Explicit path takes precedence over everything else.
         if let Some(ref path) = config.falkordb_module_path {
             #[cfg(feature = "tracing")]
             tracing::debug!("Checking explicit FalkorDB module path: {}", path.display());
@@ -234,40 +268,33 @@ impl EmbeddedServer {
             )));
         }
 
-        // On macOS, ensure libomp is available before proceeding
-        #[cfg(target_os = "macos")]
-        {
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Checking macOS libomp requirement");
-            provision::check_macos_libomp()?;
-        }
+        let version = config
+            .falkordb_version
+            .as_deref()
+            .unwrap_or(provision::FALKORDB_VERSION);
 
-        // Step 2: Check cache if auto_download is enabled
+        // Step 2: Reuse a previously downloaded module from the cache (verified
+        // against the pinned checksum, so a corrupted cache is not trusted).
         if config.auto_download {
-            #[cfg(feature = "tracing")]
-            tracing::debug!("auto_download is enabled, checking cache");
             let platform = provision::Platform::detect();
-            if let Ok(true) = download::has_cached_module(&platform, config.cache_dir.as_deref()) {
-                if let Ok(cached_path) =
-                    download::cached_module_path(&platform, config.cache_dir.as_deref())
-                {
-                    #[cfg(feature = "tracing")]
-                    tracing::info!("Using cached FalkorDB module at: {}", cached_path.display());
-                    return Ok(cached_path);
-                }
+            if let Ok(Some(cached_path)) =
+                download::cached_verified_module(&platform, version, config.cache_dir.as_deref())
+            {
+                #[cfg(feature = "tracing")]
+                tracing::info!("Using cached FalkorDB module at: {}", cached_path.display());
+                return Ok(cached_path);
             }
         }
 
-        // Step 3: Try common system locations
+        // Step 3: Use an already-installed module from a common system location.
         #[cfg(feature = "tracing")]
         tracing::debug!("Searching for FalkorDB module in common system locations");
-        let common_paths = vec![
+        let common_paths = [
             PathBuf::from("/usr/lib/redis/modules/falkordb.so"),
             PathBuf::from("/usr/local/lib/redis/modules/falkordb.so"),
             PathBuf::from("/opt/homebrew/lib/redis/modules/falkordb.so"),
             PathBuf::from("./falkordb.so"),
         ];
-
         for path in common_paths {
             if path.exists() {
                 #[cfg(feature = "tracing")]
@@ -279,42 +306,27 @@ impl EmbeddedServer {
             }
         }
 
-        // Step 4: Attempt download if auto_download is enabled
+        // Step 4: Download from the official releases. The download error is
+        // propagated directly so callers see the actionable cause (e.g.
+        // unsupported platform, checksum mismatch, or a network failure).
         if config.auto_download {
             #[cfg(feature = "tracing")]
-            tracing::info!("FalkorDB module not found locally, attempting download");
+            tracing::info!("FalkorDB module not found locally, downloading version {version}");
             let platform = provision::Platform::detect();
-            match download::download_falkordb_module(
+            return download::download_falkordb_module(
                 &platform,
+                version,
                 config.cache_dir.as_deref(),
-                Duration::from_secs(60),
-            ) {
-                Ok(path) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::info!("Downloaded FalkorDB module to: {}", path.display());
-                    return Ok(path);
-                }
-                Err(_e) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("Failed to download FalkorDB module: {}", _e);
-                    // Fall through to error below
-                }
-            }
+                MODULE_DOWNLOAD_TIMEOUT,
+            );
         }
 
-        // Step 5: Return error
-        if config.auto_download {
-            Err(FalkorDBError::EmbeddedServerError(
-                "FalkorDB module (falkordb.so) not found in common locations and download failed. \
-                 Please install FalkorDB or specify the path in EmbeddedConfig"
-                    .to_string(),
-            ))
-        } else {
-            Err(FalkorDBError::EmbeddedServerError(
-                "FalkorDB module (falkordb.so) not found. Please install FalkorDB or specify the path in EmbeddedConfig. \
-                 Alternatively, enable auto_download in EmbeddedConfig to automatically download the module.".to_string()
-            ))
-        }
+        // Step 5: Lookup-only mode and nothing was found.
+        Err(FalkorDBError::EmbeddedServerError(
+            "FalkorDB module (falkordb.so) not found. Install FalkorDB, set falkordb_module_path \
+             in EmbeddedConfig, or enable auto_download to fetch it automatically."
+                .to_string(),
+        ))
     }
 
     fn setup_db_dir(config: &EmbeddedConfig) -> FalkorResult<(PathBuf, Option<PathBuf>)> {
@@ -515,7 +527,7 @@ mod tests {
         assert_eq!(config.db_filename, "falkordb.rdb");
         assert!(config.socket_path.is_none());
         assert_eq!(config.start_timeout, Duration::from_secs(10));
-        assert_eq!(config.auto_download, true);
+        assert!(config.auto_download);
         assert!(config.falkordb_version.is_none());
         assert!(config.cache_dir.is_none());
     }
@@ -549,7 +561,7 @@ mod tests {
             Some(PathBuf::from("/custom/socket.sock"))
         );
         assert_eq!(config.start_timeout, Duration::from_secs(5));
-        assert_eq!(config.auto_download, false);
+        assert!(!config.auto_download);
         assert_eq!(config.falkordb_version, Some("v4.0.0".to_string()));
         assert_eq!(config.cache_dir, Some(PathBuf::from("/custom/cache")));
     }
@@ -603,8 +615,13 @@ mod tests {
 
         let result = EmbeddedServer::find_falkordb_module(&config);
         assert!(result.is_err());
-        if let Err(FalkorDBError::EmbeddedServerError(msg)) = result {
-            assert!(msg.contains("FalkorDB module not found"));
+        let msg = format!("{}", result.unwrap_err());
+        // On macOS the libomp prerequisite is checked before the explicit path,
+        // so a missing libomp surfaces first; otherwise the path error is returned.
+        if provision::check_macos_libomp().is_ok() {
+            assert!(msg.contains("FalkorDB module not found"), "got: {msg}");
+        } else {
+            assert!(msg.contains("libomp"), "got: {msg}");
         }
     }
 
@@ -886,9 +903,11 @@ mod tests {
 
     #[test]
     fn test_find_falkordb_module_common_paths() {
-        // Test the common paths lookup when falkordb_module_path is None
+        // Test the common-location lookup when falkordb_module_path is None.
+        // auto_download is disabled so this stays offline (no network download).
         let config = EmbeddedConfig {
             falkordb_module_path: None,
+            auto_download: false,
             ..Default::default()
         };
 
@@ -1074,7 +1093,7 @@ mod tests {
         assert!(config.falkordb_module_path.is_none());
         assert!(config.db_dir.is_none());
         assert!(config.socket_path.is_none());
-        assert_eq!(config.auto_download, true);
+        assert!(config.auto_download);
         assert!(config.falkordb_version.is_none());
         assert!(config.cache_dir.is_none());
     }
@@ -1106,8 +1125,14 @@ mod tests {
             };
 
             let result = EmbeddedServer::find_falkordb_module(&config);
-            assert!(result.is_ok());
-            assert_eq!(result.unwrap(), PathBuf::from("/dev/null"));
+            // On macOS the libomp prerequisite is checked even for an explicit
+            // path, so without libomp the call fails with that actionable error.
+            if provision::check_macos_libomp().is_ok() {
+                assert_eq!(result.unwrap(), PathBuf::from("/dev/null"));
+            } else {
+                let msg = format!("{}", result.unwrap_err());
+                assert!(msg.contains("libomp"), "got: {msg}");
+            }
         }
     }
 
@@ -1148,39 +1173,43 @@ mod tests {
     }
 
     #[test]
-    fn test_find_falkordb_module_error_message_with_auto_download() {
-        // Test error message when auto_download is enabled but module not found
-        // Note: On macOS, this may fail with libomp check first
+    fn test_find_falkordb_module_auto_download_uses_cache() {
+        // With auto_download enabled, a previously cached module is reused
+        // without any network access. (A live download is covered by the
+        // opt-in `download::tests::test_live_download_real_module`.)
+        let platform = provision::Platform::detect();
+        if platform.tag().is_err() {
+            return; // no asset for this platform; nothing to cache
+        }
+        // Use an overridden (unpinned) version so the placeholder bytes aren't
+        // rejected by checksum verification.
+        let version = "v0.0.0-modtest";
+        let cache_dir =
+            std::env::temp_dir().join(format!("fdb_cache_modtest_{}", std::process::id()));
+        let cached = download::cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"cached module").unwrap();
+
         let config = EmbeddedConfig {
             falkordb_module_path: None,
             auto_download: true,
-            redis_server_path: Some(PathBuf::from("/nonexistent/redis-server")),
+            falkordb_version: Some(version.to_string()),
+            cache_dir: Some(cache_dir.clone()),
             ..Default::default()
         };
-
         let result = EmbeddedServer::find_falkordb_module(&config);
-        assert!(result.is_err());
 
-        let err_msg = format!("{}", result.unwrap_err());
-
-        // On macOS, the error will be about libomp; on other platforms it should mention download
-        #[cfg(target_os = "macos")]
-        {
+        // On macOS the libomp prerequisite is checked before cache resolution.
+        if provision::check_macos_libomp().is_ok() {
+            assert_eq!(result.unwrap(), cached);
+        } else {
             assert!(
-                err_msg.contains("OpenMP") || err_msg.contains("libomp"),
-                "Error should mention OpenMP on macOS: {}",
-                err_msg
+                format!("{}", result.unwrap_err()).contains("libomp"),
+                "expected libomp error on macOS without libomp"
             );
         }
 
-        #[cfg(not(target_os = "macos"))]
-        {
-            assert!(
-                err_msg.contains("download") || err_msg.contains("not found"),
-                "Error should mention download or not found: {}",
-                err_msg
-            );
-        }
+        let _ = fs::remove_dir_all(&cache_dir);
     }
 
     #[test]

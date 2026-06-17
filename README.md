@@ -371,12 +371,39 @@ falkordb = { version = "0.3.0", features = ["embedded"] }
 
 #### Requirements
 
-- `redis-server` must be installed and available in PATH (or you can specify a custom path)
-- `falkordb.so` module must be installed (or you can specify a custom path)
+- `redis-server` must be installed and available in PATH (or you can specify a custom path).
+  It is **not** downloaded automatically — install it from your package manager
+  (e.g. `brew install redis`, `apt-get install redis-server`).
+- The `falkordb.so` module is provisioned automatically when `auto_download` is enabled
+  (the default): it is downloaded from the official [FalkorDB](https://github.com/falkordb/falkordb)
+  releases, verified against a pinned SHA-256 checksum and cached locally. You can also point
+  `falkordb_module_path` at an existing module, or disable `auto_download` to use only
+  explicit/system-installed binaries.
+- On macOS the module requires OpenMP: `brew install libomp`.
 
-You can install these from:
-- [Redis](https://github.com/redis/redis)
-- [FalkorDB](https://github.com/falkordb/falkordb)
+Supported auto-download platforms: Linux x86_64/aarch64 (glibc and musl/Alpine, plus
+RHEL 8/9 and Amazon Linux 2023 on x86_64) and macOS aarch64 (Apple Silicon).
+
+#### Self-contained vs. already-installed
+
+```rust,no_run
+use falkordb::EmbeddedConfig;
+use std::path::PathBuf;
+
+// Self-contained (default): download + cache the module if it is missing.
+let _auto = EmbeddedConfig::default();
+
+// Offline: use only binaries already on the machine (no network access).
+let _offline = EmbeddedConfig {
+    auto_download: false,
+    falkordb_module_path: Some(PathBuf::from("/usr/lib/redis/modules/falkordb.so")),
+    ..Default::default()
+};
+```
+
+The cache directory defaults to `~/.cache/falkordb-rs` (Linux) or
+`~/Library/Caches/falkordb-rs` (macOS) and can be overridden with the
+`cache_dir` field or the `FALKORDB_RS_CACHE_DIR` environment variable.
 
 #### Usage Example
 
@@ -391,6 +418,8 @@ let embedded_config = EmbeddedConfig::default();
 //     redis_server_path: Some(PathBuf::from("/path/to/redis-server")),
 //     falkordb_module_path: Some(PathBuf::from("/path/to/falkordb.so")),
 //     db_dir: Some(PathBuf::from("/tmp/my_falkordb")),
+//     falkordb_version: None, // pin a different release, e.g. Some("v4.18.10".into())
+//     cache_dir: None,        // override the download cache location
 //     ..Default::default()
 // };
 

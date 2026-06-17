@@ -5,64 +5,76 @@
 
 //! Binary provisioning for the embedded FalkorDB server.
 //!
-//! This module handles acquiring the FalkorDB module and optionally redis-server
-//! binaries via download from official sources, with local caching, integrity
-//! verification, and concurrent-safe installation.
+//! This module maps the current system to the matching FalkorDB module release
+//! asset (filename, cache tag and pinned SHA-256 checksum) and checks platform
+//! prerequisites. The actual download/caching lives in [`super::download`].
 
 use crate::{FalkorDBError, FalkorResult};
-use std::collections::HashMap;
 
 /// FalkorDB version to provision (pinned for reproducibility and security).
 pub const FALKORDB_VERSION: &str = "v4.18.10";
 
-/// SHA-256 checksums for each platform's FalkorDB module release asset.
-/// These are pinned to ensure integrity and prevent MITM attacks.
-pub fn falkordb_checksums() -> HashMap<&'static str, &'static str> {
-    let mut map = HashMap::new();
-    // Linux glibc - placeholders (replace with actual checksums from releases)
-    map.insert(
+/// SHA-256 checksums of each platform's FalkorDB module asset for
+/// [`FALKORDB_VERSION`], keyed by [`Platform::tag`]. Sourced from the GitHub
+/// release asset digests; used to verify downloads and prevent tampering.
+const MODULE_CHECKSUMS: &[(&str, &str)] = &[
+    (
         "linux-x64-glibc",
-        "0000000000000000000000000000000000000000000000000000000000000001",
-    );
-    // Linux aarch64 glibc
-    map.insert(
+        "1326869d2b7f1669f8ff540045a38a9741f366caf522e1bf496393566c964ecd",
+    ),
+    (
         "linux-arm64-glibc",
-        "0000000000000000000000000000000000000000000000000000000000000002",
-    );
-    // Linux x86_64 musl (Alpine)
-    map.insert(
+        "48ca64c54b75c9223d369308482492c2559e09369a1e1594690ae40881bd5614",
+    ),
+    (
         "linux-x64-musl",
-        "0000000000000000000000000000000000000000000000000000000000000003",
-    );
-    // Linux aarch64 musl (Alpine)
-    map.insert(
+        "33cc3935bb4b8ed32ab5400da70202e8467aaf26f81431ab0808690b28a04400",
+    ),
+    (
         "linux-arm64-musl",
-        "0000000000000000000000000000000000000000000000000000000000000004",
-    );
-    // Amazon Linux 2023
-    map.insert(
+        "9fc919fd7b599a30ba660b9b2535f5101ec04b737a3f3185af5c34374856ba2d",
+    ),
+    (
         "amazonlinux2023-x64",
-        "0000000000000000000000000000000000000000000000000000000000000005",
-    );
-    // RHEL 8
-    map.insert(
+        "426a53de07911ca01797c8f67f5149c422a6ec093664d0416fd38d21b2138bfc",
+    ),
+    (
         "rhel8-x64",
-        "0000000000000000000000000000000000000000000000000000000000000006",
-    );
-    // RHEL 9
-    map.insert(
+        "b46828737fcc079f5ecef0fb6524259117d80ade1b997e390cb49afd5c880b40",
+    ),
+    (
         "rhel9-x64",
-        "0000000000000000000000000000000000000000000000000000000000000007",
-    );
-    // macOS aarch64 (Apple Silicon)
-    map.insert(
+        "d1fa2b4c8c42ff0aa5db8f2ec9e1d711a41a9271e17421e411b43f588b6ddd6e",
+    ),
+    (
         "macos-arm64",
-        "0000000000000000000000000000000000000000000000000000000000000008",
-    );
-    map
+        "6a49901df745d599cdd3b49cdb39a34e01b15291376e32befb8b8cd4ec6fe94e",
+    ),
+];
+
+/// Returns the pinned SHA-256 checksum for a platform `tag` at `version`.
+///
+/// Checksums are only known for the [`FALKORDB_VERSION`] this client ships
+/// against, so any other (user-overridden) version returns `None` and the
+/// download is accepted without checksum verification.
+pub fn module_checksum(
+    version: &str,
+    tag: &str,
+) -> Option<&'static str> {
+    if version != FALKORDB_VERSION {
+        return None;
+    }
+    MODULE_CHECKSUMS
+        .iter()
+        .find(|(known_tag, _)| *known_tag == tag)
+        .map(|(_, checksum)| *checksum)
 }
 
 /// Platform identifier for binary selection.
+///
+/// Some variants are only constructed on the matching OS (e.g. the Linux
+/// variants are never built on macOS), so the enum is allowed to carry
+/// per-platform "dead" variants.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum Platform {
@@ -91,8 +103,9 @@ pub enum Platform {
 impl Platform {
     /// Detect the current platform.
     ///
-    /// Returns `Platform::Unsupported` if the platform/architecture combination
-    /// is not supported.
+    /// On Linux this reads `/etc/os-release` to map RHEL/Amazon Linux to their
+    /// dedicated assets and detects musl (Alpine) vs glibc. Returns
+    /// `Platform::Unsupported` for any unsupported OS/architecture.
     pub fn detect() -> Self {
         #[cfg(not(unix))]
         {
@@ -106,20 +119,12 @@ impl Platform {
             let arch = std::env::consts::ARCH;
 
             match (os, arch) {
-                ("linux", "x86_64") => {
-                    // Detect libc: glibc vs musl
-                    if is_musl() {
-                        Platform::LinuxX64Musl
-                    } else {
-                        Platform::LinuxX64Glibc
-                    }
-                }
-                ("linux", "aarch64") => {
-                    if is_musl() {
-                        Platform::LinuxArm64Musl
-                    } else {
-                        Platform::LinuxArm64Glibc
-                    }
+                // The Linux arm is compiled on every Unix (the runtime never
+                // reaches it on macOS), which keeps `classify_linux` and its
+                // helpers exercised on all platforms.
+                ("linux", arch) => {
+                    let os_release = std::fs::read_to_string("/etc/os-release").ok();
+                    classify_linux(arch, is_musl(), os_release.as_deref())
                 }
                 ("macos", "aarch64") => Platform::MacOSArm64,
                 ("macos", "x86_64") => {
@@ -178,20 +183,91 @@ impl Platform {
     }
 }
 
-/// Detect if the current system uses musl libc (vs glibc).
+/// Read a `KEY=value` field from `/etc/os-release`-style contents.
+///
+/// Values may be optionally quoted; surrounding single/double quotes are
+/// stripped. Returns `None` when the key is absent.
+fn os_release_field(
+    contents: &str,
+    key: &str,
+) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let rest = line.strip_prefix(key)?.strip_prefix('=')?;
+        Some(rest.trim().trim_matches(['"', '\'']).to_string())
+    })
+}
+
+/// Map a Linux `arch` to the best-matching [`Platform`].
+///
+/// `compile_musl` is the compile-time libc of this binary; `os_release` is the
+/// contents of `/etc/os-release` when available. Alpine is also treated as musl
+/// via `os-release`. RHEL-family (incl. CentOS/Rocky/Alma) 8/9 and Amazon Linux
+/// 2023 on x86_64 map to their dedicated assets; everything else falls back to
+/// the generic glibc asset. Pure and side-effect free so it is unit-testable.
+fn classify_linux(
+    arch: &str,
+    compile_musl: bool,
+    os_release: Option<&str>,
+) -> Platform {
+    let id = os_release
+        .and_then(|c| os_release_field(c, "ID"))
+        .unwrap_or_default()
+        .to_lowercase();
+    let id_like = os_release
+        .and_then(|c| os_release_field(c, "ID_LIKE"))
+        .unwrap_or_default()
+        .to_lowercase();
+    let version_id = os_release
+        .and_then(|c| os_release_field(c, "VERSION_ID"))
+        .unwrap_or_default();
+
+    // The module must match the *host's* libc (the redis-server it loads into),
+    // so the running distro takes precedence: a known non-Alpine distro means
+    // glibc even if this client was built static-musl. `compile_musl` is only a
+    // fallback when /etc/os-release is unavailable or has no recognizable ID.
+    let alpine = id == "alpine" || id_like.split_whitespace().any(|w| w == "alpine");
+    let musl = alpine || (id.is_empty() && compile_musl);
+    if musl {
+        return match arch {
+            "x86_64" => Platform::LinuxX64Musl,
+            "aarch64" => Platform::LinuxArm64Musl,
+            _ => Platform::Unsupported,
+        };
+    }
+
+    match arch {
+        "x86_64" => {
+            let major = version_id.split('.').next().unwrap_or_default();
+            if id == "amzn" && version_id.starts_with("2023") {
+                return Platform::AmazonLinux2023X64;
+            }
+            let rhel_family = matches!(
+                id.as_str(),
+                "rhel" | "centos" | "rocky" | "almalinux" | "ol" | "fedora"
+            ) || id_like
+                .split_whitespace()
+                .any(|w| w == "rhel" || w == "fedora" || w == "centos");
+            if rhel_family {
+                match major {
+                    "8" => return Platform::Rhel8X64,
+                    "9" => return Platform::Rhel9X64,
+                    _ => {}
+                }
+            }
+            Platform::LinuxX64Glibc
+        }
+        "aarch64" => Platform::LinuxArm64Glibc,
+        _ => Platform::Unsupported,
+    }
+}
+
+/// Whether this binary was compiled against musl libc (vs glibc).
+///
+/// Used only as a fallback signal by [`classify_linux`] when `/etc/os-release`
+/// is unavailable; the running distro is otherwise authoritative for which
+/// module asset matches the host `redis-server`.
 fn is_musl() -> bool {
-    // Try linking against a C symbol that differs between glibc and musl
-    #[cfg(target_env = "musl")]
-    {
-        true
-    }
-    #[cfg(not(target_env = "musl"))]
-    {
-        // For targets compiled without explicit musl env, check at runtime via ldd
-        // For now, assume glibc unless we're explicitly musl-targeted at compile time.
-        // A more robust check would invoke ldd or check ld.so.
-        false
-    }
+    cfg!(target_env = "musl")
 }
 
 /// Detect if macOS has the required libomp (OpenMP) library for FalkorDB module.
@@ -234,24 +310,166 @@ mod tests {
 
     #[test]
     fn test_platform_detect() {
+        // `detect()` must never panic. `Unsupported` is a valid outcome on
+        // platforms/arches without a FalkorDB asset (e.g. BSD, macOS x86_64,
+        // non-x86_64/aarch64 Linux), so it is accepted here.
         let platform = Platform::detect();
-        // Just verify it doesn't panic and returns a valid result
         println!("Detected platform: {:?}", platform);
-        assert!(platform != Platform::Unsupported || cfg!(not(unix)));
     }
 
     #[test]
-    fn test_falkordb_checksums() {
-        let checksums = falkordb_checksums();
-        // Verify we have checksums for all major platforms
-        assert!(checksums.contains_key("linux-x64-glibc"));
-        assert!(checksums.contains_key("linux-arm64-glibc"));
-        assert!(checksums.contains_key("macos-arm64"));
-        // Verify checksums are non-empty
-        for (_, checksum) in checksums.iter() {
-            assert!(!checksum.is_empty());
-            assert_eq!(checksum.len(), 64); // SHA-256 hex string is 64 chars
+    fn test_module_checksum() {
+        // Every supported tag has a 64-char hex SHA-256 for the pinned version.
+        let tags = [
+            "linux-x64-glibc",
+            "linux-arm64-glibc",
+            "linux-x64-musl",
+            "linux-arm64-musl",
+            "amazonlinux2023-x64",
+            "rhel8-x64",
+            "rhel9-x64",
+            "macos-arm64",
+        ];
+        for tag in tags {
+            let checksum = module_checksum(FALKORDB_VERSION, tag)
+                .unwrap_or_else(|| panic!("missing checksum for {tag}"));
+            assert_eq!(checksum.len(), 64, "tag {tag} checksum not 64 hex chars");
+            assert!(checksum.chars().all(|c| c.is_ascii_hexdigit()));
+            assert_ne!(
+                checksum,
+                "0".repeat(64),
+                "tag {tag} still has a placeholder checksum"
+            );
         }
+    }
+
+    #[test]
+    fn test_module_checksum_unknown_version_or_tag() {
+        // Unknown version → no checksum (download accepted without verification).
+        assert!(module_checksum("v9.9.9", "linux-x64-glibc").is_none());
+        // Unknown tag for the pinned version → no checksum.
+        assert!(module_checksum(FALKORDB_VERSION, "solaris-sparc").is_none());
+    }
+
+    #[test]
+    fn test_checksums_cover_every_supported_platform() {
+        // The checksum table must stay in sync with the asset matrix: every
+        // platform that yields a tag must have a pinned checksum.
+        for platform in [
+            Platform::LinuxX64Glibc,
+            Platform::LinuxArm64Glibc,
+            Platform::LinuxX64Musl,
+            Platform::LinuxArm64Musl,
+            Platform::AmazonLinux2023X64,
+            Platform::Rhel8X64,
+            Platform::Rhel9X64,
+            Platform::MacOSArm64,
+        ] {
+            let tag = platform.tag().unwrap();
+            assert!(
+                module_checksum(FALKORDB_VERSION, tag).is_some(),
+                "no checksum pinned for {platform:?} (tag {tag})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_os_release_field() {
+        let contents = "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"22.04\"\n";
+        assert_eq!(os_release_field(contents, "ID").as_deref(), Some("ubuntu"));
+        assert_eq!(
+            os_release_field(contents, "ID_LIKE").as_deref(),
+            Some("debian")
+        );
+        assert_eq!(
+            os_release_field(contents, "VERSION_ID").as_deref(),
+            Some("22.04")
+        );
+        assert_eq!(os_release_field(contents, "MISSING"), None);
+    }
+
+    #[test]
+    fn test_classify_linux_generic_glibc() {
+        let ubuntu = "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"22.04\"\n";
+        assert_eq!(
+            classify_linux("x86_64", false, Some(ubuntu)),
+            Platform::LinuxX64Glibc
+        );
+        assert_eq!(
+            classify_linux("aarch64", false, Some(ubuntu)),
+            Platform::LinuxArm64Glibc
+        );
+        // No os-release available → generic glibc.
+        assert_eq!(
+            classify_linux("x86_64", false, None),
+            Platform::LinuxX64Glibc
+        );
+    }
+
+    #[test]
+    fn test_classify_linux_musl() {
+        let alpine = "ID=alpine\nVERSION_ID=3.20\n";
+        // Detected via os-release even when compiled for glibc.
+        assert_eq!(
+            classify_linux("x86_64", false, Some(alpine)),
+            Platform::LinuxX64Musl
+        );
+        assert_eq!(
+            classify_linux("aarch64", false, Some(alpine)),
+            Platform::LinuxArm64Musl
+        );
+        // Detected via compile-time target_env when os-release is unavailable.
+        assert_eq!(classify_linux("x86_64", true, None), Platform::LinuxX64Musl);
+    }
+
+    #[test]
+    fn test_classify_linux_host_distro_overrides_compile_musl() {
+        // A static-musl client running on a glibc host must pick the glibc
+        // asset: the module is loaded by the host's glibc redis-server.
+        let ubuntu = "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"22.04\"\n";
+        assert_eq!(
+            classify_linux("x86_64", true, Some(ubuntu)),
+            Platform::LinuxX64Glibc
+        );
+    }
+
+    #[test]
+    fn test_classify_linux_rhel_and_amazon() {
+        let rhel8 = "ID=rhel\nVERSION_ID=\"8.9\"\n";
+        let rocky9 = "ID=rocky\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.3\"\n";
+        let amzn = "ID=amzn\nVERSION_ID=2023\n";
+        assert_eq!(
+            classify_linux("x86_64", false, Some(rhel8)),
+            Platform::Rhel8X64
+        );
+        assert_eq!(
+            classify_linux("x86_64", false, Some(rocky9)),
+            Platform::Rhel9X64
+        );
+        assert_eq!(
+            classify_linux("x86_64", false, Some(amzn)),
+            Platform::AmazonLinux2023X64
+        );
+        // RHEL/Amazon on aarch64 have no dedicated asset → generic glibc arm64.
+        assert_eq!(
+            classify_linux("aarch64", false, Some(rhel8)),
+            Platform::LinuxArm64Glibc
+        );
+        // Amazon Linux 2 (no 2023 asset) → generic glibc.
+        let amzn2 = "ID=amzn\nVERSION_ID=2\n";
+        assert_eq!(
+            classify_linux("x86_64", false, Some(amzn2)),
+            Platform::LinuxX64Glibc
+        );
+    }
+
+    #[test]
+    fn test_classify_linux_unsupported_arch() {
+        assert_eq!(
+            classify_linux("riscv64", false, None),
+            Platform::Unsupported
+        );
+        assert_eq!(classify_linux("ppc64le", true, None), Platform::Unsupported);
     }
 
     #[test]

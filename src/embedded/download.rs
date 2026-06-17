@@ -4,19 +4,32 @@
  */
 
 //! Download and caching of FalkorDB module binaries.
+//!
+//! Binaries are fetched over HTTPS from the official FalkorDB GitHub releases,
+//! verified against the pinned SHA-256 checksum (see [`super::provision`]) and
+//! installed atomically into a per-version, per-platform cache directory so that
+//! concurrent processes and subsequent runs reuse the same file safely.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::provision::Platform;
+use super::provision::{self, Platform};
 use crate::{FalkorDBError, FalkorResult};
+
+/// Upper bound on a downloaded module to guard against a runaway/hostile server.
+/// The largest real (non-debug) asset is ~55 MiB; 512 MiB is comfortably above.
+const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Counter for unique temp filenames within a single process.
+static DOWNLOAD_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Get the cache directory for FalkorDB binaries.
 ///
 /// Uses the following resolution order:
-/// 1. `FALKORDB_RS_CACHE_DIR` environment variable
-/// 2. `~/.cache/falkordb-rs/` (Linux/BSD)
-/// 3. `~/Library/Caches/falkordb-rs/` (macOS)
+/// 1. Explicit `override_dir`
+/// 2. `FALKORDB_RS_CACHE_DIR` environment variable
+/// 3. `~/Library/Caches/falkordb-rs/` (macOS) or `~/.cache/falkordb-rs/` (other)
 /// 4. System temp directory as fallback
 fn get_cache_dir(override_dir: Option<&Path>) -> FalkorResult<PathBuf> {
     if let Some(dir) = override_dir {
@@ -44,325 +57,670 @@ fn get_cache_dir(override_dir: Option<&Path>) -> FalkorResult<PathBuf> {
     Ok(std::env::temp_dir().join("falkordb-rs-cache"))
 }
 
-/// Get the path to a cached FalkorDB module binary.
+/// Get the path a cached FalkorDB module would occupy for `version`/`platform`.
 pub fn cached_module_path(
     platform: &Platform,
+    version: &str,
     cache_dir: Option<&Path>,
 ) -> FalkorResult<PathBuf> {
     let cache_root = get_cache_dir(cache_dir)?;
     let platform_tag = platform.tag()?;
     let asset_filename = platform.asset_filename()?;
 
-    let path = cache_root
-        .join(super::provision::FALKORDB_VERSION)
+    Ok(cache_root
+        .join(version)
         .join(platform_tag)
-        .join(asset_filename);
-
-    Ok(path)
+        .join(asset_filename))
 }
 
-/// Check if a cached FalkorDB module exists.
-pub fn has_cached_module(
+/// Build the GitHub release download URL for a module asset.
+fn module_url(
     platform: &Platform,
-    cache_dir: Option<&Path>,
-) -> FalkorResult<bool> {
-    let path = cached_module_path(platform, cache_dir)?;
-    Ok(path.exists())
+    version: &str,
+) -> FalkorResult<String> {
+    Ok(format!(
+        "https://github.com/FalkorDB/FalkorDB/releases/download/{}/{}",
+        version,
+        platform.asset_filename()?
+    ))
 }
 
-/// Download FalkorDB module from GitHub releases.
+/// Compute the lowercase-hex SHA-256 of a file's contents.
+fn sha256_hex_of_file(path: &Path) -> FalkorResult<String> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        FalkorDBError::EmbeddedServerError(format!(
+            "Failed to open {} for checksum: {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buf).map_err(|e| {
+            FalkorDBError::EmbeddedServerError(format!(
+                "Failed reading {} for checksum: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(hex_encode(hasher.finalize().as_slice()))
+}
+
+/// Return the cached module path only if it exists **and**, when a checksum is
+/// pinned for `version`, its contents match that checksum.
+///
+/// A cached file that fails verification is deleted and reported as a cache miss
+/// (`Ok(None)`) so the caller re-downloads a clean copy — this keeps the
+/// integrity guarantee on cache hits, not just on the original download.
+pub fn cached_verified_module(
+    platform: &Platform,
+    version: &str,
+    cache_dir: Option<&Path>,
+) -> FalkorResult<Option<PathBuf>> {
+    let path = cached_module_path(platform, version, cache_dir)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    if let Some(expected) = provision::module_checksum(version, platform.tag()?) {
+        if !sha256_hex_of_file(&path)?.eq_ignore_ascii_case(expected) {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(
+                "Cached module at {} failed checksum verification; removing it",
+                path.display()
+            );
+            let _ = std::fs::remove_file(&path);
+            return Ok(None);
+        }
+    }
+    Ok(Some(path))
+}
+
+/// Download (or reuse the cache for) the FalkorDB module for `platform`/`version`.
+///
+/// On a cache miss the asset is streamed from the official GitHub release,
+/// verified against the pinned SHA-256 checksum when one is known for `version`,
+/// and atomically moved into the cache. Returns the path to the cached module.
 pub fn download_falkordb_module(
     platform: &Platform,
+    version: &str,
     cache_dir: Option<&Path>,
-    _timeout: Duration,
+    timeout: Duration,
 ) -> FalkorResult<PathBuf> {
-    // Check if already cached
-    if let Ok(true) = has_cached_module(platform, cache_dir) {
-        let cached_path = cached_module_path(platform, cache_dir)?;
-        tracing::debug!("Using cached FalkorDB module at: {}", cached_path.display());
-        return Ok(cached_path);
+    let final_path = cached_module_path(platform, version, cache_dir)?;
+    if let Some(path) = cached_verified_module(platform, version, cache_dir)? {
+        #[cfg(feature = "tracing")]
+        tracing::debug!("Using cached FalkorDB module at: {}", path.display());
+        return Ok(path);
     }
 
-    let asset_filename = platform.asset_filename()?;
-    let download_url = format!(
-        "https://github.com/FalkorDB/FalkorDB/releases/download/{}/{}",
-        super::provision::FALKORDB_VERSION,
-        asset_filename
-    );
+    let url = module_url(platform, version)?;
+    #[cfg(feature = "tracing")]
+    tracing::info!("Downloading FalkorDB module from: {}", url);
 
-    tracing::info!("Downloading FalkorDB module from: {}", download_url);
+    let parent = final_path.parent().ok_or_else(|| {
+        FalkorDBError::EmbeddedServerError("Invalid cache path (no parent directory)".to_string())
+    })?;
+    fs_create_dir_all(parent)?;
 
-    // For now, return a placeholder error indicating this step needs HTTP client implementation
-    Err(FalkorDBError::EmbeddedServerError(format!(
-        "FalkorDB module download not yet implemented. Please manually download from: {}",
-        download_url
-    )))
+    // Unique, hard-to-predict temp name in the target dir. Combined with the
+    // O_EXCL open below (`create_new`), this resists symlink pre-creation races
+    // when the cache dir is shared (e.g. a custom FALKORDB_RS_CACHE_DIR in /tmp).
+    let counter = DOWNLOAD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp_path = parent.join(format!(
+        ".{}.{}.{}.{}.part",
+        platform.asset_filename()?,
+        std::process::id(),
+        counter,
+        nonce
+    ));
+
+    // Fetch+verify into a temp file; clean it up on any failure.
+    let outcome = download_and_verify(&url, platform, version, &temp_path, timeout);
+    match outcome {
+        Ok(()) => {}
+        Err(err) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(err);
+        }
+    }
+
+    // Atomic publish: rename within the same directory (same filesystem).
+    std::fs::rename(&temp_path, &final_path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp_path);
+        FalkorDBError::EmbeddedServerError(format!(
+            "Failed to install downloaded module into cache at {}: {}",
+            final_path.display(),
+            e
+        ))
+    })?;
+    set_module_permissions(&final_path)?;
+
+    #[cfg(feature = "tracing")]
+    tracing::info!("Cached FalkorDB module at: {}", final_path.display());
+    Ok(final_path)
+}
+
+/// Stream `url` into `temp_path`, hashing as it goes, and verify the digest
+/// against the pinned checksum for `version` (when known).
+fn download_and_verify(
+    url: &str,
+    platform: &Platform,
+    version: &str,
+    temp_path: &Path,
+    timeout: Duration,
+) -> FalkorResult<()> {
+    use sha2::{Digest, Sha256};
+
+    let response = ureq::AgentBuilder::new()
+        .timeout_connect(timeout.min(Duration::from_secs(30)))
+        .timeout(timeout)
+        .build()
+        .get(url)
+        .call()
+        .map_err(|e| {
+            FalkorDBError::EmbeddedServerError(format!(
+                "Failed to download FalkorDB module from {url}: {e}"
+            ))
+        })?;
+
+    let mut reader = response.into_reader();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp_path)
+        .map_err(|e| {
+            FalkorDBError::EmbeddedServerError(format!(
+                "Failed to create temp file {}: {}",
+                temp_path.display(),
+                e
+            ))
+        })?;
+
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let read = reader.read(&mut buf).map_err(|e| {
+            FalkorDBError::EmbeddedServerError(format!("Failed while downloading {url}: {e}"))
+        })?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        if total > MAX_DOWNLOAD_BYTES {
+            return Err(FalkorDBError::EmbeddedServerError(format!(
+                "Download from {url} exceeded the {MAX_DOWNLOAD_BYTES} byte limit"
+            )));
+        }
+        hasher.update(&buf[..read]);
+        file.write_all(&buf[..read]).map_err(|e| {
+            FalkorDBError::EmbeddedServerError(format!(
+                "Failed writing module to {}: {}",
+                temp_path.display(),
+                e
+            ))
+        })?;
+    }
+    file.flush().map_err(|e| {
+        FalkorDBError::EmbeddedServerError(format!("Failed flushing downloaded module: {e}"))
+    })?;
+
+    let actual = hex_encode(hasher.finalize().as_slice());
+    match provision::module_checksum(version, platform.tag()?) {
+        Some(expected) if !actual.eq_ignore_ascii_case(expected) => {
+            Err(FalkorDBError::EmbeddedServerError(format!(
+                "Checksum mismatch for {}: expected {expected}, got {actual}. \
+                 The download may be corrupted or tampered with.",
+                platform.asset_filename()?
+            )))
+        }
+        Some(_) => Ok(()),
+        None => {
+            // No pinned checksum for this (overridden) version; accept as-is.
+            #[cfg(feature = "tracing")]
+            tracing::warn!("No pinned checksum for version {version}; skipping integrity check");
+            Ok(())
+        }
+    }
+}
+
+/// Create a directory tree, with a friendly embedded-server error on failure.
+fn fs_create_dir_all(dir: &Path) -> FalkorResult<()> {
+    std::fs::create_dir_all(dir).map_err(|e| {
+        FalkorDBError::EmbeddedServerError(format!(
+            "Failed to create cache directory {}: {}",
+            dir.display(),
+            e
+        ))
+    })
+}
+
+/// Make the cached module group/other-readable on Unix (loaded by redis-server).
+fn set_module_permissions(path: &Path) -> FalkorResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).map_err(|e| {
+            FalkorDBError::EmbeddedServerError(format!(
+                "Failed to set permissions on {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// Lowercase hex encoding (avoids pulling in a hex crate for one call site).
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::net::TcpListener;
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate process-global environment variables
+    /// (`HOME`, `FALKORDB_RS_CACHE_DIR`) so they don't race under the parallel
+    /// test runner.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn unique_temp(name: &str) -> PathBuf {
+        let n = DOWNLOAD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "falkordb_test_{}_{}_{}",
+            std::process::id(),
+            n,
+            name
+        ))
+    }
+
+    /// Minimal one-shot HTTP/1.1 server that returns `body` for a single
+    /// request, so the real `ureq` download path can be exercised offline.
+    fn serve_once(body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut scratch = [0u8; 1024];
+                let _ = stream.read(&mut scratch); // consume request headers
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}/falkordb-x64.so")
+    }
 
     #[test]
     fn test_get_cache_dir_with_override() {
         let override_dir = PathBuf::from("/tmp/test-cache");
         let result = get_cache_dir(Some(&override_dir));
-        assert!(result.is_ok());
         assert_eq!(result.unwrap(), override_dir);
     }
 
     #[test]
     fn test_get_cache_dir_env_var() {
-        // Set env var and verify it's used
+        let _guard = env_guard();
         let original = std::env::var("FALKORDB_RS_CACHE_DIR").ok();
         std::env::set_var("FALKORDB_RS_CACHE_DIR", "/tmp/falkordb-test");
 
         let result = get_cache_dir(None);
-        assert!(result.is_ok());
         assert_eq!(result.unwrap(), PathBuf::from("/tmp/falkordb-test"));
 
-        // Restore original
-        if let Some(val) = original {
-            std::env::set_var("FALKORDB_RS_CACHE_DIR", val);
-        } else {
-            std::env::remove_var("FALKORDB_RS_CACHE_DIR");
-        }
-    }
-
-    #[test]
-    fn test_cached_module_path() {
-        let platform = Platform::LinuxX64Glibc;
-        let cache_dir = PathBuf::from("/tmp/test-cache");
-
-        let result = cached_module_path(&platform, Some(&cache_dir));
-        assert!(result.is_ok());
-
-        let path = result.unwrap();
-        assert!(path.to_string_lossy().contains("v4.18.10"));
-        assert!(path.to_string_lossy().contains("linux-x64-glibc"));
-        assert!(path.to_string_lossy().contains("falkordb-x64.so"));
-    }
-
-    #[test]
-    fn test_cached_module_path_all_platforms() {
-        let cache_dir = PathBuf::from("/tmp/test-cache");
-
-        // Test all supported platforms
-        let platforms = [
-            Platform::LinuxX64Glibc,
-            Platform::LinuxArm64Glibc,
-            Platform::LinuxX64Musl,
-            Platform::LinuxArm64Musl,
-            Platform::AmazonLinux2023X64,
-            Platform::Rhel8X64,
-            Platform::Rhel9X64,
-            Platform::MacOSArm64,
-        ];
-
-        for platform in platforms.iter() {
-            let result = cached_module_path(platform, Some(&cache_dir));
-            assert!(result.is_ok(), "Failed for platform: {:?}", platform);
-            let path = result.unwrap();
-            assert!(path.to_string_lossy().contains("v4.18.10"));
-            assert!(path.exists() == false); // Path doesn't need to exist in unit test
-        }
-    }
-
-    #[test]
-    fn test_has_cached_module_nonexistent() {
-        let platform = Platform::LinuxX64Glibc;
-        let cache_dir = PathBuf::from("/nonexistent/path");
-
-        let result = has_cached_module(&platform, Some(&cache_dir));
-        assert!(result.is_ok());
-        assert!(!result.unwrap()); // Module should not exist
-    }
-
-    #[test]
-    fn test_download_falkordb_module_not_implemented() {
-        let platform = Platform::LinuxX64Glibc;
-        let timeout = Duration::from_secs(60);
-
-        let result = download_falkordb_module(&platform, None, timeout);
-        assert!(result.is_err()); // Should return placeholder error
-        let err_msg = format!("{:?}", result);
-        assert!(err_msg.contains("not yet implemented"));
-    }
-
-    #[test]
-    fn test_download_falkordb_module_all_platforms() {
-        let timeout = Duration::from_secs(60);
-        let platforms = [
-            Platform::LinuxX64Glibc,
-            Platform::LinuxArm64Glibc,
-            Platform::LinuxX64Musl,
-            Platform::LinuxArm64Musl,
-            Platform::AmazonLinux2023X64,
-            Platform::Rhel8X64,
-            Platform::Rhel9X64,
-            Platform::MacOSArm64,
-        ];
-
-        for platform in platforms.iter() {
-            let result = download_falkordb_module(platform, None, timeout);
-            // All should fail with "not implemented" for now
-            assert!(
-                result.is_err(),
-                "Expected error for platform: {:?}",
-                platform
-            );
+        match original {
+            Some(val) => std::env::set_var("FALKORDB_RS_CACHE_DIR", val),
+            None => std::env::remove_var("FALKORDB_RS_CACHE_DIR"),
         }
     }
 
     #[test]
     fn test_get_cache_dir_with_home_env() {
-        // Test HOME directory resolution when HOME is set
+        let _guard = env_guard();
         let original_home = std::env::var("HOME").ok();
-        let original_cache_dir = std::env::var("FALKORDB_RS_CACHE_DIR").ok();
+        let original_cache = std::env::var("FALKORDB_RS_CACHE_DIR").ok();
 
-        // Clear cache dir env var to test HOME fallback
         std::env::remove_var("FALKORDB_RS_CACHE_DIR");
         std::env::set_var("HOME", "/test/home");
 
-        let result = get_cache_dir(None);
-        assert!(result.is_ok());
-        let path = result.unwrap();
-
-        // Should include .cache/falkordb-rs or Library/Caches/falkordb-rs depending on OS
+        let path = get_cache_dir(None).unwrap();
         let path_str = path.to_string_lossy();
-        assert!(
-            path_str.contains("falkordb-rs"),
-            "Path should contain 'falkordb-rs': {}",
-            path_str
-        );
-        assert!(path_str.starts_with("/test/home"));
+        assert!(path_str.contains("falkordb-rs"), "got {path_str}");
+        assert!(path_str.starts_with("/test/home"), "got {path_str}");
 
-        // Restore originals
-        if let Some(val) = original_home {
-            std::env::set_var("HOME", val);
-        } else {
-            std::env::remove_var("HOME");
+        match original_home {
+            Some(val) => std::env::set_var("HOME", val),
+            None => std::env::remove_var("HOME"),
         }
-        if let Some(val) = original_cache_dir {
+        if let Some(val) = original_cache {
             std::env::set_var("FALKORDB_RS_CACHE_DIR", val);
         }
     }
 
     #[test]
     fn test_get_cache_dir_fallback_to_temp() {
-        // Test fallback to temp directory when HOME is not set
+        let _guard = env_guard();
         let original_home = std::env::var("HOME").ok();
-        let original_cache_dir = std::env::var("FALKORDB_RS_CACHE_DIR").ok();
+        let original_cache = std::env::var("FALKORDB_RS_CACHE_DIR").ok();
 
-        // Clear both HOME and cache dir env var to force temp_dir fallback
         std::env::remove_var("HOME");
         std::env::remove_var("FALKORDB_RS_CACHE_DIR");
 
-        let result = get_cache_dir(None);
-        assert!(result.is_ok());
-        let path = result.unwrap();
-
-        // Should use temp directory with falkordb-rs-cache suffix
-        let path_str = path.to_string_lossy();
+        let path = get_cache_dir(None).unwrap();
         assert!(
-            path_str.contains("falkordb-rs-cache"),
-            "Path should contain 'falkordb-rs-cache': {}",
-            path_str
+            path.to_string_lossy().contains("falkordb-rs-cache"),
+            "got {}",
+            path.display()
         );
 
-        // Restore originals
         if let Some(val) = original_home {
             std::env::set_var("HOME", val);
         }
-        if let Some(val) = original_cache_dir {
+        if let Some(val) = original_cache {
             std::env::set_var("FALKORDB_RS_CACHE_DIR", val);
         }
     }
 
     #[test]
-    fn test_download_falkordb_module_with_cached_module() {
-        // Test that download_falkordb_module returns cached path if it exists
-        use std::fs;
+    fn test_cached_module_path() {
+        let cache_dir = PathBuf::from("/tmp/test-cache");
+        let path = cached_module_path(
+            &Platform::LinuxX64Glibc,
+            provision::FALKORDB_VERSION,
+            Some(&cache_dir),
+        )
+        .unwrap();
+        let s = path.to_string_lossy();
+        assert!(s.contains("v4.18.10"));
+        assert!(s.contains("linux-x64-glibc"));
+        assert!(s.contains("falkordb-x64.so"));
+    }
 
-        let temp_dir =
-            std::env::temp_dir().join(format!("falkordb_test_cache_{}", std::process::id()));
-        let cache_dir = &temp_dir;
+    #[test]
+    fn test_cached_module_path_honors_version_override() {
+        let cache_dir = PathBuf::from("/tmp/test-cache");
+        let path = cached_module_path(&Platform::MacOSArm64, "v9.9.9", Some(&cache_dir)).unwrap();
+        let s = path.to_string_lossy();
+        assert!(s.contains("v9.9.9"), "version not threaded into path: {s}");
+        assert!(!s.contains("v4.18.10"));
+    }
 
-        // Create the cache structure
-        let platform = Platform::LinuxX64Glibc;
-        let cached_path = cached_module_path(&platform, Some(cache_dir)).unwrap();
-
-        // Create parent directories and the cached file
-        let _ = fs::create_dir_all(cached_path.parent().unwrap());
-        let _ = fs::File::create(&cached_path);
-
-        // Verify the cached module exists
-        if cached_path.exists() {
-            // Call download_falkordb_module with the cache_dir
-            let timeout = Duration::from_secs(60);
-            let result = download_falkordb_module(&platform, Some(cache_dir), timeout);
-
-            // Should return the cached path instead of trying to download
-            assert!(result.is_ok());
-            let returned_path = result.unwrap();
-            assert_eq!(returned_path, cached_path);
-
-            // Cleanup
-            let _ = fs::remove_file(&cached_path);
-            let _ = fs::remove_dir_all(&temp_dir);
+    #[test]
+    fn test_cached_module_path_all_platforms() {
+        let cache_dir = PathBuf::from("/tmp/test-cache");
+        for platform in [
+            Platform::LinuxX64Glibc,
+            Platform::LinuxArm64Glibc,
+            Platform::LinuxX64Musl,
+            Platform::LinuxArm64Musl,
+            Platform::AmazonLinux2023X64,
+            Platform::Rhel8X64,
+            Platform::Rhel9X64,
+            Platform::MacOSArm64,
+        ] {
+            let path = cached_module_path(&platform, provision::FALKORDB_VERSION, Some(&cache_dir))
+                .unwrap_or_else(|_| panic!("path failed for {platform:?}"));
+            assert!(path.to_string_lossy().contains("v4.18.10"));
+            assert!(!path.exists());
         }
     }
 
     #[test]
-    fn test_download_falkordb_module_constructs_correct_url() {
-        // Test that download_falkordb_module constructs correct URL even if download not implemented
-        let platform = Platform::MacOSArm64;
-        let timeout = Duration::from_secs(60);
-
-        let result = download_falkordb_module(&platform, None, timeout);
-
-        // Should fail with "not implemented" but should include proper URL
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("github.com/FalkorDB/FalkorDB"),
-            "Error message should contain GitHub URL: {}",
-            err_msg
+    fn test_cached_verified_module_absent() {
+        let result = cached_verified_module(
+            &Platform::LinuxX64Glibc,
+            provision::FALKORDB_VERSION,
+            Some(Path::new("/nonexistent/path")),
         );
-        assert!(
-            err_msg.contains("v4.18.10"),
-            "Error message should contain version: {}",
-            err_msg
-        );
+        assert_eq!(result.unwrap(), None);
     }
 
     #[test]
-    fn test_unsupported_platform_error_in_download() {
-        // Test that unsupported platform returns error in download functions
-        let unsupported = Platform::Unsupported;
-
-        let result = cached_module_path(&unsupported, None);
-        assert!(result.is_err());
-
-        let result = has_cached_module(&unsupported, None);
-        assert!(result.is_err());
-
-        let result = download_falkordb_module(&unsupported, None, Duration::from_secs(60));
-        assert!(result.is_err());
+    fn test_module_url() {
+        let url = module_url(&Platform::MacOSArm64, provision::FALKORDB_VERSION).unwrap();
+        assert_eq!(
+            url,
+            "https://github.com/FalkorDB/FalkorDB/releases/download/v4.18.10/falkordb-macos-arm64v8.so"
+        );
+        // Unsupported platforms have no asset and thus no URL.
+        assert!(module_url(&Platform::Unsupported, provision::FALKORDB_VERSION).is_err());
     }
 
     #[test]
-    fn test_macos_x64_unsupported_in_download() {
-        // Test that macOS x86_64 returns error in download functions
-        let macos_x64 = Platform::MacOSX64Unsupported;
+    fn test_hex_encode() {
+        assert_eq!(hex_encode(&[]), "");
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+    }
 
-        let result = cached_module_path(&macos_x64, None);
-        assert!(result.is_err());
+    #[test]
+    fn test_unsupported_platforms_error() {
+        for platform in [Platform::Unsupported, Platform::MacOSX64Unsupported] {
+            assert!(cached_module_path(&platform, provision::FALKORDB_VERSION, None).is_err());
+            assert!(cached_verified_module(&platform, provision::FALKORDB_VERSION, None).is_err());
+            assert!(download_falkordb_module(
+                &platform,
+                provision::FALKORDB_VERSION,
+                None,
+                Duration::from_secs(1)
+            )
+            .is_err());
+        }
+    }
 
-        let result = has_cached_module(&macos_x64, None);
-        assert!(result.is_err());
+    #[test]
+    fn test_download_returns_cached_without_network() {
+        // Pre-populate the cache; download must short-circuit (no network). An
+        // unpinned version is used so the fake bytes aren't checksum-rejected.
+        let cache_dir = unique_temp("cachehit");
+        let platform = Platform::LinuxX64Glibc;
+        let version = "v0.0.0-cachehit";
+        let cached = cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"cached module").unwrap();
 
-        let result = download_falkordb_module(&macos_x64, None, Duration::from_secs(60));
-        assert!(result.is_err());
+        let returned =
+            download_falkordb_module(&platform, version, Some(&cache_dir), Duration::from_secs(1))
+                .unwrap();
+        assert_eq!(returned, cached);
+
+        let _ = fs::remove_dir_all(&cache_dir);
+    }
+
+    #[test]
+    fn test_cached_verified_module_rejects_bad_pinned_checksum() {
+        // A cached file for the PINNED version that doesn't match its pinned
+        // checksum must be rejected (and deleted) rather than trusted.
+        let cache_dir = unique_temp("badcache");
+        let platform = Platform::LinuxX64Glibc;
+        let cached =
+            cached_module_path(&platform, provision::FALKORDB_VERSION, Some(&cache_dir)).unwrap();
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"tampered bytes").unwrap();
+
+        let result =
+            cached_verified_module(&platform, provision::FALKORDB_VERSION, Some(&cache_dir))
+                .unwrap();
+        assert!(result.is_none(), "bad pinned cache should be rejected");
+        assert!(!cached.exists(), "rejected cache file should be removed");
+
+        let _ = fs::remove_dir_all(&cache_dir);
+    }
+
+    #[test]
+    fn test_cached_verified_module_accepts_unpinned_version() {
+        // Without a pinned checksum (overridden version) any cached file is
+        // accepted as-is.
+        let cache_dir = unique_temp("unpinnedcache");
+        let platform = Platform::LinuxX64Glibc;
+        let version = "v0.0.0-unpinned";
+        let cached = cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"whatever").unwrap();
+
+        let result = cached_verified_module(&platform, version, Some(&cache_dir)).unwrap();
+        assert_eq!(result, Some(cached));
+
+        let _ = fs::remove_dir_all(&cache_dir);
+    }
+
+    #[test]
+    fn test_sha256_hex_of_file() {
+        // SHA-256 of the empty input is a well-known constant.
+        let path = unique_temp("empty");
+        fs::write(&path, b"").unwrap();
+        assert_eq!(
+            sha256_hex_of_file(&path).unwrap(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_download_and_verify_detects_checksum_mismatch() {
+        // A known platform/version has a pinned checksum; serving the wrong
+        // bytes must be rejected.
+        let url = serve_once(b"definitely not the real module".to_vec());
+        let temp = unique_temp("mismatch.part");
+        let err = download_and_verify(
+            &url,
+            &Platform::LinuxX64Glibc,
+            provision::FALKORDB_VERSION,
+            &temp,
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("Checksum mismatch"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn test_download_and_verify_skips_unknown_version() {
+        // An unknown (overridden) version has no pinned checksum, so the body
+        // is accepted and written verbatim.
+        let body = b"arbitrary module bytes".to_vec();
+        let url = serve_once(body.clone());
+        let temp = unique_temp("unknown.part");
+        download_and_verify(
+            &url,
+            &Platform::LinuxX64Glibc,
+            "v0.0.0-test",
+            &temp,
+            Duration::from_secs(10),
+        )
+        .expect("unknown version should skip checksum verification");
+        assert_eq!(fs::read(&temp).unwrap(), body);
+        let _ = fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn test_download_full_install_and_cache_reuse() {
+        // End-to-end against a local server: first call downloads + installs
+        // atomically, second call reuses the cache. Uses an unknown version so
+        // no real checksum is required.
+        let body = b"local module payload".to_vec();
+        let url = serve_once(body.clone());
+        let cache_dir = unique_temp("install");
+        let platform = Platform::LinuxX64Glibc;
+        let version = "v0.0.0-local";
+        let final_path = cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
+        let parent = final_path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+
+        // Drive the install path directly via download_and_verify + the same
+        // atomic publish the production code performs.
+        let temp = parent.join(".install.part");
+        download_and_verify(&url, &platform, version, &temp, Duration::from_secs(10)).unwrap();
+        fs::rename(&temp, &final_path).unwrap();
+        assert_eq!(fs::read(&final_path).unwrap(), body);
+
+        // Now download_falkordb_module must reuse it without contacting a server.
+        let reused =
+            download_falkordb_module(&platform, version, Some(&cache_dir), Duration::from_secs(1))
+                .unwrap();
+        assert_eq!(reused, final_path);
+
+        let _ = fs::remove_dir_all(&cache_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_set_module_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = unique_temp("perms.so");
+        fs::write(&path, b"x").unwrap();
+        set_module_permissions(&path).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644);
+        let _ = fs::remove_file(&path);
+    }
+
+    /// Opt-in live download against the real GitHub release (network + ~30 MiB).
+    /// Enable with `FALKORDB_RS_TEST_DOWNLOAD=1`; verifies the pinned checksum
+    /// for the host platform and that a second call hits the cache.
+    #[test]
+    fn test_live_download_real_module() {
+        if std::env::var("FALKORDB_RS_TEST_DOWNLOAD").is_err() {
+            eprintln!("skipping live download test (set FALKORDB_RS_TEST_DOWNLOAD=1 to run)");
+            return;
+        }
+        let platform = Platform::detect();
+        if platform.tag().is_err() {
+            eprintln!("skipping live download test on unsupported platform {platform:?}");
+            return;
+        }
+        let cache_dir = unique_temp("live");
+        let path = download_falkordb_module(
+            &platform,
+            provision::FALKORDB_VERSION,
+            Some(&cache_dir),
+            Duration::from_secs(600),
+        )
+        .expect("live download failed");
+        assert!(path.exists());
+
+        let again = download_falkordb_module(
+            &platform,
+            provision::FALKORDB_VERSION,
+            Some(&cache_dir),
+            Duration::from_secs(1),
+        )
+        .expect("cache reuse failed");
+        assert_eq!(path, again);
+
+        let _ = fs::remove_dir_all(&cache_dir);
     }
 }

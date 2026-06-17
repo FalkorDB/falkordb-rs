@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.4.0...v0.5.0) - 2026-06-17
+
+### Added
+
+- [**breaking**] self-contained embedded FalkorDB with platform detection and caching ([#226](https://github.com/FalkorDB/falkordb-rs/pull/226))
+
+### Other
+
+- use `cargo add` for install instructions ([#228](https://github.com/FalkorDB/falkordb-rs/pull/228))
+
 ## [0.4.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.3.0...v0.4.0) - 2026-06-17
 
 ### Added

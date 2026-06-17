@@ -300,6 +300,65 @@ mod async_tests {
 
         let _ = graph.delete().await;
     }
+
+    #[cfg(feature = "serde")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_query_as() {
+        use serde::Deserialize;
+
+        if skip_if_no_server() {
+            return;
+        }
+
+        let conn_info = match get_test_connection_info() {
+            Ok(info) => info,
+            Err(_) => return,
+        };
+
+        let client = match falkordb::FalkorClientBuilder::new_async()
+            .with_connection_info(conn_info)
+            .build()
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Movie {
+            title: String,
+            year: i64,
+        }
+
+        let mut graph = client.select_graph("test_async_query_as");
+        let _ = graph.delete().await;
+
+        graph
+            .query("CREATE (:Movie {title: 'Heat', year: 1995})")
+            .execute()
+            .await
+            .expect("create should succeed");
+
+        let movies: Vec<Movie> = graph
+            .query("MATCH (m:Movie) RETURN m")
+            .query_as::<Movie>()
+            .execute()
+            .await
+            .expect("query should succeed")
+            .data
+            .collect::<Result<_, _>>()
+            .expect("row mapping should succeed");
+
+        assert_eq!(
+            movies,
+            vec![Movie {
+                title: "Heat".to_string(),
+                year: 1995,
+            }]
+        );
+
+        let _ = graph.delete().await;
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -397,6 +456,154 @@ mod serde_typed_mapping {
             .deserialize_into()
             .expect("deserialize should succeed");
         assert_eq!(number, 42);
+
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_query_as_node_rows() {
+        if skip_if_no_server() {
+            return;
+        }
+
+        let conn_info = match get_test_connection_info() {
+            Ok(info) => info,
+            Err(_) => return,
+        };
+
+        let client = match FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let mut graph = client.select_graph("test_serde_query_as_nodes");
+        let _ = graph.delete();
+
+        graph
+            .query(
+                "CREATE (:Movie {title: 'Heat', year: 1995, rating: 8.3}), \
+                 (:Movie {title: 'Casino', year: 1995})",
+            )
+            .execute()
+            .expect("create should succeed");
+
+        let mut movies: Vec<Movie> = graph
+            .query("MATCH (m:Movie) RETURN m")
+            .query_as::<Movie>()
+            .execute()
+            .expect("query should succeed")
+            .data
+            .collect::<Result<_, _>>()
+            .expect("row mapping should succeed");
+
+        movies.sort_by(|a, b| a.title.cmp(&b.title));
+        assert_eq!(
+            movies,
+            vec![
+                Movie {
+                    title: "Casino".to_string(),
+                    year: 1995,
+                    rating: None,
+                },
+                Movie {
+                    title: "Heat".to_string(),
+                    year: 1995,
+                    rating: Some(8.3),
+                },
+            ]
+        );
+
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_query_as_multi_column_aliased() {
+        if skip_if_no_server() {
+            return;
+        }
+
+        let conn_info = match get_test_connection_info() {
+            Ok(info) => info,
+            Err(_) => return,
+        };
+
+        let client = match FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let mut graph = client.select_graph("test_serde_query_as_aliased");
+        let _ = graph.delete();
+
+        graph
+            .query("CREATE (:Movie {title: 'Heat', year: 1995})")
+            .execute()
+            .expect("create should succeed");
+
+        let rows: Vec<Movie> = graph
+            .query("MATCH (m:Movie) RETURN m.title AS title, m.year AS year")
+            .query_as::<Movie>()
+            .execute()
+            .expect("query should succeed")
+            .data
+            .collect::<Result<_, _>>()
+            .expect("row mapping should succeed");
+
+        assert_eq!(
+            rows,
+            vec![Movie {
+                title: "Heat".to_string(),
+                year: 1995,
+                rating: None,
+            }]
+        );
+
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_query_as_scalar_rows() {
+        if skip_if_no_server() {
+            return;
+        }
+
+        let conn_info = match get_test_connection_info() {
+            Ok(info) => info,
+            Err(_) => return,
+        };
+
+        let client = match FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let mut graph = client.select_graph("test_serde_query_as_scalar");
+        let _ = graph.delete();
+
+        graph
+            .query("CREATE (:Movie {title: 'Heat', year: 1995})")
+            .execute()
+            .expect("create should succeed");
+
+        let counts: Vec<i64> = graph
+            .query("MATCH (m:Movie) RETURN count(m)")
+            .query_as::<i64>()
+            .execute()
+            .expect("query should succeed")
+            .data
+            .collect::<Result<_, _>>()
+            .expect("row mapping should succeed");
+
+        assert_eq!(counts, vec![1]);
 
         let _ = graph.delete();
     }

@@ -52,7 +52,9 @@ pub use value::{
 };
 
 #[cfg(feature = "serde")]
-pub use value::{from_falkor_value, FalkorValueDeserializer};
+pub use response::typed_result_set::TypedLazyResultSet;
+#[cfg(feature = "serde")]
+pub use value::{from_falkor_row, from_falkor_value, FalkorValueDeserializer};
 
 #[cfg(feature = "tokio")]
 pub use client::asynchronous::FalkorAsyncClient;

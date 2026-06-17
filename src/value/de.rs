@@ -43,6 +43,38 @@ where
     T::deserialize(value.into_deserializer())
 }
 
+/// Deserialize a single result row into any type that implements [`serde::Deserialize`].
+///
+/// A row is the `header` (the column aliases) zipped with its `values`. This powers
+/// [`crate::QueryBuilder::query_as`] and is also useful directly when you already hold a
+/// header and a row.
+///
+/// # Mapping
+///
+/// - A **single-column** row deserializes as that one column's value, using the same rules as
+///   [`from_falkor_value`]. This is the common case: `RETURN m` maps the node, `RETURN n.name`
+///   and `RETURN 42` map the scalar.
+/// - A **multi-column** row deserializes as a map from column name to value (for structs and
+///   maps) or as a sequence (for tuples and [`Vec`]). Column names come from `header`, so use
+///   query aliases (`RETURN m.title AS title`) to match struct field names.
+///
+/// # Errors
+///
+/// Returns [`FalkorDBError::SerdeError`] if the row cannot be mapped onto the target type.
+pub fn from_falkor_row<T>(
+    header: &[String],
+    mut values: Vec<FalkorValue>,
+) -> FalkorResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    if values.len() == 1 {
+        let value = values.pop().expect("length checked to be exactly one");
+        return T::deserialize(value.into_deserializer());
+    }
+    T::deserialize(RowDeserializer { header, values })
+}
+
 impl FalkorValue {
     /// Deserialize this [`FalkorValue`] into any type that implements [`serde::Deserialize`].
     ///
@@ -262,6 +294,81 @@ impl<'de> VariantAccess<'de> for VariantValueAccess {
         V: Visitor<'de>,
     {
         self.value.into_deserializer().deserialize_any(visitor)
+    }
+}
+
+/// A [`serde::Deserializer`] over a single multi-column result row, pairing the result
+/// `header` with the row's `values`.
+///
+/// Single-column rows are unwrapped by [`from_falkor_row`] before this is constructed, so this
+/// only handles rows with two or more columns: structs and maps are built from the
+/// column-name/value pairs, while tuples and sequences consume the values in order.
+struct RowDeserializer<'h> {
+    header: &'h [String],
+    values: Vec<FalkorValue>,
+}
+
+impl<'de> Deserializer<'de> for RowDeserializer<'_> {
+    type Error = FalkorDBError;
+
+    fn deserialize_any<V>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        SeqDeserializer::new(self.values.into_iter()).deserialize_any(visitor)
+    }
+
+    fn deserialize_map<V>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let pairs = self.header.iter().cloned().zip(self.values);
+        MapDeserializer::new(pairs).deserialize_any(visitor)
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_map(visitor)
+    }
+
+    fn deserialize_option<V>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+
+    forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf unit unit_struct seq tuple tuple_struct enum identifier
+        ignored_any
     }
 }
 
@@ -495,6 +602,98 @@ mod tests {
     #[test]
     fn test_deserialize_enum_from_invalid_value_is_error() {
         let err = FalkorValue::I64(1).deserialize_into::<Genre>().unwrap_err();
+        assert!(matches!(err, FalkorDBError::SerdeError(_)));
+    }
+
+    #[test]
+    fn test_row_single_column_node_into_struct() {
+        let mut properties = HashMap::new();
+        properties.insert("title".to_string(), FalkorValue::String("Heat".to_string()));
+        properties.insert("year".to_string(), FalkorValue::I64(1995));
+        let node = FalkorValue::Node(Node {
+            entity_id: 1,
+            labels: vec!["Movie".to_string()],
+            properties,
+        });
+
+        let movie: Movie = from_falkor_row(&["m".to_string()], vec![node]).unwrap();
+        assert_eq!(
+            movie,
+            Movie {
+                title: "Heat".to_string(),
+                year: 1995,
+                rating: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_row_single_column_scalar() {
+        let value: i64 =
+            from_falkor_row(&["count(*)".to_string()], vec![FalkorValue::I64(42)]).unwrap();
+        assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn test_row_single_column_none_into_option() {
+        let value: Option<i64> =
+            from_falkor_row(&["x".to_string()], vec![FalkorValue::None]).unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn test_row_multi_column_into_struct_by_header() {
+        let header = ["title".to_string(), "year".to_string()];
+        let values = vec![
+            FalkorValue::String("Heat".to_string()),
+            FalkorValue::I64(1995),
+        ];
+        let movie: Movie = from_falkor_row(&header, values).unwrap();
+        assert_eq!(
+            movie,
+            Movie {
+                title: "Heat".to_string(),
+                year: 1995,
+                rating: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_row_multi_column_into_tuple() {
+        let header = ["a".to_string(), "b".to_string()];
+        let values = vec![FalkorValue::I64(1), FalkorValue::String("two".to_string())];
+        let pair: (i64, String) = from_falkor_row(&header, values).unwrap();
+        assert_eq!(pair, (1, "two".to_string()));
+    }
+
+    #[test]
+    fn test_row_multi_column_into_map() {
+        let header = ["a".to_string(), "b".to_string()];
+        let values = vec![FalkorValue::I64(1), FalkorValue::I64(2)];
+        let map: HashMap<String, i64> = from_falkor_row(&header, values).unwrap();
+        assert_eq!(map.get("a"), Some(&1));
+        assert_eq!(map.get("b"), Some(&2));
+    }
+
+    #[test]
+    fn test_row_missing_struct_field_is_error() {
+        // The `year` column is absent, so the non-optional field cannot be filled.
+        let header = ["title".to_string()];
+        let values = vec![
+            FalkorValue::String("Heat".to_string()),
+            FalkorValue::I64(1995),
+        ];
+        assert!(from_falkor_row::<Movie>(&header, values).is_err());
+    }
+
+    #[test]
+    fn test_row_single_column_unparseable_is_error() {
+        let err = from_falkor_row::<i64>(
+            &["x".to_string()],
+            vec![FalkorValue::Unparseable("boom".to_string())],
+        )
+        .unwrap_err();
         assert!(matches!(err, FalkorDBError::SerdeError(_)));
     }
 }

@@ -397,6 +397,27 @@ for row in result.data.by_ref() {
 
 A runnable version lives in [`examples/typed_mapping.rs`](examples/typed_mapping.rs).
 
+To map a whole result set in one shot, call `query_as::<T>()` before `execute()`. Each row is
+deserialized into a `T`, and the result's `data` becomes an iterator of `FalkorResult<T>`, so it
+collects directly into a `Vec`:
+
+```rust,ignore
+let movies: Vec<Movie> = graph
+    .query("MATCH (m:Movie) RETURN m")
+    .query_as::<Movie>()
+    .execute()
+    .expect("Failed executing query")
+    .data
+    .collect::<Result<_, _>>()
+    .expect("Failed mapping rows");
+```
+
+A single-column row (such as `RETURN m`) is deserialized from that one column's value, so a node
+maps from its properties and `RETURN count(m)` maps a scalar. A multi-column row (such as
+`RETURN m.title AS title, m.year AS year`) maps each column alias onto the matching struct field,
+or yields the values in order for a tuple. The query `header` and `stats` remain available on the
+returned result.
+
 ### Embedded FalkorDB Server
 
 This client supports running an embedded FalkorDB server, which is useful for:

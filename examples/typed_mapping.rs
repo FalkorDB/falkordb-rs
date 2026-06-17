@@ -9,7 +9,7 @@
 //!
 //! Requires a running FalkorDB instance (defaults to `127.0.0.1:6379`).
 
-use falkordb::{FalkorClientBuilder, FalkorConnectionInfo, FalkorValue};
+use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -36,24 +36,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .query("CREATE (:Movie {title: 'Heat', year: 1995, rating: 8.3})")
         .execute()?;
 
+    // ── Value-level mapping ──────────────────────────────────────────────────
     // Without typed mapping you would hand-match every `FalkorValue` variant.
-    // With the `serde` feature, deserialize a returned node straight into a struct:
+    // With the `serde` feature, deserialize a single returned value into a struct:
     let mut result = graph.query("MATCH (m:Movie) RETURN m").execute()?;
     for row in result.data.by_ref() {
         if let Some(node) = row.into_iter().next() {
             let movie: Movie = node.deserialize_into()?;
-            println!("{} ({}) rating={:?}", movie.title, movie.year, movie.rating);
+            println!(
+                "value:   {} ({}) rating={:?}",
+                movie.title, movie.year, movie.rating
+            );
         }
     }
 
-    // Scalars and collections work too:
-    let mut titles = graph.query("MATCH (m:Movie) RETURN m.title").execute()?;
-    for row in titles.data.by_ref() {
-        if let Some(FalkorValue::String(_)) = row.first() {
-            let title: String = row.into_iter().next().unwrap().deserialize_into()?;
-            println!("title = {title}");
-        }
+    // ── Row-level mapping with `query_as` ────────────────────────────────────
+    // Map every row in one shot. A single-column `RETURN m` maps the node's properties:
+    let movies: Vec<Movie> = graph
+        .query("MATCH (m:Movie) RETURN m")
+        .query_as::<Movie>()
+        .execute()?
+        .data
+        .collect::<Result<_, _>>()?;
+    for movie in &movies {
+        println!("row:     {} ({})", movie.title, movie.year);
     }
+
+    // Multi-column rows map column aliases onto struct fields:
+    let summaries: Vec<Movie> = graph
+        .query("MATCH (m:Movie) RETURN m.title AS title, m.year AS year")
+        .query_as::<Movie>()
+        .execute()?
+        .data
+        .collect::<Result<_, _>>()?;
+    for movie in &summaries {
+        println!("aliased: {} ({})", movie.title, movie.year);
+    }
+
+    // Scalars work too — `RETURN count(m)` is a single-column row:
+    let counts: Vec<i64> = graph
+        .query("MATCH (m:Movie) RETURN count(m)")
+        .query_as::<i64>()
+        .execute()?
+        .data
+        .collect::<Result<_, _>>()?;
+    println!("count:   {counts:?}");
 
     graph.delete()?;
     Ok(())

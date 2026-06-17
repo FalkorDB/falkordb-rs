@@ -20,7 +20,7 @@ pub(crate) mod vec32;
 mod de;
 
 #[cfg(feature = "serde")]
-pub use de::{from_falkor_value, FalkorValueDeserializer};
+pub use de::{from_falkor_row, from_falkor_value, FalkorValueDeserializer};
 
 /// An enum of all the supported Falkor types
 #[derive(Clone, Debug, PartialEq)]

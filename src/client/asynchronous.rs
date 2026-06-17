@@ -594,6 +594,7 @@ mod tests {
         },
         FalkorClientBuilder,
     };
+    use futures::StreamExt;
     use std::{
         mem,
         num::{NonZeroU8, NonZeroUsize},
@@ -643,7 +644,7 @@ mod tests {
             .await
             .expect("Could not read over the multiplexed client");
         assert!(
-            result.data.next().is_some(),
+            result.data.next().await.is_some(),
             "Expected the multiplexed read-only query to return a row"
         );
         graph.delete().await.ok();
@@ -827,7 +828,7 @@ mod tests {
             .await
             .expect("Could not read Jane via ro_query");
         assert!(
-            result.data.next().is_some(),
+            result.data.next().await.is_some(),
             "Expected the read-only query to return Jane"
         );
 
@@ -975,7 +976,7 @@ mod tests {
             .await
             .expect("Could not get actors from unmodified graph");
 
-        assert_eq!(res.data.collect::<Vec<_>>().len(), 1317);
+        assert_eq!(res.data.collect::<Vec<_>>().await.len(), 1317);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -990,7 +991,8 @@ mod tests {
             .await
             .expect("Could not get actors from unmodified graph")
             .data
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+            .await;
 
         // Ensure the copied graph is cleaned up even if an assertion panics,
         // so leftover state cannot interfere with other parallel tests.
@@ -1022,6 +1024,7 @@ mod tests {
                     .expect("Could not get actors from copied graph")
                     .data
                     .collect::<Vec<_>>()
+                    .await
             },
             |rows| rows == &expected,
         )
@@ -1041,7 +1044,8 @@ mod tests {
             .await
             .expect("Could not get actors from unmodified graph")
             .data
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+            .await;
 
         let _copy_guard = TestAsyncGraphHandle {
             inner: client.select_graph("imdb_op_copy_async_wait"),
@@ -1069,6 +1073,7 @@ mod tests {
                     .expect("Could not get actors from copied graph")
                     .data
                     .collect::<Vec<_>>()
+                    .await
             },
             |rows| rows == &expected,
         )
@@ -1103,7 +1108,8 @@ mod tests {
                         .execute()
                         .await?
                         .data
-                        .collect::<Vec<_>>(),
+                        .collect::<Vec<_>>()
+                        .await,
                 )
             },
             |rows| matches!(rows, Ok(rows) if !rows.is_empty()),

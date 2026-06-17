@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     AsyncGraph, ConstraintType, EntityType, FalkorAsyncClient, FalkorResult, IndexType,
-    LazyResultSet, QueryResult,
+    QueryResult, RowStream,
 };
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -39,7 +39,7 @@ impl<'a> AsyncIndexOpBuilder<'a> {
     }
 
     /// Issues the index command without waiting (identical to the eager `create_index`/`drop_index`).
-    pub async fn execute(self) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
+    pub async fn execute(self) -> FalkorResult<QueryResult<RowStream>> {
         run_index_command(self.graph, &self.op).await
     }
 
@@ -163,10 +163,10 @@ impl<'a> AsyncCopyGraphBuilder<'a> {
     }
 }
 
-async fn run_index_command<'a>(
-    graph: &'a mut AsyncGraph,
+async fn run_index_command(
+    graph: &mut AsyncGraph,
     op: &IndexOp,
-) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
+) -> FalkorResult<QueryResult<RowStream>> {
     match op {
         IndexOp::Create {
             index_type,

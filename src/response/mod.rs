@@ -14,9 +14,13 @@ pub(crate) mod lazy_result_set;
 pub(crate) mod row;
 #[cfg(test)]
 mod row_proptest;
+#[cfg(feature = "tokio")]
+pub(crate) mod row_stream;
 pub(crate) mod slowlog_entry;
 #[cfg(feature = "serde")]
 pub(crate) mod typed_result_set;
+#[cfg(all(feature = "serde", feature = "tokio"))]
+pub(crate) mod typed_row_stream;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, strum::IntoStaticStr)]
 enum StatisticType {
@@ -174,6 +178,19 @@ impl<'a> QueryResult<crate::LazyResultSet<'a>> {
     pub(crate) fn into_typed<T>(self) -> QueryResult<typed_result_set::TypedLazyResultSet<'a, T>> {
         QueryResult {
             data: typed_result_set::TypedLazyResultSet::new(self.data),
+            header: self.header,
+            stats: self.stats,
+        }
+    }
+}
+
+#[cfg(all(feature = "serde", feature = "tokio"))]
+impl QueryResult<crate::RowStream> {
+    /// Convert this owned result set into one whose rows are deserialized into `T` on demand,
+    /// preserving the [`header`](Self::header) and [`stats`](Self::stats).
+    pub(crate) fn into_typed<T>(self) -> QueryResult<crate::TypedRowStream<T>> {
+        QueryResult {
+            data: typed_row_stream::TypedRowStream::new(self.data),
             header: self.header,
             stats: self.stats,
         }

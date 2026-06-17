@@ -35,12 +35,12 @@ impl Path {
         Ok(Self {
             nodes: redis_value_as_vec(nodes)?
                 .into_iter()
-                .flat_map(|node| Node::parse(node, graph_schema))
-                .collect(),
+                .map(|node| Node::parse(node, graph_schema))
+                .collect::<FalkorResult<Vec<_>>>()?,
             relationships: redis_value_as_vec(relationships)?
                 .into_iter()
-                .flat_map(|edge| Edge::parse(edge, graph_schema))
-                .collect(),
+                .map(|edge| Edge::parse(edge, graph_schema))
+                .collect::<FalkorResult<Vec<_>>>()?,
         })
     }
 }
@@ -104,6 +104,50 @@ mod tests {
         let path1 = Path::default();
         let path2 = Path::default();
         assert_eq!(path1, path2);
+    }
+
+    #[test]
+    fn test_path_parse_propagates_node_error() {
+        // A node value must be a 3-element array; this one has a single element, so `Node::parse`
+        // fails. `Path::parse` must surface that error instead of silently dropping the node and
+        // returning a truncated path.
+        let malformed_node = redis::Value::Array(vec![redis::Value::Int(1)]);
+        let path_value = redis::Value::Array(vec![
+            redis::Value::Array(vec![malformed_node]),
+            redis::Value::Array(vec![]),
+        ]);
+
+        let mut graph_schema = GraphSchema::new(
+            "test_path_parse_propagates_node_error",
+            crate::client::blocking::create_empty_inner_sync_client(),
+        );
+
+        let result = Path::parse(path_value, &mut graph_schema);
+        assert!(
+            matches!(
+                result,
+                Err(FalkorDBError::ParsingArrayToStructElementCount(_))
+            ),
+            "expected the node parse error to propagate, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_path_parse_propagates_relationship_error() {
+        // The relationships side must propagate errors too: an edge value that is not the expected
+        // array shape must fail the whole path parse rather than being dropped.
+        let malformed_edge = redis::Value::Int(7);
+        let path_value = redis::Value::Array(vec![
+            redis::Value::Array(vec![]),
+            redis::Value::Array(vec![malformed_edge]),
+        ]);
+
+        let mut graph_schema = GraphSchema::new(
+            "test_path_parse_propagates_relationship_error",
+            crate::client::blocking::create_empty_inner_sync_client(),
+        );
+
+        assert!(Path::parse(path_value, &mut graph_schema).is_err());
     }
 
     #[test]

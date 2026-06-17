@@ -6,6 +6,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- [**breaking**] async-native streaming results: on the async client, `QueryResult::data` is now a
+  `RowStream` — an owned `Stream<Item = FalkorResult<Row>>` that is `Send + 'static`. It can be
+  moved into a spawned task and driven with the full `futures::StreamExt` / `TryStreamExt` toolbox
+  (`.next().await`, `.try_collect().await`, `.map(..).buffer_unordered(n)`, etc.). With `serde`,
+  `query_as::<T>()` yields a `TypedRowStream<T>` (a `Stream<Item = FalkorResult<T>>`).
+- `RowStream::into_values_lossy`: opt-in escape hatch yielding `Vec<FalkorValue>` rows (mirrors the
+  sync `LazyResultSet::into_values_lossy`).
+
+### Changed
+
+- **Not backward compatible (async only):** the async result iterator is now a `Stream`, not an
+  `Iterator`. Pulling rows requires `.await` plus the relevant extension trait in scope
+  (`use futures::StreamExt;` / `use futures::TryStreamExt;`). The synchronous client is unchanged
+  (`LazyResultSet` is still a fallible `Iterator`). See the
+  **[0.8 migration guide](docs/migrating-to-0.8.md)** for step-by-step upgrade instructions.
+  Quick reference:
+
+  | Before (≤ 0.7, async) | After (0.8, async) |
+  | --- | --- |
+  | `while let Some(row) = result.data.next() {` | `while let Some(row) = result.data.next().await {` (with `use futures::StreamExt;`) |
+  | `result.data.collect::<FalkorResult<Vec<_>>>()` | `result.data.try_collect::<Vec<_>>().await` (with `use futures::TryStreamExt;`) |
+  | wrap the graph in `Arc<Mutex<_>>` to share across tasks | clone the graph (cheap; shares the schema cache) |
+  | `let result = graph.query(..).execute().await?;` borrowed the graph for the result's lifetime | the `RowStream` is owned (`Send + 'static`); move it into a task freely |
+
+- **Not backward compatible (async only):** `AsyncGraph` now holds its schema cache behind a shared
+  handle, so cloning an `AsyncGraph` shares one schema cache (previously each clone was independent).
+  This makes concurrent streams from clones consistent and is what lets a cloned handle be used from
+  a spawned task without `Arc<Mutex<_>>`.
+
+
 ## [0.7.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.6.0...v0.7.0) - 2026-06-17
 
 ### Added

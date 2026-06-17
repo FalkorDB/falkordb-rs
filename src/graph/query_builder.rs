@@ -16,10 +16,12 @@ use std::{
 };
 
 #[cfg(feature = "tokio")]
-use crate::AsyncGraph;
+use crate::{AsyncGraph, RowStream};
 
 #[cfg(feature = "serde")]
 use crate::TypedLazyResultSet;
+#[cfg(all(feature = "serde", feature = "tokio"))]
+use crate::TypedRowStream;
 
 /// Builds a [`QueryResult`] over a [`LazyResultSet`] from an already-parsed header and the raw row
 /// values, sharing one `Arc` header with the result set.
@@ -33,12 +35,44 @@ fn build_lazy_query_result<'g>(
     QueryResult::from_response(header, data, stats)
 }
 
+/// Builds a [`QueryResult`] over an owned [`RowStream`] by eagerly parsing every row against
+/// `graph_schema`, so the result is decoupled from later changes to the graph's schema.
+#[cfg(feature = "tokio")]
+fn build_row_stream_result(
+    header: Arc<[String]>,
+    rows: Vec<redis::Value>,
+    stats: redis::Value,
+    graph_schema: &mut GraphSchema,
+) -> FalkorResult<QueryResult<crate::RowStream>> {
+    let data = crate::RowStream::parse(Arc::clone(&header), rows, graph_schema);
+    QueryResult::from_response(header, data, stats)
+}
+
+/// Unwraps a top-level query reply: a `ServerError` becomes a [`FalkorDBError::RedisError`],
+/// otherwise the reply is read as the response array.
+fn unwrap_query_response(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
+    if let redis::Value::ServerError(e) = value {
+        return Err(FalkorDBError::RedisError(
+            e.details().unwrap_or("Unknown error").to_string(),
+        ));
+    }
+    redis_value_as_vec(value)
+}
+
 /// Turns the top-level query response array into a [`QueryResult`]: one element is stats only, two
-/// is a header with no rows, three is header + rows + stats. Any other length is malformed.
-fn dispatch_query_response<'g>(
+/// is a header with no rows, three is header + rows + stats. Any other length is malformed. The
+/// `build` closure constructs the concrete result set (sync [`LazyResultSet`] or async
+/// [`RowStream`](crate::RowStream)) from the parsed header, rows, stats, and `schema` handle.
+fn dispatch_query_response<S, D>(
     res: Vec<redis::Value>,
-    graph_schema: &'g mut GraphSchema,
-) -> FalkorResult<QueryResult<LazyResultSet<'g>>> {
+    schema: S,
+    build: impl FnOnce(
+        Arc<[String]>,
+        Vec<redis::Value>,
+        redis::Value,
+        S,
+    ) -> FalkorResult<QueryResult<D>>,
+) -> FalkorResult<QueryResult<D>> {
     match res.len() {
         1 => {
             let stats =
@@ -48,7 +82,7 @@ fn dispatch_query_response<'g>(
                         "One element exists but using next() failed",
                     ))?;
 
-            build_lazy_query_result(Vec::new().into(), Vec::new(), stats, graph_schema)
+            build(Vec::new().into(), Vec::new(), stats, schema)
         }
         2 => {
             // The match arm guarantees the length, so the fixed-size conversion cannot fail.
@@ -56,7 +90,7 @@ fn dispatch_query_response<'g>(
                 res.try_into().expect("length checked to be exactly two");
 
             let header: Arc<[String]> = parse_header(header)?.into();
-            build_lazy_query_result(header, Vec::new(), stats, graph_schema)
+            build(header, Vec::new(), stats, schema)
         }
         3 => {
             let [header, data, stats]: [redis::Value; 3] =
@@ -64,7 +98,7 @@ fn dispatch_query_response<'g>(
 
             let header: Arc<[String]> = parse_header(header)?.into();
             let rows = redis_value_as_vec(data)?;
-            build_lazy_query_result(header, rows, stats, graph_schema)
+            build(header, rows, stats, schema)
         }
         _ => Err(FalkorDBError::ParsingArrayToStructElementCount(
             "Invalid number of elements returned from query",
@@ -87,7 +121,7 @@ pub(crate) fn construct_query<Q: Display>(
 }
 
 /// A Builder-pattern struct that allows creating and executing queries on a graph
-pub struct QueryBuilder<'a, Output, T: Display, G: HasGraphSchema> {
+pub struct QueryBuilder<'a, Output, T: Display, G> {
     _unused: PhantomData<Output>,
     graph: &'a mut G,
     command: &'a str,
@@ -96,7 +130,7 @@ pub struct QueryBuilder<'a, Output, T: Display, G: HasGraphSchema> {
     timeout: Option<i64>,
 }
 
-impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
+impl<'a, Output, T: Display, G> QueryBuilder<'a, Output, T, G> {
     pub(crate) fn new(
         graph: &'a mut G,
         command: &'a str,
@@ -185,19 +219,18 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
             ..self
         }
     }
+}
 
+impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
     fn generate_query_result_set(
         self,
         value: redis::Value,
     ) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
-        if let redis::Value::ServerError(e) = value {
-            return Err(FalkorDBError::RedisError(
-                e.details().unwrap_or("Unknown error").to_string(),
-            ));
-        }
-
-        let res = redis_value_as_vec(value)?;
-        dispatch_query_response(res, self.graph.get_graph_schema_mut())
+        dispatch_query_response(
+            unwrap_query_response(value)?,
+            self.graph.get_graph_schema_mut(),
+            build_lazy_query_result,
+        )
     }
 }
 
@@ -270,6 +303,22 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
             )
             .await
     }
+
+    /// Eagerly parses the reply into an owned [`RowStream`] under the schema write lock, so the
+    /// result outlives the borrow of the graph, is `Send + 'static`, and is decoupled from any
+    /// later change to the graph's schema.
+    fn generate_async_result_set(
+        self,
+        value: redis::Value,
+    ) -> FalkorResult<QueryResult<RowStream>> {
+        let schema = self.graph.schema_handle();
+        let mut guard = schema.write();
+        dispatch_query_response(
+            unwrap_query_response(value)?,
+            &mut *guard,
+            build_row_stream_result,
+        )
+    }
 }
 
 impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, SyncGraph> {
@@ -285,16 +334,17 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, SyncGra
 }
 
 #[cfg(feature = "tokio")]
-impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, AsyncGraph> {
-    /// Executes the query, retuning a [`QueryResult`], with a [`LazyResultSet`] as its `data` member
+impl<'a, T: Display> QueryBuilder<'a, QueryResult<RowStream>, T, AsyncGraph> {
+    /// Executes the query, returning a [`QueryResult`] whose `data` is an owned [`RowStream`] — a
+    /// `Send + 'static` [`futures_core::Stream`] of `FalkorResult<Row>`.
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
+        tracing::instrument(name = "Execute Row Stream Query", skip_all, level = "info")
     )]
-    pub async fn execute(mut self) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
+    pub async fn execute(mut self) -> FalkorResult<QueryResult<RowStream>> {
         self.common_execute_steps()
             .await
-            .and_then(|res| self.generate_query_result_set(res))
+            .and_then(|res| self.generate_async_result_set(res))
     }
 }
 
@@ -352,20 +402,40 @@ where
 }
 
 #[cfg(all(feature = "serde", feature = "tokio"))]
-impl<'a, T: Display, U> QueryBuilder<'a, QueryResult<TypedLazyResultSet<'a, U>>, T, AsyncGraph>
+impl<'a, T: Display> QueryBuilder<'a, QueryResult<RowStream>, T, AsyncGraph> {
+    /// Map each result row into `U` (the async counterpart of the sync `query_as`): the result of
+    /// [`execute`](Self::execute) becomes a `QueryResult<TypedRowStream<U>>`, a `Send + 'static`
+    /// stream of `FalkorResult<U>`. See [`from_falkor_row`](crate::from_falkor_row) for the mapping.
+    pub fn query_as<U>(self) -> QueryBuilder<'a, QueryResult<TypedRowStream<U>>, T, AsyncGraph>
+    where
+        U: serde::de::DeserializeOwned,
+    {
+        QueryBuilder {
+            _unused: PhantomData,
+            graph: self.graph,
+            command: self.command,
+            query_string: self.query_string,
+            params: self.params,
+            timeout: self.timeout,
+        }
+    }
+}
+
+#[cfg(all(feature = "serde", feature = "tokio"))]
+impl<'a, T: Display, U> QueryBuilder<'a, QueryResult<TypedRowStream<U>>, T, AsyncGraph>
 where
     U: serde::de::DeserializeOwned,
 {
-    /// Executes the query, returning a [`QueryResult`] whose `data` is a
-    /// [`TypedLazyResultSet`] that deserializes each row into `U`.
+    /// Executes the query, returning a [`QueryResult`] whose `data` is a [`TypedRowStream`] that
+    /// deserializes each row into `U`.
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute Typed Query", skip_all, level = "info")
+        tracing::instrument(name = "Execute Typed Row Stream Query", skip_all, level = "info")
     )]
-    pub async fn execute(mut self) -> FalkorResult<QueryResult<TypedLazyResultSet<'a, U>>> {
+    pub async fn execute(mut self) -> FalkorResult<QueryResult<TypedRowStream<U>>> {
         self.common_execute_steps()
             .await
-            .and_then(|res| self.generate_query_result_set(res))
+            .and_then(|res| self.generate_async_result_set(res))
             .map(|result| result.into_typed::<U>())
     }
 }
@@ -418,7 +488,7 @@ pub(crate) fn generate_procedure_call(
 }
 
 /// A Builder-pattern struct that allows creating and executing procedure call on a graph
-pub struct ProcedureQueryBuilder<'a, Output, G: HasGraphSchema> {
+pub struct ProcedureQueryBuilder<'a, Output, G> {
     _unused: PhantomData<Output>,
     graph: &'a mut G,
     readonly: bool,
@@ -427,7 +497,7 @@ pub struct ProcedureQueryBuilder<'a, Output, G: HasGraphSchema> {
     yields: Option<&'a [&'a str]>,
 }
 
-impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
+impl<'a, Out, G> ProcedureQueryBuilder<'a, Out, G> {
     pub(crate) fn new(
         graph: &'a mut G,
         procedure_name: &'a str,
@@ -484,31 +554,37 @@ impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
             ..self
         }
     }
+}
 
+/// Parses a 3-element `[header, rows, stats]` procedure reply into a `QueryResult<Vec<T>>`, using
+/// `graph_schema` to resolve compact ids. Shared by the sync and async procedure builders.
+fn parse_procedure_result<T: SchemaParsable>(
+    res: redis::Value,
+    graph_schema: &mut GraphSchema,
+) -> FalkorResult<QueryResult<Vec<T>>> {
+    let [header, indices, stats]: [redis::Value; 3] =
+        redis_value_as_vec(res).and_then(|res_vec| {
+            res_vec.try_into().map_err(|_| {
+                FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 3 elements in query response",
+                )
+            })
+        })?;
+
+    let header: Arc<[String]> = parse_header(header)?.into();
+    let data = redis_value_as_vec(indices)?
+        .into_iter()
+        .map(|res| T::parse(res, graph_schema))
+        .collect::<FalkorResult<Vec<T>>>()?;
+    QueryResult::from_response(header, data, stats)
+}
+
+impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
     fn parse_query_result_of_type<T: SchemaParsable>(
         &mut self,
         res: redis::Value,
     ) -> FalkorResult<QueryResult<Vec<T>>> {
-        let [header, indices, stats]: [redis::Value; 3] =
-            redis_value_as_vec(res).and_then(|res_vec| {
-                res_vec.try_into().map_err(|_| {
-                    FalkorDBError::ParsingArrayToStructElementCount(
-                        "Expected exactly 3 elements in query response",
-                    )
-                })
-            })?;
-
-        let header: Arc<[String]> = parse_header(header)?.into();
-        QueryResult::from_response(
-            header,
-            redis_value_as_vec(indices).map(|indices| {
-                indices
-                    .into_iter()
-                    .flat_map(|res| T::parse(res, self.graph.get_graph_schema_mut()))
-                    .collect()
-            })?,
-            stats,
-        )
+        parse_procedure_result(res, self.graph.get_graph_schema_mut())
     }
 }
 
@@ -611,9 +687,10 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, AsyncGraph> {
         tracing::instrument(name = "Execute FalkorIndex Query", skip_all, level = "info")
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
-        self.common_execute_steps()
-            .await
-            .and_then(|res| self.parse_query_result_of_type(res))
+        let res = self.common_execute_steps().await?;
+        let schema = self.graph.schema_handle();
+        let mut guard = schema.write();
+        parse_procedure_result(res, &mut guard)
     }
 }
 
@@ -639,9 +716,10 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, AsyncGraph> {
         tracing::instrument(name = "Execute Constraint Procedure Call", skip_all, level = "info")
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
-        self.common_execute_steps()
-            .await
-            .and_then(|res| self.parse_query_result_of_type(res))
+        let res = self.common_execute_steps().await?;
+        let schema = self.graph.schema_handle();
+        let mut guard = schema.write();
+        parse_procedure_result(res, &mut guard)
     }
 }
 
@@ -661,8 +739,12 @@ mod tests {
     #[test]
     fn dispatch_one_element_is_stats_only() {
         let mut schema = GraphSchema::new("test_dispatch_one", create_empty_inner_sync_client());
-        let mut result =
-            dispatch_query_response(vec![redis::Value::Array(vec![])], &mut schema).unwrap();
+        let mut result = dispatch_query_response(
+            vec![redis::Value::Array(vec![])],
+            &mut schema,
+            build_lazy_query_result,
+        )
+        .unwrap();
         assert!(result.header.is_empty());
         assert!(result.data.next().is_none());
     }
@@ -671,7 +753,8 @@ mod tests {
     fn dispatch_two_elements_is_header_without_rows() {
         let mut schema = GraphSchema::new("test_dispatch_two", create_empty_inner_sync_client());
         let res = vec![header_with_one_column("col"), redis::Value::Array(vec![])];
-        let mut result = dispatch_query_response(res, &mut schema).unwrap();
+        let mut result =
+            dispatch_query_response(res, &mut schema, build_lazy_query_result).unwrap();
         assert_eq!(result.header.len(), 1);
         assert_eq!(result.header[0], "col");
         assert!(result.data.next().is_none());
@@ -685,7 +768,8 @@ mod tests {
             redis::Value::Array(vec![]), // zero data rows
             redis::Value::Array(vec![]), // stats
         ];
-        let mut result = dispatch_query_response(res, &mut schema).unwrap();
+        let mut result =
+            dispatch_query_response(res, &mut schema, build_lazy_query_result).unwrap();
         assert_eq!(result.header.len(), 1);
         assert_eq!(result.header[0], "col");
         assert!(result.data.next().is_none());
@@ -694,7 +778,43 @@ mod tests {
     #[test]
     fn dispatch_invalid_length_is_error() {
         let mut schema = GraphSchema::new("test_dispatch_bad", create_empty_inner_sync_client());
-        assert!(dispatch_query_response(vec![redis::Value::Nil; 4], &mut schema).is_err());
+        assert!(dispatch_query_response(
+            vec![redis::Value::Nil; 4],
+            &mut schema,
+            build_lazy_query_result
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn parse_procedure_result_rejects_wrong_element_count() {
+        use crate::FalkorIndex;
+        let mut schema = GraphSchema::new("test_proc_bad_len", create_empty_inner_sync_client());
+        // Two elements instead of the required three.
+        let res = redis::Value::Array(vec![
+            redis::Value::Array(vec![]),
+            redis::Value::Array(vec![]),
+        ]);
+        let result = parse_procedure_result::<FalkorIndex>(res, &mut schema);
+        assert!(matches!(
+            result,
+            Err(FalkorDBError::ParsingArrayToStructElementCount(_))
+        ));
+    }
+
+    #[test]
+    fn parse_procedure_result_propagates_row_parse_error() {
+        use crate::FalkorIndex;
+        let mut schema = GraphSchema::new("test_proc_bad_row", create_empty_inner_sync_client());
+        // A valid 3-element reply shape, but the single index row is malformed (not the 9-element
+        // array `FalkorIndex` expects), so its parse error must propagate instead of being dropped.
+        let res = redis::Value::Array(vec![
+            header_with_one_column("idx"),
+            redis::Value::Array(vec![redis::Value::Int(5)]),
+            redis::Value::Array(vec![]),
+        ]);
+        let result = parse_procedure_result::<FalkorIndex>(res, &mut schema);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -4,8 +4,8 @@
  */
 
 use falkordb::{FalkorClientBuilder, FalkorResult};
-use std::sync::Arc;
-use tokio::{sync::Mutex, task::JoinSet};
+use futures::{StreamExt, TryStreamExt};
+use tokio::task::JoinSet;
 
 // Usage of the asynchronous client REQUIRES the multi-threaded rt
 #[tokio::main]
@@ -16,55 +16,41 @@ async fn main() -> FalkorResult<()> {
         .await?;
 
     let mut graph = client.select_graph("imdb");
-    let mut res = graph.query("MATCH (a:actor) return a").execute().await?;
+    let mut res = graph.query("MATCH (a:actor) RETURN a").execute().await?;
     assert_eq!(res.data.len(), 1317);
 
-    // Note that parsing is sync, even if a refresh of the graph schema was required, that refresh will happen in a blocking fashion
-    // The alternative is writing all the parsing functions to be async, all the way down
-    assert!(res.data.next().is_some());
-    let collected = res.data.collect::<Vec<_>>();
-
-    // One was already taken, so we should have one less now
+    // `res.data` is a `futures::Stream`. Take one row with `StreamExt::next`, then collect the
+    // rest. (Parsing is synchronous; if a cold schema refresh is needed it happens in a blocking
+    // fashion — see the `RowStream` docs. The alternative is async parsing all the way down.)
+    assert!(res.data.next().await.is_some());
+    let collected: Vec<_> = res.data.collect().await;
     assert_eq!(collected.len(), 1316);
 
-    // And now for something completely different:
-    // Add synchronization, if we want to reuse the graph later,
-    // Otherwise we can just move it into the scope
-    let graph_a = Arc::new(Mutex::new(client.copy_graph("imdb", "imdb_a").await?));
-    let graph_b = Arc::new(Mutex::new(client.copy_graph("imdb", "imdb_b").await?));
-    let graph_c = Arc::new(Mutex::new(client.copy_graph("imdb", "imdb_c").await?));
-    let graph_d = Arc::new(Mutex::new(client.copy_graph("imdb", "imdb_d").await?));
-
-    // Note that in each of the tasks, we have to consume the LazyResultSet somehow, and not return it, because it maintains a mutable reference to graph, and requires the lock guard to be alive
-    // By collecting it into a vec, we no longer need to maintain the lifetime, so we just get back our results
+    // The graph handle is `Send + Clone` and shares its schema cache, so concurrent tasks just take
+    // an owned copy — no `Arc<Mutex<_>>` needed. The owned `RowStream` result is `Send + 'static`,
+    // so it can be consumed (here folded into a count) entirely inside the spawned task.
     let mut join_set = JoinSet::new();
-    join_set.spawn({
-        let graph_a = graph_a.clone();
-        async move { graph_a.lock().await.query("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().await.map(|res| res.data.collect::<Vec<_>>()) }
-    });
-    join_set.spawn({
-        let graph_b = graph_b.clone();
-        async move { graph_b.lock().await.query("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().await.map(|res| res.data.collect::<Vec<_>>()) }
-    });
-    join_set.spawn({
-        let graph_c = graph_c.clone();
-        async move { graph_c.lock().await.query("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().await.map(|res| res.data.collect::<Vec<_>>()) }
-    });
-    join_set.spawn({
-        let graph_d = graph_d.clone();
-        async move { graph_d.lock().await.query("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().await.map(|res| res.data.collect::<Vec<_>>()) }
-    });
-
-    // Order is no longer guaranteed, as all these tasks were nonblocking
-    while let Some(Ok(res)) = join_set.join_next().await {
-        let actual_res = res?;
-        println!("{:?}", actual_res[0])
+    for suffix in ["a", "b", "c", "d"] {
+        let name = format!("imdb_{suffix}");
+        let mut copy = client.copy_graph("imdb", &name).await?;
+        join_set.spawn(async move {
+            let count = copy
+                .query("MATCH (a:actor) RETURN a LIMIT 100")
+                .execute()
+                .await?
+                .data
+                .try_fold(0usize, |acc, _row| async move { Ok(acc + 1) })
+                .await?;
+            copy.delete().await.ok();
+            FalkorResult::Ok((name, count))
+        });
     }
 
-    graph_a.lock().await.delete().await.ok();
-    graph_b.lock().await.delete().await.ok();
-    graph_c.lock().await.delete().await.ok();
-    graph_d.lock().await.delete().await.ok();
+    // Order is not guaranteed — the tasks ran concurrently over cloned handles.
+    while let Some(joined) = join_set.join_next().await {
+        let (name, count) = joined.expect("task should not panic")?;
+        println!("{name}: {count} actors");
+    }
 
     Ok(())
 }

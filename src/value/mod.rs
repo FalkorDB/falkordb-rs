@@ -19,6 +19,9 @@ pub(crate) mod vec32;
 #[cfg(feature = "serde")]
 mod de;
 
+#[cfg(all(test, feature = "serde"))]
+mod de_proptest;
+
 #[cfg(feature = "serde")]
 pub use de::{from_falkor_row, from_falkor_value, FalkorValueDeserializer};
 

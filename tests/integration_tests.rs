@@ -444,6 +444,44 @@ mod typed_params {
         assert_eq!(value, Some(7));
         let _ = graph.delete();
     }
+
+    #[test]
+    fn test_with_param_last_wins_and_clears_error() {
+        let Some(mut graph) = graph_for("test_params_lastwins") else {
+            return;
+        };
+        // The last value for a key wins, and a later valid value clears an earlier encoding
+        // error for the same key.
+        let mut result = graph
+            .query("RETURN $x")
+            .with_param("x", f64::NAN) // would error
+            .with_param("x", 7i64) // overrides → valid
+            .execute()
+            .expect("the override should clear the earlier error");
+        let value = result
+            .data
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .and_then(|v| v.to_i64());
+        assert_eq!(value, Some(7));
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_with_params_invalid_value_fails_at_execute() {
+        let Some(mut graph) = graph_for("test_params_invalid_collection") else {
+            return;
+        };
+        let result = graph
+            .query("RETURN $x")
+            .with_params([("x", f64::NAN)])
+            .execute();
+        assert!(matches!(
+            result,
+            Err(falkordb::FalkorDBError::ParamEncoding { .. })
+        ));
+        let _ = graph.delete();
+    }
 }
 
 #[cfg(feature = "tokio")]

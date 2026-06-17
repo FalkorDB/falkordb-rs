@@ -170,6 +170,11 @@ fn encode_map_key(
             "map parameter key contains a backtick, which FalkorDB cannot encode",
         ));
     }
+    if key.contains('\0') {
+        return Err(param_err(
+            "map parameter key contains a NUL byte, which FalkorDB cannot encode",
+        ));
+    }
     if is_bare_identifier(key) {
         out.push_str(key);
     } else {
@@ -1004,5 +1009,60 @@ mod tests {
         let mut params = FalkorParams::new();
         params.add_raw("bad name", "1".to_string());
         assert!(params.first_error().is_some());
+    }
+
+    #[test]
+    fn test_encode_map_key_nul_is_error() {
+        let mut map = BTreeMap::new();
+        map.insert("a\0b", 1i64);
+        assert!(to_cypher_param(&map).is_err());
+    }
+
+    #[test]
+    fn test_encode_f32_uses_shortest_form() {
+        // f32 is encoded as its shortest round-trippable decimal (matching serde_json), so
+        // `0.1f32` becomes `0.1` rather than the widened `0.10000000149...`.
+        assert_eq!(enc(0.1f32), "0.1");
+        assert_eq!(enc(2.0f32), "2.0");
+    }
+
+    #[test]
+    fn test_encode_map_keyword_keys_stay_bare() {
+        // Cypher keywords are valid bare map keys (verified against the server).
+        let mut map = BTreeMap::new();
+        map.insert("match", 2i64);
+        map.insert("true", 1i64);
+        assert_eq!(enc(map), "{match: 2, true: 1}");
+    }
+
+    #[test]
+    fn test_nested_nul_propagates_error() {
+        assert!(to_cypher_param(&vec!["ok", "a\0b"]).is_err());
+        assert!(to_cypher_param(&("ok", "a\0b")).is_err());
+        let mut map = BTreeMap::new();
+        map.insert("k", "a\0b");
+        assert!(to_cypher_param(&map).is_err());
+        let array = FalkorValue::Array(vec![FalkorValue::String("a\0b".to_string())]);
+        assert!(to_cypher_param(&array).is_err());
+    }
+
+    #[test]
+    fn test_nested_non_finite_float_propagates_error() {
+        assert!(to_cypher_param(&vec![1.0f64, f64::NAN]).is_err());
+        let mut map = BTreeMap::new();
+        map.insert("k", f64::INFINITY);
+        assert!(to_cypher_param(&map).is_err());
+    }
+
+    #[test]
+    fn test_nested_error_carries_param_name() {
+        let mut params = FalkorParams::new();
+        params.add_param("coords", vec![1.0f64, f64::NAN]); // error nested inside a list
+        match params.first_error() {
+            Some(FalkorDBError::ParamEncoding { parameter, .. }) => {
+                assert_eq!(parameter.as_deref(), Some("coords"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }

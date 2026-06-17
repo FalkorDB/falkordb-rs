@@ -23,6 +23,9 @@ mod de;
 #[cfg(all(test, feature = "serde"))]
 mod de_proptest;
 
+#[cfg(test)]
+mod param_proptest;
+
 pub use param::{to_cypher_param, FalkorParams, IntoFalkorParam, IntoFalkorParams, RawParam};
 
 #[cfg(feature = "serde")]

@@ -640,10 +640,11 @@ cargo test --lib --features embedded
 
 #### Property-Based Tests
 
-The optional `serde` integration is covered by [`proptest`](https://docs.rs/proptest) cases in
-`src/value/de_proptest.rs`, which need no running server. They assert that value- and row-level
-mapping agrees with `serde_json` over the shared data model, never panics on arbitrary input, and
-rejects malformed row shapes. Run just these:
+The crate ships [`proptest`](https://docs.rs/proptest) suites that need no running server:
+`src/value/param_proptest.rs` checks query-parameter encoding (encoding arbitrary values never
+panics, string escaping is lossless, NUL is rejected), and `src/value/de_proptest.rs` checks the
+optional `serde` mapping (agreement with `serde_json`, no panics, malformed-row rejection). Run
+just these:
 
 ```bash
 # 256 cases per property (the proptest default)
@@ -653,7 +654,7 @@ just proptest
 just proptest 4096
 
 # equivalent raw cargo command
-cargo nextest run --lib --features serde de_proptest
+cargo nextest run --lib --features serde proptest
 ```
 
 They also run in CI: as the dedicated `check-proptest` job, and within the `coverage` job.

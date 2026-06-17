@@ -67,6 +67,9 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
     /// invalid parameter name) is reported when the query is executed; use
     /// [`try_with_param`](Self::try_with_param) to fail eagerly instead.
     ///
+    /// The query string itself must not already start with a manual `CYPHER name=value` preamble;
+    /// the preamble is generated from the parameters added here.
+    ///
     /// # Arguments
     /// * `key`: the parameter name (a Cypher identifier), referenced as `$key`
     /// * `value`: any value implementing [`IntoFalkorParam`]
@@ -711,5 +714,32 @@ mod tests {
         let mut params = FalkorParams::new();
         params.add_param("bad name", 1i64);
         assert!(construct_query("RETURN 1", &params).is_err());
+    }
+
+    #[test]
+    fn test_generate_procedure_call_arg_injection_is_escaped() {
+        let args = ["'; MATCH (n) DELETE n //"];
+        let (_query, params) = generate_procedure_call("p", Some(&args), None);
+        let mut preamble = String::new();
+        params.encode_preamble(&mut preamble).unwrap();
+        assert_eq!(preamble, "CYPHER param0='\\'; MATCH (n) DELETE n //' ");
+    }
+
+    #[test]
+    fn test_generate_procedure_call_nul_arg_errors() {
+        let args = ["a\0b"];
+        let (_query, params) = generate_procedure_call("p", Some(&args), None);
+        assert!(params.encode_preamble(&mut String::new()).is_err());
+    }
+
+    #[test]
+    fn test_construct_query_procedure_end_to_end() {
+        let args = ["Label"];
+        let (query, params) = generate_procedure_call("db.idx", Some(&args), Some(&["node"]));
+        let full = construct_query(query, &params).unwrap();
+        assert_eq!(
+            full,
+            "CYPHER param0='Label' CALL db.idx($param0) YIELD node"
+        );
     }
 }

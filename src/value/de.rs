@@ -164,7 +164,7 @@ impl<'de> Deserializer<'de> for FalkorValueDeserializer {
     {
         match self.value {
             FalkorValue::None => visitor.visit_none(),
-            _ => visitor.visit_some(self),
+            value => visitor.visit_some(value.into_deserializer()),
         }
     }
 
@@ -177,7 +177,7 @@ impl<'de> Deserializer<'de> for FalkorValueDeserializer {
     {
         match self.value {
             FalkorValue::None => visitor.visit_unit(),
-            _ => self.deserialize_any(visitor),
+            value => value.into_deserializer().deserialize_any(visitor),
         }
     }
 

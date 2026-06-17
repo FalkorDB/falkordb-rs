@@ -108,3 +108,12 @@ MSRV
 enum
 pre
 structs
+stringify
+bools
+unicode
+lossy
+prefetch
+differentiator
+toolchain
+observability
+tunable

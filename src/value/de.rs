@@ -60,7 +60,9 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`FalkorDBError::SerdeError`] if the row cannot be mapped onto the target type.
+/// Returns [`FalkorDBError::SerdeError`] if the row cannot be mapped onto the target type, or if
+/// a multi-column row's `values` length does not match the `header` length (a malformed result
+/// shape that would otherwise be silently truncated by the header/value zip).
 pub fn from_falkor_row<T>(
     header: &[String],
     mut values: Vec<FalkorValue>,
@@ -68,9 +70,20 @@ pub fn from_falkor_row<T>(
 where
     T: serde::de::DeserializeOwned,
 {
+    // A single value (the common case, and also how a failed row parse is reported, as a lone
+    // `Unparseable`) is mapped on its own so the parse error surfaces with its real message.
     if values.len() == 1 {
         let value = values.pop().expect("length checked to be exactly one");
         return T::deserialize(value.into_deserializer());
+    }
+    // Otherwise the row is zipped with the header by name, so a length mismatch would silently
+    // drop columns or values; reject it instead of deserializing a truncated row.
+    if header.len() != values.len() {
+        return Err(FalkorDBError::SerdeError(format!(
+            "result row shape mismatch: header has {} column(s) but the row has {} value(s)",
+            header.len(),
+            values.len(),
+        )));
     }
     T::deserialize(RowDeserializer { header, values })
 }
@@ -678,13 +691,23 @@ mod tests {
 
     #[test]
     fn test_row_missing_struct_field_is_error() {
-        // The `year` column is absent, so the non-optional field cannot be filled.
-        let header = ["title".to_string()];
+        // Header/value lengths match, but the required `year` column is absent.
+        let header = ["title".to_string(), "other".to_string()];
         let values = vec![
             FalkorValue::String("Heat".to_string()),
             FalkorValue::I64(1995),
         ];
         assert!(from_falkor_row::<Movie>(&header, values).is_err());
+    }
+
+    #[test]
+    fn test_row_length_mismatch_is_error() {
+        // A multi-column row whose value count differs from the header is rejected rather than
+        // silently truncated by the header/value zip.
+        let header = ["a".to_string(), "b".to_string(), "c".to_string()];
+        let values = vec![FalkorValue::I64(1), FalkorValue::I64(2)];
+        let err = from_falkor_row::<HashMap<String, i64>>(&header, values).unwrap_err();
+        assert!(matches!(err, FalkorDBError::SerdeError(_)));
     }
 
     #[test]

@@ -165,6 +165,21 @@ pub fn download_falkordb_module(
     #[cfg(feature = "tracing")]
     tracing::info!("Downloading FalkorDB module from: {}", url);
 
+    install_from_url(&url, platform, version, &final_path, timeout)
+}
+
+/// Download `url`, verify it, and atomically install it at `final_path`.
+///
+/// Split out from [`download_falkordb_module`] (which derives `url` from the
+/// official release) so the full download/verify/atomic-install path can be
+/// exercised offline in tests against a local server.
+fn install_from_url(
+    url: &str,
+    platform: &Platform,
+    version: &str,
+    final_path: &Path,
+    timeout: Duration,
+) -> FalkorResult<PathBuf> {
     let parent = final_path.parent().ok_or_else(|| {
         FalkorDBError::EmbeddedServerError("Invalid cache path (no parent directory)".to_string())
     })?;
@@ -187,17 +202,13 @@ pub fn download_falkordb_module(
     ));
 
     // Fetch+verify into a temp file; clean it up on any failure.
-    let outcome = download_and_verify(&url, platform, version, &temp_path, timeout);
-    match outcome {
-        Ok(()) => {}
-        Err(err) => {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(err);
-        }
+    if let Err(err) = download_and_verify(url, platform, version, &temp_path, timeout) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err);
     }
 
     // Atomic publish: rename within the same directory (same filesystem).
-    std::fs::rename(&temp_path, &final_path).map_err(|e| {
+    std::fs::rename(&temp_path, final_path).map_err(|e| {
         let _ = std::fs::remove_file(&temp_path);
         FalkorDBError::EmbeddedServerError(format!(
             "Failed to install downloaded module into cache at {}: {}",
@@ -205,11 +216,11 @@ pub fn download_falkordb_module(
             e
         ))
     })?;
-    set_module_permissions(&final_path)?;
+    set_module_permissions(final_path)?;
 
     #[cfg(feature = "tracing")]
     tracing::info!("Cached FalkorDB module at: {}", final_path.display());
-    Ok(final_path)
+    Ok(final_path.to_path_buf())
 }
 
 /// Stream `url` into `temp_path`, hashing as it goes, and verify the digest
@@ -648,24 +659,40 @@ mod tests {
 
     #[test]
     fn test_download_full_install_and_cache_reuse() {
-        // End-to-end against a local server: first call downloads + installs
-        // atomically, second call reuses the cache. Uses an unknown version so
-        // no real checksum is required.
+        // End-to-end against a local server: install_from_url downloads, verifies
+        // and atomically installs into the cache; download_falkordb_module then
+        // reuses it without contacting a server. Uses an unpinned version so no
+        // real checksum is required.
         let body = b"local module payload".to_vec();
         let url = serve_once(body.clone());
         let cache_dir = unique_temp("install");
         let platform = Platform::LinuxX64Glibc;
         let version = "v0.0.0-local";
         let final_path = cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
-        let parent = final_path.parent().unwrap();
-        fs::create_dir_all(parent).unwrap();
 
-        // Drive the install path directly via download_and_verify + the same
-        // atomic publish the production code performs.
-        let temp = parent.join(".install.part");
-        download_and_verify(&url, &platform, version, &temp, Duration::from_secs(10)).unwrap();
-        fs::rename(&temp, &final_path).unwrap();
+        // Exercise the real install path (temp file + verify + atomic rename + perms).
+        let installed = install_from_url(
+            &url,
+            &platform,
+            version,
+            &final_path,
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(installed, final_path);
         assert_eq!(fs::read(&final_path).unwrap(), body);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&final_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o644);
+        }
+        // No leftover temp/part files in the cache dir.
+        let leftover = fs::read_dir(final_path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().ends_with(".part"));
+        assert!(!leftover, "temp .part file was not cleaned up");
 
         // Now download_falkordb_module must reuse it without contacting a server.
         let reused =

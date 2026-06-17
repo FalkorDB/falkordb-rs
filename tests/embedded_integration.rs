@@ -30,7 +30,6 @@
 
 #![cfg(feature = "embedded")]
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -123,10 +122,9 @@ fn test_embedded_sync_full_surface() {
         .expect("write query should succeed");
 
     // Parameterized read.
-    let params = HashMap::from([("min_age".to_string(), "35".to_string())]);
     let mut res = graph
         .query("MATCH (p:Person) WHERE p.age >= $min_age RETURN p.age")
-        .with_params(&params)
+        .with_param("min_age", 35)
         .execute()
         .expect("parameterized query should succeed");
     let ages: Vec<i64> = res
@@ -223,10 +221,9 @@ mod async_flavours {
                 .await
                 .expect("write query should succeed");
 
-            let params = HashMap::from([("threshold".to_string(), "5".to_string())]);
             let mut res = graph
                 .query("MATCH (n:N) WHERE n.v > $threshold RETURN count(n)")
-                .with_params(&params)
+                .with_param("threshold", 5)
                 .execute()
                 .await
                 .expect("parameterized query should succeed");

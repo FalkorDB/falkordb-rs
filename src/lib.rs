@@ -48,7 +48,7 @@ pub use value::{
     graph_entities::{Edge, EntityType, Node},
     path::Path,
     point::Point,
-    FalkorValue,
+    to_cypher_param, FalkorParams, FalkorValue, IntoFalkorParam, IntoFalkorParams, RawParam,
 };
 
 #[cfg(feature = "serde")]

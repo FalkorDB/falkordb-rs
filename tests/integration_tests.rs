@@ -246,6 +246,138 @@ fn test_list_graphs() {
     let _ = graph.delete();
 }
 
+mod typed_params {
+    use super::{get_test_connection_info, skip_if_no_server};
+    use falkordb::{FalkorClientBuilder, FalkorValue};
+    use std::collections::BTreeMap;
+
+    fn graph_for(name: &str) -> Option<falkordb::SyncGraph> {
+        if skip_if_no_server() {
+            return None;
+        }
+        let conn_info = get_test_connection_info().ok()?;
+        let client = FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+            .ok()?;
+        let mut graph = client.select_graph(name);
+        let _ = graph.delete();
+        Some(graph)
+    }
+
+    #[test]
+    fn test_with_param_scalars_round_trip() {
+        let Some(mut graph) = graph_for("test_params_scalars") else {
+            return;
+        };
+        let mut result = graph
+            .query("RETURN $s, $i, $f, $b, $n")
+            .with_param("s", "it's a \"test\"")
+            .with_param("i", 42i64)
+            .with_param("f", 2.5f64)
+            .with_param("b", true)
+            .with_param("n", Option::<i64>::None)
+            .execute()
+            .expect("query should succeed");
+        let row = result.data.next().expect("expected a row");
+        assert_eq!(
+            row,
+            vec![
+                FalkorValue::String("it's a \"test\"".to_string()),
+                FalkorValue::I64(42),
+                FalkorValue::F64(2.5),
+                FalkorValue::Bool(true),
+                FalkorValue::None,
+            ]
+        );
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_with_param_injection_is_inert() {
+        let Some(mut graph) = graph_for("test_params_injection") else {
+            return;
+        };
+        let payload = "'; MATCH (n) DETACH DELETE n //";
+        graph
+            .query("CREATE (:Tag {name: $name})")
+            .with_param("name", payload)
+            .execute()
+            .expect("create should succeed");
+
+        // The payload must be stored verbatim, and nothing should have been deleted/executed.
+        let mut result = graph
+            .query("MATCH (t:Tag) RETURN t.name")
+            .execute()
+            .expect("read should succeed");
+        let row = result.data.next().expect("the node must still exist");
+        assert_eq!(
+            row.into_iter().next(),
+            Some(FalkorValue::String(payload.to_string()))
+        );
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_with_param_list_in_clause() {
+        let Some(mut graph) = graph_for("test_params_list") else {
+            return;
+        };
+        graph
+            .query("UNWIND [1, 2, 3, 4] AS v CREATE (:N {v: v})")
+            .execute()
+            .expect("create should succeed");
+        let mut result = graph
+            .query("MATCH (n:N) WHERE n.v IN $vals RETURN count(n)")
+            .with_param("vals", [2, 4])
+            .execute()
+            .expect("query should succeed");
+        let count = result
+            .data
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .and_then(|v| v.to_i64());
+        assert_eq!(count, Some(2));
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_with_param_map_and_point_workaround() {
+        let Some(mut graph) = graph_for("test_params_point") else {
+            return;
+        };
+        let coords = BTreeMap::from([("latitude", 32.07), ("longitude", 34.79)]);
+        let mut result = graph
+            .query("RETURN point($p)")
+            .with_param("p", coords)
+            .execute()
+            .expect("point($p) workaround should succeed");
+        let value = result
+            .data
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .expect("expected a point");
+        assert!(matches!(value, FalkorValue::Point(_)));
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_invalid_param_name_errors_before_network() {
+        let Some(mut graph) = graph_for("test_params_bad_name") else {
+            return;
+        };
+        let result = graph
+            .query("RETURN $x")
+            .with_param("bad name", 1i64)
+            .execute();
+        assert!(
+            matches!(result, Err(falkordb::FalkorDBError::ParamEncoding { .. })),
+            "an invalid parameter name must fail with ParamEncoding"
+        );
+        let _ = graph.delete();
+    }
+}
+
 #[cfg(feature = "tokio")]
 mod async_tests {
     use super::*;

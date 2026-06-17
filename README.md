@@ -63,6 +63,39 @@ while let Some(node) = nodes.data.next() {
 
 ## Features
 
+### Type-safe query parameters
+
+Pass Rust values straight into a query — the client encodes them as Cypher literals and escapes
+them for you, so you never hand-quote strings or risk Cypher injection:
+
+```rust,ignore
+let res = graph
+    .query("MATCH (m:Movie {title: $title}) WHERE m.year IN $years RETURN m")
+    .with_param("title", "The Matrix")
+    .with_param("years", [1999, 2003])
+    .execute()?;
+```
+
+Add several at once from an array, `Vec`, or map with `with_params`:
+
+```rust,ignore
+.with_params([("title", "The Matrix"), ("year", 1999)])
+```
+
+Supported value types include integers, floats, boolean values, strings, `Option` (encoded as
+`null`), arrays/`Vec`, and string-keyed `HashMap`/`BTreeMap` (nested freely). Points and vectors
+cannot be bound directly (a FalkorDB limitation) — pass the components and construct them in the
+query:
+
+```rust,ignore
+use std::collections::BTreeMap;
+let coords = BTreeMap::from([("latitude", 32.07), ("longitude", 34.79)]);
+graph.query("RETURN point($p)").with_param("p", coords).execute()?;
+```
+
+If you really need a raw Cypher expression, `with_raw_param("key", "…")` is the explicit escape
+hatch — no escaping is applied to the value (the parameter name is still validated).
+
 ### Waiting for background operations
 
 Some FalkorDB operations finish **after** the command that starts them returns: when you create or

@@ -83,3 +83,6 @@ required-features = ["embedded"]
 [[example]]
 name = "typed_mapping"
 required-features = ["serde"]
+
+[[example]]
+name = "typed_params"

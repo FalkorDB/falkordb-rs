@@ -154,6 +154,16 @@ pub enum FalkorDBError {
     #[cfg(feature = "serde")]
     #[error("Failed to deserialize via serde: {0}")]
     SerdeError(String),
+    /// A value could not be encoded as a Cypher query-parameter literal (for example a non-finite
+    /// float, a string containing a NUL byte, an integer outside the `i64` range, an invalid
+    /// parameter name, or a graph entity such as a `Node`/`Edge`/`Path`).
+    #[error("invalid query parameter{}: {message}", .parameter.as_deref().map(|p| format!(" '{p}'")).unwrap_or_default())]
+    ParamEncoding {
+        /// The name of the offending parameter, when known.
+        parameter: Option<String>,
+        /// A human-readable description of why encoding failed.
+        message: String,
+    },
 }
 
 #[cfg(feature = "serde")]

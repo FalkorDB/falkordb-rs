@@ -18,10 +18,10 @@
 
 ### Installation
 
-Just add it to your `Cargo.toml`, like so:
+Install it with [`cargo add`](https://doc.rust-lang.org/cargo/commands/cargo-add.html):
 
-```toml
-falkordb = { version = "0.3.0" }
+```bash
+cargo add falkordb
 ```
 
 ### Run FalkorDB instance
@@ -145,8 +145,8 @@ graph.create_index_op(IndexType::Range, EntityType::Node, "Person", &["name"], N
 This client supports nonblocking API using the [`tokio`](https://tokio.rs/) runtime.
 It can be enabled like so:
 
-```toml
-falkordb = { version = "0.3.0", features = ["tokio"] }
+```bash
+cargo add falkordb --features tokio
 ```
 
 Currently, this API requires running within a [
@@ -251,22 +251,22 @@ when using tokio: `"tokio-rustls"`/`"tokio-native-tls"`).
 
 For Rustls:
 
-```toml
-falkordb = { version = "0.3.0", features = ["rustls"] }
+```bash
+cargo add falkordb --features rustls
 ```
 
-```toml
-falkordb = { version = "0.3.0", features = ["tokio-rustls"] }
+```bash
+cargo add falkordb --features tokio-rustls
 ```
 
 For Native TLS:
 
-```toml
-falkordb = { version = "0.3.0", features = ["native-tls"] }
+```bash
+cargo add falkordb --features native-tls
 ```
 
-```toml
-falkordb = { version = "0.3.0", features = ["tokio-native-tls"] }
+```bash
+cargo add falkordb --features tokio-native-tls
 ```
 
 ### TCP Keepalive
@@ -349,8 +349,8 @@ for a complete working example.
 This crate fully supports instrumentation using the [`tracing`](https://docs.rs/tracing/latest/tracing/) crate, to use
 it, simply, enable the `tracing` feature:
 
-```toml
-falkordb = { version = "0.3.0", features = ["tracing"] }
+```bash
+cargo add falkordb --features tracing
 ```
 
 Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the
@@ -361,8 +361,8 @@ correct level as you desire it.
 Enable the optional `serde` feature to map query results straight into your own types instead of hand-matching every
 `FalkorValue` variant:
 
-```toml
-falkordb = { version = "0.3.0", features = ["serde"] }
+```bash
+cargo add falkordb --features serde
 ```
 
 Derive `serde::Deserialize` on your type and call `FalkorValue::deserialize_into` (or the free function
@@ -425,10 +425,10 @@ This client supports running an embedded FalkorDB server, which is useful for:
 - Embedded applications
 - Quick prototyping and development
 
-To use the embedded feature, enable it in your `Cargo.toml`:
+To use the embedded feature, enable it:
 
-```toml
-falkordb = { version = "0.3.0", features = ["embedded"] }
+```bash
+cargo add falkordb --features embedded
 ```
 
 #### Requirements

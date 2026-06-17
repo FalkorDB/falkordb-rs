@@ -33,14 +33,13 @@ use std::sync::Arc;
 ///
 /// # Duplicate column names
 ///
-/// A query like `RETURN a AS x, b AS x` produces two columns both named `x`. To keep every access
-/// path predictable:
+/// FalkorDB rejects a query whose result columns are not uniquely named, so a `Row` returned from a
+/// query always has distinct columns. A `Row` built by hand from `(column, value)` pairs (via
+/// [`FromIterator`]) can still hold duplicates, so the access paths are defined for that case:
 ///
 /// - [`get`](Self::get) / [`try_get`](Self::try_get) return the **first** match.
 /// - [`get_all`](Self::get_all) returns **every** match, in column order.
 /// - [`into_map`](Self::into_map) keeps the **last** value for a duplicated name.
-///
-/// Prefer distinct aliases to avoid the ambiguity entirely.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     header: Arc<[String]>,
@@ -100,8 +99,8 @@ impl Row {
 
     /// References to every value whose column is named `column`, in column order.
     ///
-    /// This is the explicit way to handle the rare duplicate-column case (`RETURN a AS x, b AS x`);
-    /// for the common unique-column case prefer [`get`](Self::get).
+    /// This is the explicit way to handle the rare duplicate-column case (see the type docs); for
+    /// the common unique-column case prefer [`get`](Self::get).
     pub fn get_all<'s>(
         &'s self,
         column: &'s str,

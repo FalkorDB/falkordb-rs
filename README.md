@@ -101,9 +101,10 @@ access is **strict** — no silent lossy casts — via the [`FromFalkorValue`] c
 `collect` short-circuits on the first `Err`, a whole result set can be gathered with
 `result.data.collect::<falkordb::FalkorResult<Vec<_>>>()`.
 
-Duplicate column aliases (`RETURN a AS x, b AS x`) are handled explicitly: `get`/`try_get` return
-the first match, `get_all` returns every match, and `into_map` keeps the last. To opt back into the
-pre-0.7 behavior (bare `Vec<FalkorValue>` rows, parse errors collapsed to
+FalkorDB rejects a query whose result columns are not uniquely named, so rows from a query always
+have distinct columns; if a `Row` ever does hold duplicates, the access paths are still defined
+(`get`/`try_get` return the first match, `get_all` returns every match, `into_map` keeps the last).
+To opt back into the pre-0.7 behavior (bare `Vec<FalkorValue>` rows, parse errors collapsed to
 `FalkorValue::Unparseable`), call `result.data.into_values_lossy()`. A runnable version lives in
 [`examples/rows.rs`](examples/rows.rs). Upgrading from 0.6? See the
 [0.7 migration guide](docs/migrating-to-0.7.md).

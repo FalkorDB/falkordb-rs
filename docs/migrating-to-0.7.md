@@ -169,10 +169,11 @@ can also deserialize a single row on demand with `row.deserialize::<T>()`.
 
 ## Duplicate column names
 
-The server rejects a query that returns two columns with the same name, so in practice a `Row` has
-unique columns. The API still defines the behavior for completeness: `get` / `try_get` return the
-**first** match, `get_all` returns **every** match, and `into_map` keeps the **last**. Prefer
-distinct aliases.
+FalkorDB rejects a query whose result columns are not uniquely named, so a `Row` returned from a
+query always has distinct columns. The API still defines the behavior for the case where a `Row`
+holds duplicates anyway (for example one built by hand from `(column, value)` pairs): `get` /
+`try_get` return the **first** match, `get_all` returns **every** match, and `into_map` keeps the
+**last**.
 
 ## Coming from 0.6 or earlier
 

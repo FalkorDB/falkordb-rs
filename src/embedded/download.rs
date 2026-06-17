@@ -335,4 +335,34 @@ mod tests {
             err_msg
         );
     }
+
+    #[test]
+    fn test_unsupported_platform_error_in_download() {
+        // Test that unsupported platform returns error in download functions
+        let unsupported = Platform::Unsupported;
+
+        let result = cached_module_path(&unsupported, None);
+        assert!(result.is_err());
+
+        let result = has_cached_module(&unsupported, None);
+        assert!(result.is_err());
+
+        let result = download_falkordb_module(&unsupported, None, Duration::from_secs(60));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_macos_x64_unsupported_in_download() {
+        // Test that macOS x86_64 returns error in download functions
+        let macos_x64 = Platform::MacOSX64Unsupported;
+
+        let result = cached_module_path(&macos_x64, None);
+        assert!(result.is_err());
+
+        let result = has_cached_module(&macos_x64, None);
+        assert!(result.is_err());
+
+        let result = download_falkordb_module(&macos_x64, None, Duration::from_secs(60));
+        assert!(result.is_err());
+    }
 }

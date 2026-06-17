@@ -382,4 +382,25 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_unsupported_platform_error_messages() {
+        // Test error messages for unsupported platforms
+        // This ensures the error message construction code is exercised
+        let unsupported_err = Platform::Unsupported.asset_filename();
+        assert!(unsupported_err.is_err());
+        let msg = format!("{}", unsupported_err.unwrap_err());
+        assert!(msg.contains("FalkorDB embedded server is not supported"));
+
+        let unsupported_tag_err = Platform::Unsupported.tag();
+        assert!(unsupported_tag_err.is_err());
+
+        let macos_x64_err = Platform::MacOSX64Unsupported.asset_filename();
+        assert!(macos_x64_err.is_err());
+        let msg = format!("{}", macos_x64_err.unwrap_err());
+        assert!(msg.contains("macOS x86_64"));
+
+        let macos_x64_tag_err = Platform::MacOSX64Unsupported.tag();
+        assert!(macos_x64_tag_err.is_err());
+    }
 }

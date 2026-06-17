@@ -45,7 +45,7 @@ fn dispatch_query_response<'g>(
                 res.into_iter()
                     .next()
                     .ok_or(FalkorDBError::ParsingArrayToStructElementCount(
-                        "One element exist but using next() failed",
+                        "One element exists but using next() failed",
                     ))?;
 
             build_lazy_query_result(Vec::new().into(), Vec::new(), stats, graph_schema)

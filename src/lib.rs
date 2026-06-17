@@ -140,9 +140,10 @@ pub(crate) mod test_utils {
         result
             .data
             .next()
-            .and_then(|row| row.ok())
-            .and_then(|row| row.try_get_at::<i64>(0).ok())
-            .expect("imdb actor count query returned an unexpected shape")
+            .expect("imdb actor count query returned no rows")
+            .expect("imdb actor count row failed to parse")
+            .try_get_at::<i64>(0)
+            .expect("imdb actor count column was not an i64")
     }
 
     /// Create a sync client and assert the shared `imdb` fixture is populated, so every
@@ -168,9 +169,10 @@ pub(crate) mod test_utils {
         let count = result
             .data
             .next()
-            .and_then(|row| row.ok())
-            .and_then(|row| row.try_get_at::<i64>(0).ok())
-            .expect("imdb actor count query returned an unexpected shape");
+            .expect("imdb actor count query returned no rows")
+            .expect("imdb actor count row failed to parse")
+            .try_get_at::<i64>(0)
+            .expect("imdb actor count column was not an i64");
         assert!(count > 0, "{IMDB_FIXTURE_HINT}");
         client
     }

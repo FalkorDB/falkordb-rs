@@ -130,7 +130,11 @@ fn test_embedded_sync_full_surface() {
     let ages: Vec<i64> = res
         .data
         .by_ref()
-        .filter_map(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok()))
+        .map(|row| {
+            row.expect("row should parse")
+                .try_get_at::<i64>(0)
+                .expect("column 0 should be an i64")
+        })
         .collect();
     assert_eq!(ages, vec![40]);
 
@@ -139,12 +143,14 @@ fn test_embedded_sync_full_surface() {
         .ro_query("MATCH (p:Person) RETURN count(p)")
         .execute()
         .expect("read-only query should succeed");
-    assert_eq!(
-        ro.data
-            .next()
-            .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok())),
-        Some(2)
-    );
+    let count = ro
+        .data
+        .next()
+        .expect("expected a row")
+        .expect("row should parse")
+        .try_get_at::<i64>(0)
+        .expect("column 0 should be an i64");
+    assert_eq!(count, 2);
 
     // Index create + asynchronous listing.
     graph
@@ -227,26 +233,28 @@ mod async_flavours {
                 .execute()
                 .await
                 .expect("parameterized query should succeed");
-            assert_eq!(
-                res.data
-                    .next()
-                    .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok())),
-                Some(5),
-                "strategy {strategy:?} parameterized count"
-            );
+            let count = res
+                .data
+                .next()
+                .expect("expected a row")
+                .expect("row should parse")
+                .try_get_at::<i64>(0)
+                .expect("column 0 should be an i64");
+            assert_eq!(count, 5, "strategy {strategy:?} parameterized count");
 
             let mut ro = graph
                 .ro_query("MATCH (n:N) RETURN count(n)")
                 .execute()
                 .await
                 .expect("read-only query should succeed");
-            assert_eq!(
-                ro.data
-                    .next()
-                    .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok())),
-                Some(10),
-                "strategy {strategy:?} read-only count"
-            );
+            let count = ro
+                .data
+                .next()
+                .expect("expected a row")
+                .expect("row should parse")
+                .try_get_at::<i64>(0)
+                .expect("column 0 should be an i64");
+            assert_eq!(count, 10, "strategy {strategy:?} read-only count");
 
             graph.delete().await.expect("cleanup");
         }
@@ -284,8 +292,10 @@ mod async_flavours {
                         .expect("concurrent query should succeed");
                     res.data
                         .next()
-                        .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok()))
-                        .expect("scalar result")
+                        .expect("expected a row")
+                        .expect("row should parse")
+                        .try_get_at::<i64>(0)
+                        .expect("column 0 should be an i64")
                 })
             })
             .collect();

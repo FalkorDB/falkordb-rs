@@ -131,7 +131,11 @@ async fn test_core_operations_under_all_strategies() {
         let ages: Vec<i64> = res
             .data
             .by_ref()
-            .filter_map(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok()))
+            .map(|row| {
+                row.expect("row should parse")
+                    .try_get_at::<i64>(0)
+                    .expect("column 0 should be an i64")
+            })
             .collect();
         assert_eq!(ages, vec![40], "strategy {strategy:?} parameterized read");
 
@@ -144,8 +148,10 @@ async fn test_core_operations_under_all_strategies() {
         let count = ro
             .data
             .next()
-            .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok()))
-            .expect("count result");
+            .expect("expected a row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
         assert_eq!(count, 2, "strategy {strategy:?} read-only count");
 
         graph.delete().await.expect("cleanup");
@@ -182,8 +188,10 @@ async fn test_high_concurrency_no_response_mismatch() {
                         .expect("concurrent query should succeed");
                     res.data
                         .next()
-                        .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok()))
-                        .expect("scalar result")
+                        .expect("expected a row")
+                        .expect("row should parse")
+                        .try_get_at::<i64>(0)
+                        .expect("column 0 should be an i64")
                 })
             })
             .collect();
@@ -228,8 +236,10 @@ async fn test_pooled_multiplexed_behavioral_equivalence() {
             let mut res = graph.query(query).execute().await.expect("query");
             res.data
                 .next()
-                .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok()))
-                .expect("scalar")
+                .expect("expected a row")
+                .expect("row should parse")
+                .try_get_at::<i64>(0)
+                .expect("column 0 should be an i64")
         }
     };
 

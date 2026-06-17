@@ -343,9 +343,11 @@ mod typed_params {
         let count = result
             .data
             .next()
-            .and_then(|row| row.ok())
-            .and_then(|row| row.try_get_at::<i64>(0).ok());
-        assert_eq!(count, Some(2));
+            .expect("expected a row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
+        assert_eq!(count, 2);
         let _ = graph.delete();
     }
 
@@ -399,9 +401,11 @@ mod typed_params {
         let value = result
             .data
             .next()
-            .and_then(|row| row.ok())
-            .and_then(|row| row.try_get_at::<i64>(0).ok());
-        assert_eq!(value, Some(42));
+            .expect("expected a row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
+        assert_eq!(value, 42);
         let _ = graph.delete();
     }
 
@@ -452,9 +456,11 @@ mod typed_params {
         let value = result
             .data
             .next()
-            .and_then(|row| row.ok())
-            .and_then(|row| row.try_get_at::<i64>(0).ok());
-        assert_eq!(value, Some(7));
+            .expect("expected a row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
+        assert_eq!(value, 7);
         let _ = graph.delete();
     }
 
@@ -474,9 +480,11 @@ mod typed_params {
         let value = result
             .data
             .next()
-            .and_then(|row| row.ok())
-            .and_then(|row| row.try_get_at::<i64>(0).ok());
-        assert_eq!(value, Some(7));
+            .expect("expected a row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
+        assert_eq!(value, 7);
         let _ = graph.delete();
     }
 

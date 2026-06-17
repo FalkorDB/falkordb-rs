@@ -531,7 +531,8 @@ just bench-local      # start DB, run all benchmarks, tear down
 ```
 
 Targeted recipes are available too, e.g. `just test-parity`, `just test-embedded`,
-`just test-one <filter>`, `just bench-one '<criterion-id>'`, and `just coverage-html`.
+`just test-one <filter>`, `just proptest`, `just bench-one '<criterion-id>'`, and
+`just coverage-html`.
 
 The host, port, Docker image and feature set can be overridden on the command line, for
 example `just port=6380 test` or `just image=falkordb/falkordb:latest db-up`.
@@ -548,6 +549,7 @@ reproduced with a single command:
 | `check-build` | `just build` |
 | `check-doc` | `just doc` |
 | `check-deny` | `just deny` |
+| `check-proptest` | `just proptest` |
 | `integration-tests` | `just integration` and `just integration --all-features` |
 | `integration-tests-tokio` | `just integration --features tokio` |
 | `coverage` | `just coverage` |
@@ -573,6 +575,26 @@ cargo test --lib
 # Run unit tests with embedded feature
 cargo test --lib --features embedded
 ```
+
+#### Property-Based Tests
+
+The optional `serde` integration is covered by [`proptest`](https://docs.rs/proptest) cases in
+`src/value/de_proptest.rs`, which need no running server. They assert that value- and row-level
+mapping agrees with `serde_json` over the shared data model, never panics on arbitrary input, and
+rejects malformed row shapes. Run just these:
+
+```bash
+# 256 cases per property (the proptest default)
+just proptest
+
+# crank the generated case count up (or set PROPTEST_CASES yourself)
+just proptest 4096
+
+# equivalent raw cargo command
+cargo nextest run --lib --features serde de_proptest
+```
+
+They also run in CI: as the dedicated `check-proptest` job, and within the `coverage` job.
 
 #### Integration Tests
 

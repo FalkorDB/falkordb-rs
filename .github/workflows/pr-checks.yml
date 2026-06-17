@@ -64,3 +64,13 @@ jobs:
           tool: just
       - name: Build
         run: just build
+
+  check-proptest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, nextest
+        with:
+          tool: just,nextest
+      - name: Property tests
+        run: just proptest

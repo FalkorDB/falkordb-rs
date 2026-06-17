@@ -14,6 +14,8 @@ pub(crate) mod execution_plan;
 pub(crate) mod index;
 pub(crate) mod lazy_result_set;
 pub(crate) mod slowlog_entry;
+#[cfg(feature = "serde")]
+pub(crate) mod typed_result_set;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, strum::IntoStaticStr)]
 enum StatisticType {
@@ -160,6 +162,23 @@ impl<T> QueryResult<T> {
     /// Returns the internal execution time of this query
     pub fn get_internal_execution_time(&self) -> Option<f64> {
         self.get_statistics(StatisticType::InternalExecutionTime)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'a> QueryResult<crate::LazyResultSet<'a>> {
+    /// Convert this result set into one whose rows are deserialized into `T` on demand.
+    ///
+    /// The [`header`](Self::header) and [`stats`](Self::stats) are preserved; only `data` is
+    /// replaced by a [`TypedLazyResultSet`](crate::TypedLazyResultSet) that maps each row with
+    /// [`from_falkor_row`](crate::from_falkor_row).
+    pub(crate) fn into_typed<T>(self) -> QueryResult<typed_result_set::TypedLazyResultSet<'a, T>> {
+        let header: std::sync::Arc<[String]> = std::sync::Arc::from(self.header.as_slice());
+        QueryResult {
+            data: typed_result_set::TypedLazyResultSet::new(header, self.data),
+            header: self.header,
+            stats: self.stats,
+        }
     }
 }
 

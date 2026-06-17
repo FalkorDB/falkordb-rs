@@ -572,16 +572,11 @@ fn parse_procedure_result<T: SchemaParsable>(
         })?;
 
     let header: Arc<[String]> = parse_header(header)?.into();
-    QueryResult::from_response(
-        header,
-        redis_value_as_vec(indices).map(|indices| {
-            indices
-                .into_iter()
-                .flat_map(|res| T::parse(res, graph_schema))
-                .collect()
-        })?,
-        stats,
-    )
+    let data = redis_value_as_vec(indices)?
+        .into_iter()
+        .map(|res| T::parse(res, graph_schema))
+        .collect::<FalkorResult<Vec<T>>>()?;
+    QueryResult::from_response(header, data, stats)
 }
 
 impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
@@ -805,6 +800,21 @@ mod tests {
             result,
             Err(FalkorDBError::ParsingArrayToStructElementCount(_))
         ));
+    }
+
+    #[test]
+    fn parse_procedure_result_propagates_row_parse_error() {
+        use crate::FalkorIndex;
+        let mut schema = GraphSchema::new("test_proc_bad_row", create_empty_inner_sync_client());
+        // A valid 3-element reply shape, but the single index row is malformed (not the 9-element
+        // array `FalkorIndex` expects), so its parse error must propagate instead of being dropped.
+        let res = redis::Value::Array(vec![
+            header_with_one_column("idx"),
+            redis::Value::Array(vec![redis::Value::Int(5)]),
+            redis::Value::Array(vec![]),
+        ]);
+        let result = parse_procedure_result::<FalkorIndex>(res, &mut schema);
+        assert!(result.is_err());
     }
 
     #[test]

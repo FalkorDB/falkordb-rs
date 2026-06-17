@@ -12,6 +12,7 @@ use vec32::Vec32;
 
 pub(crate) mod config;
 pub(crate) mod graph_entities;
+pub(crate) mod param;
 pub(crate) mod path;
 pub(crate) mod point;
 pub(crate) mod vec32;
@@ -21,6 +22,11 @@ mod de;
 
 #[cfg(all(test, feature = "serde"))]
 mod de_proptest;
+
+#[cfg(test)]
+mod param_proptest;
+
+pub use param::{to_cypher_param, FalkorParams, IntoFalkorParam, IntoFalkorParams, RawParam};
 
 #[cfg(feature = "serde")]
 pub use de::{from_falkor_row, from_falkor_value, FalkorValueDeserializer};

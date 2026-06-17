@@ -124,10 +124,9 @@ async fn test_core_operations_under_all_strategies() {
             .expect("write query should succeed");
 
         // Parameterized read.
-        let params = std::collections::HashMap::from([("min_age".to_string(), "35".to_string())]);
         let mut res = graph
             .query("MATCH (p:Person) WHERE p.age >= $min_age RETURN p.age")
-            .with_params(&params)
+            .with_param("min_age", 35)
             .execute()
             .await
             .expect("parameterized query should succeed");

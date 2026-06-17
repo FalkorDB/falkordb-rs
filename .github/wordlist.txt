@@ -134,3 +134,8 @@ deserialize
 deserialized
 imdb
 iter
+params
+WaitOptions
+ConstraintFailed
+Ok
+NUL

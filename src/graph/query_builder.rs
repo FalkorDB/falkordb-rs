@@ -6,10 +6,13 @@
 use crate::{
     graph::HasGraphSchema,
     parser::{redis_value_as_vec, SchemaParsable},
-    Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorResult, LazyResultSet,
-    QueryResult, SyncGraph,
+    Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParams, FalkorResult,
+    IntoFalkorParam, IntoFalkorParams, LazyResultSet, QueryResult, SyncGraph,
 };
-use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
+use std::{
+    fmt::{Display, Write},
+    marker::PhantomData,
+};
 
 #[cfg(feature = "tokio")]
 use crate::AsyncGraph;
@@ -21,25 +24,14 @@ use crate::TypedLazyResultSet;
     feature = "tracing",
     tracing::instrument(name = "Construct Query", skip_all, level = "trace")
 )]
-pub(crate) fn construct_query<Q: Display, T: Display, Z: Display>(
+pub(crate) fn construct_query<Q: Display>(
     query_str: Q,
-    params: Option<&HashMap<T, Z>>,
-) -> String {
-    let params_str = params
-        .map(|p| {
-            p.iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .and_then(|params_str| {
-            params_str
-                .is_empty()
-                .not()
-                .then_some(format!("CYPHER {params_str} "))
-        })
-        .unwrap_or_default();
-    format!("{params_str}{query_str}")
+    params: &FalkorParams,
+) -> FalkorResult<String> {
+    let mut query = String::new();
+    params.encode_preamble(&mut query)?;
+    let _ = write!(query, "{query_str}");
+    Ok(query)
 }
 
 /// A Builder-pattern struct that allows creating and executing queries on a graph
@@ -48,7 +40,7 @@ pub struct QueryBuilder<'a, Output, T: Display, G: HasGraphSchema> {
     graph: &'a mut G,
     command: &'a str,
     query_string: T,
-    params: Option<&'a HashMap<String, String>>,
+    params: FalkorParams,
     timeout: Option<i64>,
 }
 
@@ -63,23 +55,68 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
             graph,
             command,
             query_string,
-            params: None,
+            params: FalkorParams::new(),
             timeout: None,
         }
     }
 
-    /// Pass the following params to the query as "CYPHER {param_key}={param_val}"
+    /// Add a single typed parameter, referenced as `$key` in the query.
+    ///
+    /// The value is encoded as a Cypher literal and escaped for you, so strings, lists and maps
+    /// are safe from Cypher injection. Any encoding error (for example a non-finite float, or an
+    /// invalid parameter name) is reported when the query is executed; use
+    /// [`try_with_param`](Self::try_with_param) to fail eagerly instead.
+    ///
+    /// The query string itself must not already start with a manual `CYPHER name=value` preamble;
+    /// the preamble is generated from the parameters added here.
     ///
     /// # Arguments
-    /// * `params`: A [`HashMap`] of params in key-val format
-    pub fn with_params(
-        self,
-        params: &'a HashMap<String, String>,
+    /// * `key`: the parameter name (a Cypher identifier), referenced as `$key`
+    /// * `value`: any value implementing [`IntoFalkorParam`]
+    pub fn with_param<V: IntoFalkorParam>(
+        mut self,
+        key: &str,
+        value: V,
     ) -> Self {
-        Self {
-            params: Some(params),
-            ..self
+        self.params.add_param(key, value);
+        self
+    }
+
+    /// Like [`with_param`](Self::with_param), but returns an error immediately if the parameter
+    /// name or value cannot be encoded, rather than deferring it to execution.
+    pub fn try_with_param<V: IntoFalkorParam>(
+        mut self,
+        key: &str,
+        value: V,
+    ) -> FalkorResult<Self> {
+        self.params.add_param(key, value);
+        match self.params.first_error() {
+            Some(err) => Err(err),
+            None => Ok(self),
         }
+    }
+
+    /// Add several typed parameters at once, e.g. from a `Vec<(key, value)>`, an array of pairs,
+    /// or a `HashMap`/`BTreeMap`. See [`IntoFalkorParams`].
+    pub fn with_params<P: IntoFalkorParams>(
+        mut self,
+        params: P,
+    ) -> Self {
+        self.params.merge(params.into_falkor_params());
+        self
+    }
+
+    /// Escape hatch: insert a raw, **already-valid** Cypher expression as the parameter value.
+    ///
+    /// No escaping is performed on the value (the name is still validated), so a malformed
+    /// expression can reintroduce Cypher injection — prefer [`with_param`](Self::with_param).
+    pub fn with_raw_param(
+        mut self,
+        key: &str,
+        raw_cypher: impl Into<String>,
+    ) -> Self {
+        self.params.add_raw(key, raw_cypher.into());
+        self
     }
 
     /// Specify a timeout after which to abort the query
@@ -170,7 +207,7 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         )
     )]
     fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        let query = construct_query(&self.query_string, self.params);
+        let query = construct_query(&self.query_string, &self.params)?;
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
         let mut params = vec![query.as_str(), "--compact"];
@@ -206,7 +243,7 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         )
     )]
     async fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
-        let query = construct_query(&self.query_string, self.params);
+        let query = construct_query(&self.query_string, &self.params)?;
 
         let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
         let mut params = vec![query.as_str(), "--compact"];
@@ -349,38 +386,27 @@ impl<'a, T: Display> QueryBuilder<'a, ExecutionPlan, T, AsyncGraph> {
     feature = "tracing",
     tracing::instrument(name = "Generate Procedure Call", skip_all, level = "trace")
 )]
-pub(crate) fn generate_procedure_call<P: Display, T: Display, Z: Display>(
-    procedure: P,
-    args: Option<&[T]>,
-    yields: Option<&[Z]>,
-) -> (String, Option<HashMap<String, String>>) {
+pub(crate) fn generate_procedure_call(
+    procedure: &str,
+    args: Option<&[&str]>,
+    yields: Option<&[&str]>,
+) -> (String, FalkorParams) {
+    let mut params = FalkorParams::new();
     let args_str = args
         .unwrap_or_default()
         .iter()
-        .map(|e| format!("${}", e))
+        .enumerate()
+        .map(|(idx, arg)| {
+            let name = format!("param{idx}");
+            params.add_param(&name, *arg);
+            format!("${name}")
+        })
         .collect::<Vec<_>>()
         .join(",");
-    let mut query_string = format!("CALL {}({})", procedure, args_str);
-
-    let params = args.map(|args| {
-        args.iter()
-            .enumerate()
-            .fold(HashMap::new(), |mut acc, (idx, param)| {
-                acc.insert(format!("param{idx}"), param.to_string());
-                acc
-            })
-    });
+    let mut query_string = format!("CALL {procedure}({args_str})");
 
     if let Some(yields) = yields {
-        query_string += format!(
-            " YIELD {}",
-            yields
-                .iter()
-                .map(|element| element.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        )
-        .as_str();
+        query_string += format!(" YIELD {}", yields.join(",")).as_str();
     }
 
     (query_string, params)
@@ -498,7 +524,7 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
 
         let (query_string, params) =
             generate_procedure_call(self.procedure_name, self.args, self.yields);
-        let query = construct_query(query_string, params.as_ref());
+        let query = construct_query(query_string, &params)?;
 
         let client = self.graph.get_client();
         let conn = if self.readonly {
@@ -537,7 +563,7 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
 
         let (query_string, params) =
             generate_procedure_call(self.procedure_name, self.args, self.yields);
-        let query = construct_query(query_string, params.as_ref());
+        let query = construct_query(query_string, &params)?;
 
         let client = self.graph.get_client();
         let conn = if self.readonly {
@@ -619,116 +645,101 @@ mod tests {
 
     #[test]
     fn test_generate_procedure_call_no_args_no_yields() {
-        let procedure = "my_procedure";
-        let args: Option<&[String]> = None;
-        let yields: Option<&[String]> = None;
-
-        let expected_query = "CALL my_procedure()".to_string();
-        let expected_params: Option<HashMap<String, String>> = None;
-
-        let result = generate_procedure_call(procedure, args, yields);
-
-        assert_eq!(result, (expected_query, expected_params));
+        let (query, params) = generate_procedure_call("my_procedure", None, None);
+        assert_eq!(query, "CALL my_procedure()");
+        assert!(params.is_empty());
     }
 
     #[test]
     fn test_generate_procedure_call_with_args_no_yields() {
-        let procedure = "my_procedure";
-        let args = &["arg1".to_string(), "arg2".to_string()];
-        let yields: Option<&[String]> = None;
-
-        let expected_query = "CALL my_procedure($arg1,$arg2)".to_string();
-        let mut expected_params = HashMap::new();
-        expected_params.insert("param0".to_string(), "arg1".to_string());
-        expected_params.insert("param1".to_string(), "arg2".to_string());
-
-        let result = generate_procedure_call(procedure, Some(args), yields);
-
-        assert_eq!(result, (expected_query, Some(expected_params)));
+        let args = ["arg1", "arg2"];
+        let (query, params) = generate_procedure_call("my_procedure", Some(&args), None);
+        assert_eq!(query, "CALL my_procedure($param0,$param1)");
+        // String args are encoded as safe, quoted Cypher string literals.
+        let mut preamble = String::new();
+        params.encode_preamble(&mut preamble).unwrap();
+        assert_eq!(preamble, "CYPHER param0='arg1' param1='arg2' ");
     }
 
     #[test]
     fn test_generate_procedure_call_no_args_with_yields() {
-        let procedure = "my_procedure";
-        let args: Option<&[String]> = None;
-        let yields = &["yield1".to_string(), "yield2".to_string()];
-
-        let expected_query = "CALL my_procedure() YIELD yield1,yield2".to_string();
-        let expected_params: Option<HashMap<String, String>> = None;
-
-        let result = generate_procedure_call(procedure, args, Some(yields));
-
-        assert_eq!(result, (expected_query, expected_params));
+        let yields = ["yield1", "yield2"];
+        let (query, params) = generate_procedure_call("my_procedure", None, Some(&yields));
+        assert_eq!(query, "CALL my_procedure() YIELD yield1,yield2");
+        assert!(params.is_empty());
     }
 
     #[test]
     fn test_generate_procedure_call_with_args_and_yields() {
-        let procedure = "my_procedure";
-        let args = &["arg1".to_string(), "arg2".to_string()];
-        let yields = &["yield1".to_string(), "yield2".to_string()];
-
-        let expected_query = "CALL my_procedure($arg1,$arg2) YIELD yield1,yield2".to_string();
-        let mut expected_params = HashMap::new();
-        expected_params.insert("param0".to_string(), "arg1".to_string());
-        expected_params.insert("param1".to_string(), "arg2".to_string());
-
-        let result = generate_procedure_call(procedure, Some(args), Some(yields));
-
-        assert_eq!(result, (expected_query, Some(expected_params)));
-    }
-
-    #[test]
-    fn test_construct_query_with_params() {
-        let query_str = "MATCH (n) RETURN n";
-        let mut params = HashMap::new();
-        params.insert("name", "Alice");
-        params.insert("age", "30");
-
-        let result = construct_query(query_str, Some(&params));
-        assert!(result.starts_with("CYPHER "));
-        assert!(result.ends_with(" RETURN n"));
-        assert!(result.contains(" name=Alice "));
-        assert!(result.contains(" age=30 "));
+        let args = ["arg1", "arg2"];
+        let yields = ["yield1", "yield2"];
+        let (query, params) = generate_procedure_call("my_procedure", Some(&args), Some(&yields));
+        assert_eq!(
+            query,
+            "CALL my_procedure($param0,$param1) YIELD yield1,yield2"
+        );
+        let mut preamble = String::new();
+        params.encode_preamble(&mut preamble).unwrap();
+        assert_eq!(preamble, "CYPHER param0='arg1' param1='arg2' ");
     }
 
     #[test]
     fn test_construct_query_without_params() {
-        let query_str = "MATCH (n) RETURN n";
-        let result = construct_query::<&str, &str, &str>(query_str, None);
-        assert_eq!(result, "MATCH (n) RETURN n");
-    }
-
-    #[test]
-    fn test_construct_query_empty_params() {
-        let query_str = "MATCH (n) RETURN n";
-        let params: HashMap<&str, &str> = HashMap::new();
-        let result = construct_query(query_str, Some(&params));
+        let result = construct_query("MATCH (n) RETURN n", &FalkorParams::new()).unwrap();
         assert_eq!(result, "MATCH (n) RETURN n");
     }
 
     #[test]
     fn test_construct_query_single_param() {
-        let query_str = "MATCH (n) RETURN n";
-        let mut params = HashMap::new();
-        params.insert("name", "Alice");
-
-        let result = construct_query(query_str, Some(&params));
-        assert_eq!(result, "CYPHER name=Alice MATCH (n) RETURN n");
+        let mut params = FalkorParams::new();
+        params.add_param("name", "Alice");
+        let result = construct_query("MATCH (n) RETURN n", &params).unwrap();
+        assert_eq!(result, "CYPHER name='Alice' MATCH (n) RETURN n");
     }
 
     #[test]
     fn test_construct_query_multiple_params() {
-        let query_str = "MATCH (n) RETURN n";
-        let mut params = HashMap::new();
-        params.insert("name", "Alice");
-        params.insert("age", "30");
-        params.insert("city", "Wonderland");
-
-        let result = construct_query(query_str, Some(&params));
+        let mut params = FalkorParams::new();
+        params.add_param("name", "Alice");
+        params.add_param("age", 30i64);
+        let result = construct_query("MATCH (n) RETURN n", &params).unwrap();
         assert!(result.starts_with("CYPHER "));
-        assert!(result.contains(" name=Alice "));
-        assert!(result.contains(" age=30 "));
-        assert!(result.contains(" city=Wonderland "));
+        assert!(result.contains("name='Alice'"));
+        assert!(result.contains("age=30"));
         assert!(result.ends_with("MATCH (n) RETURN n"));
+    }
+
+    #[test]
+    fn test_construct_query_param_error_propagates() {
+        let mut params = FalkorParams::new();
+        params.add_param("bad name", 1i64);
+        assert!(construct_query("RETURN 1", &params).is_err());
+    }
+
+    #[test]
+    fn test_generate_procedure_call_arg_injection_is_escaped() {
+        let args = ["'; MATCH (n) DELETE n //"];
+        let (_query, params) = generate_procedure_call("p", Some(&args), None);
+        let mut preamble = String::new();
+        params.encode_preamble(&mut preamble).unwrap();
+        assert_eq!(preamble, "CYPHER param0='\\'; MATCH (n) DELETE n //' ");
+    }
+
+    #[test]
+    fn test_generate_procedure_call_nul_arg_errors() {
+        let args = ["a\0b"];
+        let (_query, params) = generate_procedure_call("p", Some(&args), None);
+        assert!(params.encode_preamble(&mut String::new()).is_err());
+    }
+
+    #[test]
+    fn test_construct_query_procedure_end_to_end() {
+        let args = ["Label"];
+        let (query, params) = generate_procedure_call("db.idx", Some(&args), Some(&["node"]));
+        let full = construct_query(query, &params).unwrap();
+        assert_eq!(
+            full,
+            "CYPHER param0='Label' CALL db.idx($param0) YIELD node"
+        );
     }
 }

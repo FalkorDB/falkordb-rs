@@ -97,7 +97,7 @@ test-one filter:
 
 # Run only the `serde` property-based tests (no server); `cases` sets PROPTEST_CASES (default 256).
 proptest cases="256":
-    PROPTEST_CASES={{cases}} cargo nextest run --lib --features serde de_proptest
+    PROPTEST_CASES={{cases}} cargo nextest run --lib --features serde proptest
 
 # Spin up a server, populate the fixture, run the full suite, then tear it down.
 test-local: db-up db-populate

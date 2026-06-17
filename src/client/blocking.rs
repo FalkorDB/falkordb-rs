@@ -654,9 +654,10 @@ mod tests {
             .query("MATCH (p:Document) RETURN p")
             .execute()
             .expect("Could not get document");
-        for falkor_value in res.data.by_ref() {
+        for row in res.data.by_ref() {
+            let row = row.expect("row should parse into a Row");
             // iterate on a node value
-            for value in falkor_value {
+            for value in row {
                 if let Node(node) = value {
                     if let FalkorValue::Vec32(embedding) = &node.properties["embedding"] {
                         assert_eq!(embedding.values.len(), 3);

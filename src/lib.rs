@@ -40,6 +40,7 @@ pub use response::{
     execution_plan::ExecutionPlan,
     index::{FalkorIndex, IndexStatus, IndexType},
     lazy_result_set::LazyResultSet,
+    row::Row,
     slowlog_entry::SlowlogEntry,
     QueryResult,
 };
@@ -48,7 +49,8 @@ pub use value::{
     graph_entities::{Edge, EntityType, Node},
     path::Path,
     point::Point,
-    to_cypher_param, FalkorParams, FalkorValue, IntoFalkorParam, IntoFalkorParams, RawParam,
+    to_cypher_param, FalkorParams, FalkorValue, FromFalkorValue, IntoFalkorParam, IntoFalkorParams,
+    RawParam,
 };
 
 #[cfg(feature = "serde")]
@@ -138,8 +140,8 @@ pub(crate) mod test_utils {
         result
             .data
             .next()
-            .and_then(|row| row.into_iter().next())
-            .and_then(|value| value.to_i64())
+            .and_then(|row| row.ok())
+            .and_then(|row| row.try_get_at::<i64>(0).ok())
             .expect("imdb actor count query returned an unexpected shape")
     }
 
@@ -166,8 +168,8 @@ pub(crate) mod test_utils {
         let count = result
             .data
             .next()
-            .and_then(|row| row.into_iter().next())
-            .and_then(|value| value.to_i64())
+            .and_then(|row| row.ok())
+            .and_then(|row| row.try_get_at::<i64>(0).ok())
             .expect("imdb actor count query returned an unexpected shape");
         assert!(count > 0, "{IMDB_FIXTURE_HINT}");
         client

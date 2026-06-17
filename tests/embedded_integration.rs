@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use falkordb::{
     EmbeddedConfig, EmbeddedServer, EntityType, FalkorClientBuilder, FalkorConnectionInfo,
-    FalkorValue, IndexType,
+    IndexType,
 };
 
 /// Common locations the module may live in, mirroring the client's own search list.
@@ -130,7 +130,7 @@ fn test_embedded_sync_full_surface() {
     let ages: Vec<i64> = res
         .data
         .by_ref()
-        .filter_map(|row| row.first().and_then(FalkorValue::to_i64))
+        .filter_map(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok()))
         .collect();
     assert_eq!(ages, vec![40]);
 
@@ -142,7 +142,7 @@ fn test_embedded_sync_full_surface() {
     assert_eq!(
         ro.data
             .next()
-            .and_then(|row| row.first().and_then(FalkorValue::to_i64)),
+            .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok())),
         Some(2)
     );
 
@@ -230,7 +230,7 @@ mod async_flavours {
             assert_eq!(
                 res.data
                     .next()
-                    .and_then(|row| row.first().and_then(FalkorValue::to_i64)),
+                    .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok())),
                 Some(5),
                 "strategy {strategy:?} parameterized count"
             );
@@ -243,7 +243,7 @@ mod async_flavours {
             assert_eq!(
                 ro.data
                     .next()
-                    .and_then(|row| row.first().and_then(FalkorValue::to_i64)),
+                    .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok())),
                 Some(10),
                 "strategy {strategy:?} read-only count"
             );
@@ -284,7 +284,7 @@ mod async_flavours {
                         .expect("concurrent query should succeed");
                     res.data
                         .next()
-                        .and_then(|row| row.first().and_then(FalkorValue::to_i64))
+                        .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok()))
                         .expect("scalar result")
                 })
             })

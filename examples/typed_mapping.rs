@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // With the `serde` feature, deserialize a single returned value into a struct:
     let mut result = graph.query("MATCH (m:Movie) RETURN m").execute()?;
     for row in result.data.by_ref() {
-        if let Some(node) = row.into_iter().next() {
+        if let Some(node) = row?.into_iter().next() {
             let movie: Movie = node.deserialize_into()?;
             println!(
                 "value:   {} ({}) rating={:?}",

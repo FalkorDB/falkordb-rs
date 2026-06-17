@@ -5,10 +5,11 @@
 
 use crate::{
     graph::HasGraphSchema,
-    parser::{redis_value_as_vec, SchemaParsable},
+    parser::{parse_header, redis_value_as_vec, SchemaParsable},
     Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParams, FalkorResult,
     IntoFalkorParam, IntoFalkorParams, LazyResultSet, QueryResult, SyncGraph,
 };
+use std::sync::Arc;
 use std::{
     fmt::{Display, Write},
     marker::PhantomData,
@@ -154,11 +155,13 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
                     ),
                 )?;
 
-                QueryResult::from_response(
-                    None,
-                    LazyResultSet::new(Default::default(), self.graph.get_graph_schema_mut()),
-                    stats,
-                )
+                let header: Arc<[String]> = Vec::new().into();
+                let data = LazyResultSet::new(
+                    Arc::clone(&header),
+                    Default::default(),
+                    self.graph.get_graph_schema_mut(),
+                );
+                QueryResult::from_response(header, data, stats)
             }
             2 => {
                 let [header, stats]: [redis::Value; 2] = res.try_into().map_err(|_| {
@@ -167,11 +170,13 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
                     )
                 })?;
 
-                QueryResult::from_response(
-                    Some(header),
-                    LazyResultSet::new(Default::default(), self.graph.get_graph_schema_mut()),
-                    stats,
-                )
+                let header: Arc<[String]> = parse_header(header)?.into();
+                let data = LazyResultSet::new(
+                    Arc::clone(&header),
+                    Default::default(),
+                    self.graph.get_graph_schema_mut(),
+                );
+                QueryResult::from_response(header, data, stats)
             }
             3 => {
                 let [header, data, stats]: [redis::Value; 3] = res.try_into().map_err(|_| {
@@ -180,14 +185,14 @@ impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
                     )
                 })?;
 
-                QueryResult::from_response(
-                    Some(header),
-                    LazyResultSet::new(
-                        redis_value_as_vec(data)?,
-                        self.graph.get_graph_schema_mut(),
-                    ),
-                    stats,
-                )
+                let header: Arc<[String]> = parse_header(header)?.into();
+                let rows = redis_value_as_vec(data)?;
+                let data = LazyResultSet::new(
+                    Arc::clone(&header),
+                    rows,
+                    self.graph.get_graph_schema_mut(),
+                );
+                QueryResult::from_response(header, data, stats)
             }
             _ => Err(FalkorDBError::ParsingArrayToStructElementCount(
                 "Invalid number of elements returned from query",
@@ -493,8 +498,9 @@ impl<'a, Out, G: HasGraphSchema> ProcedureQueryBuilder<'a, Out, G> {
                 })
             })?;
 
+        let header: Arc<[String]> = parse_header(header)?.into();
         QueryResult::from_response(
-            Some(header),
+            header,
             redis_value_as_vec(indices).map(|indices| {
                 indices
                     .into_iter()

@@ -10,7 +10,7 @@
 //! Run a FalkorDB instance first (e.g. `docker run -p 6379:6379 falkordb/falkordb`), then
 //! `cargo run --example multiplexed_async --features tokio`.
 
-use falkordb::{ConnectionStrategy, FalkorClientBuilder, FalkorResult, FalkorValue};
+use falkordb::{ConnectionStrategy, FalkorClientBuilder, FalkorResult};
 use std::num::NonZeroU8;
 use std::sync::Arc;
 use tokio::task::JoinSet;
@@ -48,7 +48,7 @@ async fn main() -> FalkorResult<()> {
             let value = res
                 .data
                 .next()
-                .and_then(|row| row.first().and_then(FalkorValue::to_i64));
+                .and_then(|row| row.ok().and_then(|r| r.try_get_at::<i64>(0).ok()));
             FalkorResult::Ok((i, value))
         });
     }

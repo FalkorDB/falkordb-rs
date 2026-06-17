@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `IntoFalkorParams` traits and the `to_cypher_param` helper. Values (integers, floats, boolean
   values, strings, `Option`, arrays/`Vec`, string-keyed maps, `Point`/`Vec32`, `FalkorValue`) are
   encoded as escaped Cypher literals, and parameter names are validated.
+- header-aware result rows: the default `QueryResult::data` now yields `FalkorResult<Row>`, where
+  a `Row` pairs the result header with that row's values. Columns can be read by name or index,
+  untyped (`get`, `get_at`, `get_all`) or typed (`try_get::<T>`, `try_get_at::<T>`), plus
+  `columns`, `len`, `is_empty`, `into_values`, `into_map`, and (with `serde`)
+  `Row::deserialize::<T>`. Duplicate column aliases are handled explicitly (first-match `get`,
+  every-match `get_all`, last-wins `into_map`).
+- `FromFalkorValue`: a trait for strict, fallible conversion of a `FalkorValue` into a Rust type
+  (scalars, graph entities, `Option<T>`, `Vec<T>`, `HashMap<String, T>`); the bound behind
+  `Row::try_get`. Conversions never coerce silently; the one lossless widening allowed is
+  `i64` → `f64` within `±2^53`.
+- `LazyResultSet::into_values_lossy`: opt-in escape hatch that reproduces the pre-0.7
+  `Iterator<Item = Vec<FalkorValue>>` behavior.
+- new `FalkorDBError` variants: `MissingColumn`, `ColumnIndexOutOfBounds`, `RowShapeMismatch`,
+  and `TypeError`.
 
 ### Changed
 
@@ -23,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   escaped); numbers that used to be passed as strings (`"30"`) should be passed as numbers (`30`),
   and any value that was a raw Cypher expression should use `with_raw_param`. Procedure-call
   arguments are likewise encoded safely.
+- **Not backward compatible:** the default result iterator (`QueryResult::data`, i.e.
+  `LazyResultSet`) now yields `FalkorResult<Row>` instead of `Vec<FalkorValue>`. A row that fails
+  to parse is surfaced as an `Err` (which you can `?` or `collect::<FalkorResult<Vec<Row>>>()`)
+  rather than being silently swallowed into a `[FalkorValue::Unparseable]` row. `QueryResult::header`
+  is now `Arc<[String]>` (was `Vec<String>`), shared cheaply with every `Row`. Migration:
+
+  | Before (≤ 0.6) | After (0.7) |
+  | --- | --- |
+  | `for row in result.data { /* row: Vec<FalkorValue> */ }` | `for row in result.data { let row = row?; /* row: Row */ }` |
+  | `&row[i]` / `row.into_iter()` | `row.get_at(i)` / `row.into_values()` |
+  | align columns by header index by hand | `row.try_get::<T>("alias")` |
+  | a silently swallowed `Unparseable` row | a real `Err` you `?` or handle |
+  | the old lossy `Vec<FalkorValue>` rows | `result.data.into_values_lossy()` |
+  | `result.header: Vec<String>` | `result.header: Arc<[String]>` (`&result.header[..]` still works) |
 
 ## [0.5.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.4.0...v0.5.0) - 2026-06-17
 

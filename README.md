@@ -356,6 +356,68 @@ falkordb = { version = "0.3.0", features = ["tracing"] }
 Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the
 correct level as you desire it.
 
+### Typed result mapping (serde)
+
+Enable the optional `serde` feature to map query results straight into your own types instead of hand-matching every
+`FalkorValue` variant:
+
+```toml
+falkordb = { version = "0.3.0", features = ["serde"] }
+```
+
+Derive `serde::Deserialize` on your type and call `FalkorValue::deserialize_into` (or the free function
+`falkordb::from_falkor_value`) on a returned value. A node is deserialized from its properties, and scalars, `Option`,
+sequences and maps map onto the matching Rust types:
+
+```rust,ignore
+use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
+use serde::Deserialize;
+#[derive(Debug, Deserialize)]
+struct Movie {
+    title: String,
+    year: i64,
+    rating: Option<f64>,
+}
+let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
+    .expect("Invalid connection info");
+let client = FalkorClientBuilder::new()
+    .with_connection_info(connection_info)
+    .build()
+    .expect("Failed to build client");
+let mut graph = client.select_graph("imdb");
+let mut result = graph.query("MATCH (m:Movie) RETURN m").execute()
+    .expect("Failed executing query");
+for row in result.data.by_ref() {
+    if let Some(node) = row.into_iter().next() {
+        let movie: Movie = node.deserialize_into().expect("Failed to map node");
+        println!("{} ({})", movie.title, movie.year);
+    }
+}
+```
+
+A runnable version lives in [`examples/typed_mapping.rs`](examples/typed_mapping.rs).
+
+To map a whole result set in one shot, call `query_as::<T>()` before `execute()`. Each row is
+deserialized into a `T`, and the result's `data` becomes an iterator of `FalkorResult<T>`, so it
+collects directly into a `Vec`:
+
+```rust,ignore
+let movies: Vec<Movie> = graph
+    .query("MATCH (m:Movie) RETURN m")
+    .query_as::<Movie>()
+    .execute()
+    .expect("Failed executing query")
+    .data
+    .collect::<Result<_, _>>()
+    .expect("Failed mapping rows");
+```
+
+A single-column row (such as `RETURN m`) is deserialized from that one column's value, so a node
+maps from its properties and `RETURN count(m)` maps a scalar. A multi-column row (such as
+`RETURN m.title AS title, m.year AS year`) maps each column alias onto the matching struct field,
+or yields the values in order for a tuple. The query `header` and `stats` remain available on the
+returned result.
+
 ### Embedded FalkorDB Server
 
 This client supports running an embedded FalkorDB server, which is useful for:
@@ -498,7 +560,8 @@ just bench-local      # start DB, run all benchmarks, tear down
 ```
 
 Targeted recipes are available too, e.g. `just test-parity`, `just test-embedded`,
-`just test-one <filter>`, `just bench-one '<criterion-id>'`, and `just coverage-html`.
+`just test-one <filter>`, `just proptest`, `just bench-one '<criterion-id>'`, and
+`just coverage-html`.
 
 The host, port, Docker image and feature set can be overridden on the command line, for
 example `just port=6380 test` or `just image=falkordb/falkordb:latest db-up`.
@@ -515,6 +578,7 @@ reproduced with a single command:
 | `check-build` | `just build` |
 | `check-doc` | `just doc` |
 | `check-deny` | `just deny` |
+| `check-proptest` | `just proptest` |
 | `integration-tests` | `just integration` and `just integration --all-features` |
 | `integration-tests-tokio` | `just integration --features tokio` |
 | `coverage` | `just coverage` |
@@ -540,6 +604,26 @@ cargo test --lib
 # Run unit tests with embedded feature
 cargo test --lib --features embedded
 ```
+
+#### Property-Based Tests
+
+The optional `serde` integration is covered by [`proptest`](https://docs.rs/proptest) cases in
+`src/value/de_proptest.rs`, which need no running server. They assert that value- and row-level
+mapping agrees with `serde_json` over the shared data model, never panics on arbitrary input, and
+rejects malformed row shapes. Run just these:
+
+```bash
+# 256 cases per property (the proptest default)
+just proptest
+
+# crank the generated case count up (or set PROPTEST_CASES yourself)
+just proptest 4096
+
+# equivalent raw cargo command
+cargo nextest run --lib --features serde de_proptest
+```
+
+They also run in CI: as the dedicated `check-proptest` job, and within the `coverage` job.
 
 #### Integration Tests
 

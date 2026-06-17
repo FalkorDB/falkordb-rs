@@ -14,6 +14,9 @@ use std::{collections::HashMap, fmt::Display, marker::PhantomData, ops::Not};
 #[cfg(feature = "tokio")]
 use crate::AsyncGraph;
 
+#[cfg(feature = "serde")]
+use crate::TypedLazyResultSet;
+
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(name = "Construct Query", skip_all, level = "trace")
@@ -250,6 +253,78 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, AsyncGr
         self.common_execute_steps()
             .await
             .and_then(|res| self.generate_query_result_set(res))
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'a, T: Display, G: HasGraphSchema> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, G> {
+    /// Map each result row into `U`, where `U` implements [`serde::Deserialize`].
+    ///
+    /// This changes the type produced by [`execute`](Self::execute) from
+    /// `QueryResult<LazyResultSet>` to `QueryResult<TypedLazyResultSet<U>>`, whose `data` is an
+    /// iterator yielding one `FalkorResult<U>` per row. The [`header`](QueryResult::header) and
+    /// [`stats`](QueryResult::stats) are preserved.
+    ///
+    /// A single-column row maps the column's value (so `RETURN m` maps the node and
+    /// `RETURN n.name` maps the scalar); a multi-column row maps column name to value for
+    /// structs and maps, or the values in order for tuples and [`Vec`]. See
+    /// [`from_falkor_row`](crate::from_falkor_row) for the full mapping rules.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let result = graph.query("MATCH (m:Movie) RETURN m").query_as::<Movie>().execute()?;
+    /// let movies: Vec<Movie> = result.data.collect::<Result<_, _>>()?;
+    /// ```
+    pub fn query_as<U>(self) -> QueryBuilder<'a, QueryResult<TypedLazyResultSet<'a, U>>, T, G>
+    where
+        U: serde::de::DeserializeOwned,
+    {
+        QueryBuilder {
+            _unused: PhantomData,
+            graph: self.graph,
+            command: self.command,
+            query_string: self.query_string,
+            params: self.params,
+            timeout: self.timeout,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'a, T: Display, U> QueryBuilder<'a, QueryResult<TypedLazyResultSet<'a, U>>, T, SyncGraph>
+where
+    U: serde::de::DeserializeOwned,
+{
+    /// Executes the query, returning a [`QueryResult`] whose `data` is a
+    /// [`TypedLazyResultSet`] that deserializes each row into `U`.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute Typed Query", skip_all, level = "info")
+    )]
+    pub fn execute(mut self) -> FalkorResult<QueryResult<TypedLazyResultSet<'a, U>>> {
+        self.common_execute_steps()
+            .and_then(|res| self.generate_query_result_set(res))
+            .map(|result| result.into_typed::<U>())
+    }
+}
+
+#[cfg(all(feature = "serde", feature = "tokio"))]
+impl<'a, T: Display, U> QueryBuilder<'a, QueryResult<TypedLazyResultSet<'a, U>>, T, AsyncGraph>
+where
+    U: serde::de::DeserializeOwned,
+{
+    /// Executes the query, returning a [`QueryResult`] whose `data` is a
+    /// [`TypedLazyResultSet`] that deserializes each row into `U`.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Execute Typed Query", skip_all, level = "info")
+    )]
+    pub async fn execute(mut self) -> FalkorResult<QueryResult<TypedLazyResultSet<'a, U>>> {
+        self.common_execute_steps()
+            .await
+            .and_then(|res| self.generate_query_result_set(res))
+            .map(|result| result.into_typed::<U>())
     }
 }
 

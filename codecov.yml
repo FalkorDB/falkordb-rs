@@ -6,8 +6,8 @@ coverage:
     patch:
       default:
         # New code should be well covered, but allow some slack for diffs that
-        # include inherently hard-to-unit-test paths (network/IO error branches,
-        # platform-specific code, opt-in live tests).
+        # include inherently hard-to-unit-test paths (network/IO error branches
+        # and platform-specific code).
         threshold: 5%
 
 # Examples and benchmarks are documentation / developer tooling and are not

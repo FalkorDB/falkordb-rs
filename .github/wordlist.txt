@@ -15,7 +15,6 @@ dependabot
 yml
 yaml
 codecov
-deps
 async
 Async
 github
@@ -130,3 +129,8 @@ RHEL
 usr
 Dockerized
 SHA
+Deserialize
+deserialize
+deserialized
+imdb
+iter

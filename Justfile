@@ -17,7 +17,7 @@ image := "falkordb/falkordb:edge"
 container := "falkordb-rs-dev"
 
 # Feature set exercised by the full local suite (mirrors the coverage CI job).
-features := "tokio,embedded"
+features := "tokio,embedded,serde"
 
 # Default recipe: list everything.
 default:
@@ -94,6 +94,10 @@ integration *args:
 test-one filter:
     FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
         cargo nextest run --all --features {{features}} {{filter}}
+
+# Run only the `serde` property-based tests (no server); `cases` sets PROPTEST_CASES (default 256).
+proptest cases="256":
+    PROPTEST_CASES={{cases}} cargo nextest run --lib --features serde de_proptest
 
 # Spin up a server, populate the fixture, run the full suite, then tear it down.
 test-local: db-up db-populate

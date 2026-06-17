@@ -148,6 +148,19 @@ pub enum FalkorDBError {
         /// Whether the failed constraint was unique or mandatory.
         constraint_type: crate::ConstraintType,
     },
+    /// Mapping a FalkorDB result into a user type via `serde` failed. This covers both
+    /// value-level deserialization (a [`crate::FalkorValue`]) and row-level mapping (a result
+    /// row, e.g. a header/value length mismatch).
+    #[cfg(feature = "serde")]
+    #[error("Failed to deserialize via serde: {0}")]
+    SerdeError(String),
+}
+
+#[cfg(feature = "serde")]
+impl serde::de::Error for FalkorDBError {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        FalkorDBError::SerdeError(msg.to_string())
+    }
 }
 
 impl From<strum::ParseError> for FalkorDBError {

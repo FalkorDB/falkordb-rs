@@ -51,6 +51,11 @@ pub use value::{
     FalkorValue,
 };
 
+#[cfg(feature = "serde")]
+pub use response::typed_result_set::TypedLazyResultSet;
+#[cfg(feature = "serde")]
+pub use value::{from_falkor_row, from_falkor_value, FalkorValueDeserializer};
+
 #[cfg(feature = "tokio")]
 pub use client::asynchronous::FalkorAsyncClient;
 #[cfg(feature = "tokio")]

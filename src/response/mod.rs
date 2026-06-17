@@ -170,7 +170,7 @@ impl<'a> QueryResult<crate::LazyResultSet<'a>> {
     ///
     /// The [`header`](Self::header) and [`stats`](Self::stats) are preserved; only `data` is
     /// replaced by a [`TypedLazyResultSet`](crate::TypedLazyResultSet) that maps each row with
-    /// [`from_falkor_row`](crate::from_falkor_row).
+    /// [`Row::deserialize`](crate::Row::deserialize).
     pub(crate) fn into_typed<T>(self) -> QueryResult<typed_result_set::TypedLazyResultSet<'a, T>> {
         QueryResult {
             data: typed_result_set::TypedLazyResultSet::new(self.data),

@@ -179,7 +179,7 @@ impl<T: FromFalkorValue> FromFalkorValue for HashMap<String, T> {
                 .into_iter()
                 .map(|(key, value)| Ok((key, T::from_falkor_value(value)?)))
                 .collect(),
-            other => type_error("Map", &other),
+            other => type_error("HashMap", &other),
         }
     }
 }

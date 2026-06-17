@@ -104,15 +104,12 @@ impl Row {
     /// for the common unique-column case prefer [`get`](Self::get).
     pub fn get_all<'s>(
         &'s self,
-        column: &str,
+        column: &'s str,
     ) -> impl Iterator<Item = &'s FalkorValue> + 's {
-        let indices: Vec<usize> = self
-            .header
+        self.header
             .iter()
-            .enumerate()
-            .filter_map(|(index, name)| (name == column).then_some(index))
-            .collect();
-        indices.into_iter().map(move |index| &self.values[index])
+            .zip(&self.values)
+            .filter_map(move |(name, value)| (name == column).then_some(value))
     }
 
     /// Extracts and converts the value in the column named `column`.

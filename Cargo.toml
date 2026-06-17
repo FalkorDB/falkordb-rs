@@ -54,7 +54,7 @@ tokio-rustls = ["tokio", "redis/tokio-rustls-comp"]
 
 tracing = ["dep:tracing"]
 
-embedded = ["dep:which"]
+embedded = ["dep:which", "dep:tracing"]
 
 [[example]]
 name = "basic_usage"

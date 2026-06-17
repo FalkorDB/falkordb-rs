@@ -11,9 +11,27 @@
 //! - Embedded applications
 //! - Quick prototyping
 //!
-//! # Requirements
-//! - redis-server must be installed and available in PATH (or specify path in EmbeddedConfig)
-//! - falkordb.so module must be installed (or specify path in EmbeddedConfig)
+//! # Self-Contained Mode
+//!
+//! The embedded server features automatic binary provisioning via the `auto_download` option
+//! (enabled by default). When enabled, missing binaries are automatically downloaded from
+//! official FalkorDB releases and cached locally, making the embedded server "just work"
+//! without requiring pre-installed dependencies.
+//!
+//! # Platform-Specific Requirements
+//!
+//! ## macOS
+//! The FalkorDB module requires OpenMP (libomp) on macOS. If not already installed via
+//! Homebrew, install it with: `brew install libomp`
+//!
+//! ## All Platforms
+//! With `auto_download` enabled (default), the redis-server and falkordb.so binaries
+//! are automatically downloaded if not found locally.
+//!
+//! # License Note
+//!
+//! The downloaded FalkorDB module binary is licensed under the Server Side Public
+//! License (SSPL) v1. See https://www.falkordb.com/ for licensing details.
 //!
 //! # Running this example
 //! ```bash

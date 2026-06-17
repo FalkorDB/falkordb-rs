@@ -219,7 +219,7 @@ fn prepare(
                     .arg(query_string)
                     .arg("--compact");
                 if let Some(timeout) = query.timeout {
-                    pipe.arg(format!("timeout {timeout}"));
+                    pipe.arg("timeout").arg(timeout);
                 }
                 submitted.push(index);
             }

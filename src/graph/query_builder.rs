@@ -262,9 +262,12 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
     fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
         let query = construct_query(&self.query_string, &self.params)?;
 
-        let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
+        let timeout = self.timeout.map(|timeout| timeout.to_string());
         let mut params = vec![query.as_str(), "--compact"];
-        params.extend(timeout.as_deref());
+        if let Some(timeout) = timeout.as_deref() {
+            params.push("timeout");
+            params.push(timeout);
+        }
 
         let client = self.graph.get_client();
         let conn = if self.command == "GRAPH.RO_QUERY" {
@@ -298,9 +301,12 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
     async fn common_execute_steps(&mut self) -> FalkorResult<redis::Value> {
         let query = construct_query(&self.query_string, &self.params)?;
 
-        let timeout = self.timeout.map(|timeout| format!("timeout {timeout}"));
+        let timeout = self.timeout.map(|timeout| timeout.to_string());
         let mut params = vec![query.as_str(), "--compact"];
-        params.extend(timeout.as_deref());
+        if let Some(timeout) = timeout.as_deref() {
+            params.push("timeout");
+            params.push(timeout);
+        }
 
         let client = self.graph.get_client();
         let conn = if self.command == "GRAPH.RO_QUERY" {

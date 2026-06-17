@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.6.0...v0.7.0) - 2026-06-17
+
+### Added
+
+- [**breaking**] header-aware Row API with fallible result iteration ([#232](https://github.com/FalkorDB/falkordb-rs/pull/232))
+
 ### Added
 
 - header-aware result rows: the default `QueryResult::data` now yields `FalkorResult<Row>`, where

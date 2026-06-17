@@ -17,7 +17,7 @@ image := "falkordb/falkordb:edge"
 container := "falkordb-rs-dev"
 
 # Feature set exercised by the full local suite (mirrors the coverage CI job).
-features := "tokio,embedded"
+features := "tokio,embedded,serde"
 
 # Default recipe: list everything.
 default:

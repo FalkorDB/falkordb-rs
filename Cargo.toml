@@ -19,6 +19,7 @@ all-features = true
 parking_lot = { version = "0.12.5", default-features = false }
 redis = { version = "1.2.2", default-features = false, features = ["sentinel"] }
 regex = { version = "1.12.3", default-features = false, features = ["std", "perf", "unicode-bool", "unicode-perl"] }
+serde = { version = "1.0", default-features = false, features = ["std", "derive"], optional = true }
 strum = { version = "0.28.0", default-features = false, features = ["std", "derive"] }
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", default-features = false, features = ["macros", "sync", "rt-multi-thread", "time"], optional = true }
@@ -56,6 +57,10 @@ tracing = ["dep:tracing"]
 
 embedded = ["dep:which"]
 
+# Optional `serde` integration: derive `serde::Deserialize` on your own types and
+# map query results straight into them via [`FalkorValue::deserialize_into`].
+serde = ["dep:serde"]
+
 [[example]]
 name = "basic_usage"
 
@@ -70,3 +75,7 @@ required-features = ["tokio"]
 [[example]]
 name = "embedded_usage"
 required-features = ["embedded"]
+
+[[example]]
+name = "typed_mapping"
+required-features = ["serde"]

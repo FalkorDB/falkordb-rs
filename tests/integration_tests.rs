@@ -301,3 +301,103 @@ mod async_tests {
         let _ = graph.delete().await;
     }
 }
+
+#[cfg(feature = "serde")]
+mod serde_typed_mapping {
+    use super::{get_test_connection_info, skip_if_no_server};
+    use falkordb::FalkorClientBuilder;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Movie {
+        title: String,
+        year: i64,
+        #[serde(default)]
+        rating: Option<f64>,
+    }
+
+    #[test]
+    fn test_deserialize_node_into_struct() {
+        if skip_if_no_server() {
+            return;
+        }
+
+        let conn_info = match get_test_connection_info() {
+            Ok(info) => info,
+            Err(_) => return,
+        };
+
+        let client = match FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let mut graph = client.select_graph("test_serde_typed_mapping");
+        let _ = graph.delete();
+
+        graph
+            .query("CREATE (:Movie {title: 'Heat', year: 1995, rating: 8.3})")
+            .execute()
+            .expect("create should succeed");
+
+        let mut result = graph
+            .query("MATCH (m:Movie) RETURN m")
+            .execute()
+            .expect("query should succeed");
+
+        let row = result.data.next().expect("expected a row");
+        let node = row.into_iter().next().expect("expected a node column");
+        let movie: Movie = node.deserialize_into().expect("deserialize should succeed");
+
+        assert_eq!(
+            movie,
+            Movie {
+                title: "Heat".to_string(),
+                year: 1995,
+                rating: Some(8.3),
+            }
+        );
+
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn test_deserialize_scalar_column() {
+        if skip_if_no_server() {
+            return;
+        }
+
+        let conn_info = match get_test_connection_info() {
+            Ok(info) => info,
+            Err(_) => return,
+        };
+
+        let client = match FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let mut graph = client.select_graph("test_serde_scalar_column");
+        let _ = graph.delete();
+
+        let mut result = graph
+            .query("RETURN 42")
+            .execute()
+            .expect("query should succeed");
+
+        let row = result.data.next().expect("expected a row");
+        let value = row.into_iter().next().expect("expected a column");
+        let number: i64 = value
+            .deserialize_into()
+            .expect("deserialize should succeed");
+        assert_eq!(number, 42);
+
+        let _ = graph.delete();
+    }
+}

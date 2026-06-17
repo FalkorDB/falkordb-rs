@@ -3,3 +3,8 @@ coverage:
     project:
       default:
         threshold: 2%
+
+# Examples are illustrative and run against a live server, not under the
+# coverage harness, so they should not count toward coverage.
+ignore:
+  - "examples"

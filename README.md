@@ -356,6 +356,47 @@ falkordb = { version = "0.3.0", features = ["tracing"] }
 Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the
 correct level as you desire it.
 
+### Typed result mapping (serde)
+
+Enable the optional `serde` feature to map query results straight into your own types instead of hand-matching every
+`FalkorValue` variant:
+
+```toml
+falkordb = { version = "0.3.0", features = ["serde"] }
+```
+
+Derive `serde::Deserialize` on your type and call `FalkorValue::deserialize_into` (or the free function
+`falkordb::from_falkor_value`) on a returned value. A node is deserialized from its properties, and scalars, `Option`,
+sequences and maps map onto the matching Rust types:
+
+```rust,ignore
+use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
+use serde::Deserialize;
+#[derive(Debug, Deserialize)]
+struct Movie {
+    title: String,
+    year: i64,
+    rating: Option<f64>,
+}
+let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
+    .expect("Invalid connection info");
+let client = FalkorClientBuilder::new()
+    .with_connection_info(connection_info)
+    .build()
+    .expect("Failed to build client");
+let mut graph = client.select_graph("imdb");
+let mut result = graph.query("MATCH (m:Movie) RETURN m").execute()
+    .expect("Failed executing query");
+for row in result.data.by_ref() {
+    if let Some(node) = row.into_iter().next() {
+        let movie: Movie = node.deserialize_into().expect("Failed to map node");
+        println!("{} ({})", movie.title, movie.year);
+    }
+}
+```
+
+A runnable version lives in [`examples/typed_mapping.rs`](examples/typed_mapping.rs).
+
 ### Embedded FalkorDB Server
 
 This client supports running an embedded FalkorDB server, which is useful for:

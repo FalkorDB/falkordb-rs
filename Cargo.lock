@@ -363,6 +363,7 @@ dependencies = [
  "parking_lot",
  "redis",
  "regex",
+ "serde",
  "strum",
  "thiserror",
  "tokio",

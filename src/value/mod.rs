@@ -16,6 +16,12 @@ pub(crate) mod path;
 pub(crate) mod point;
 pub(crate) mod vec32;
 
+#[cfg(feature = "serde")]
+mod de;
+
+#[cfg(feature = "serde")]
+pub use de::{from_falkor_value, FalkorValueDeserializer};
+
 /// An enum of all the supported Falkor types
 #[derive(Clone, Debug, PartialEq)]
 pub enum FalkorValue {

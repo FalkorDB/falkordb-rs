@@ -153,7 +153,14 @@ bench-local: db-up
 
 # Spellcheck the Markdown docs (CI gate). Requires `pyspelling` and `aspell` locally.
 spellcheck:
-    pyspelling -c .github/spellcheck-settings.yml
+    pyspelling -c .github/spellcheck-settings.yml -n Markdown
+
+# Spellcheck a pull-request title exactly as the Spellcheck CI gate does. Catches
+# technical words (e.g. type names) that release-plz would later copy verbatim into
+# the changelog and fail the release PR. Set PR_TITLE first, e.g.
+# `PR_TITLE='fix: handle ConnectionDown' just spellcheck-pr-title`.
+spellcheck-pr-title:
+    printf '# %s\n' "${PR_TITLE:?set PR_TITLE to the pull-request title}" > .pr-title.md && pyspelling -c .github/spellcheck-settings.yml -n PRTitle && rm -f .pr-title.md || { rm -f .pr-title.md; exit 1; }
 
 # === Docker / FalkorDB lifecycle =============================================
 

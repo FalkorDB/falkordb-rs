@@ -1,7 +1,7 @@
 matrix:
 - name: Markdown
   expect_match: false
-  apsell:
+  aspell:
     lang: en
     d: en_US
   dictionary:
@@ -26,3 +26,32 @@ matrix:
   sources:
   - '*.md'
   - 'docs/*.md'
+# PRTitle: spellcheck a single pull-request title (written to .pr-title.md by the
+# `spellcheck-pr-title` just recipe / the Spellcheck workflow). Catches words that
+# would otherwise reach the auto-generated release changelog and fail the gate above.
+- name: PRTitle
+  expect_match: false
+  aspell:
+    lang: en
+    d: en_US
+  dictionary:
+    wordlists:
+    - .github/wordlist.txt
+    output: wordlist.dic
+  pipeline:
+  - pyspelling.filters.markdown:
+      markdown_extensions:
+      - markdown.extensions.extra:
+  - pyspelling.filters.html:
+      comments: false
+      attributes:
+      - alt
+      ignores:
+      - ':matches(code, pre)'
+      - code
+      - pre
+      - blockquote
+      - img
+      - table
+  sources:
+  - '.pr-title.md'

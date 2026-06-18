@@ -296,6 +296,40 @@ pub(crate) mod test_utils {
             tokio::time::sleep(RETRY_INTERVAL).await;
         }
     }
+
+    /// Classifies a copy-retry attempt: pass an `Ok` value through, return the default (e.g. an
+    /// empty `Vec`, so the caller's predicate treats it as a miss and re-issues) on a transient
+    /// [`FalkorDBError::ConnectionDown`] — the client has already swapped in a fresh connection — and
+    /// panic immediately on any other error so a genuine regression fails fast with context instead
+    /// of being masked until the retry timeout.
+    pub(crate) fn default_on_connection_down<T: Default>(
+        context: &str,
+        result: FalkorResult<T>,
+    ) -> T {
+        match result {
+            Ok(value) => value,
+            Err(FalkorDBError::ConnectionDown) => T::default(),
+            Err(err) => panic!("{context}: {err}"),
+        }
+    }
+
+    /// Awaits a `copy_graph(...)`/`copy_graph_op(...).wait()` future and reads the copied graph's
+    /// actors. Shared by the async copy tests so the (necessarily `?`-based) async error plumbing
+    /// lives in one place.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn read_copied_actors(
+        copy: impl std::future::Future<Output = FalkorResult<AsyncGraph>>
+    ) -> FalkorResult<Vec<FalkorResult<Row>>> {
+        use futures::StreamExt as _;
+        let mut graph = copy.await?;
+        Ok(graph
+            .query("MATCH (a:actor) RETURN a")
+            .execute()
+            .await?
+            .data
+            .collect::<Vec<_>>()
+            .await)
+    }
 }
 
 #[cfg(test)]
@@ -331,5 +365,28 @@ mod retry_tests {
         .await;
         assert_eq!(value, 3);
         assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn default_on_connection_down_passes_ok_through() {
+        use super::test_utils::default_on_connection_down;
+        let value = default_on_connection_down("ctx", Ok::<_, crate::FalkorDBError>(vec![1, 2, 3]));
+        assert_eq!(value, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn default_on_connection_down_returns_default_on_connection_down() {
+        use super::test_utils::default_on_connection_down;
+        let value: Vec<i32> =
+            default_on_connection_down("ctx", Err(crate::FalkorDBError::ConnectionDown));
+        assert!(value.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "could not copy")]
+    fn default_on_connection_down_panics_on_other_error() {
+        use super::test_utils::default_on_connection_down;
+        let _: Vec<i32> =
+            default_on_connection_down("could not copy", Err(crate::FalkorDBError::ParsingArray));
     }
 }

@@ -589,8 +589,9 @@ mod tests {
     use super::*;
     use crate::{
         test_utils::{
-            create_async_test_client, imdb_async_test_client, retry_until_async_fn_with_timeout,
-            TestAsyncGraphHandle, COPY_RETRY_TIMEOUT,
+            create_async_test_client, default_on_connection_down, imdb_async_test_client,
+            read_copied_actors, retry_until_async_fn_with_timeout, TestAsyncGraphHandle,
+            COPY_RETRY_TIMEOUT,
         },
         FalkorClientBuilder,
     };
@@ -1013,18 +1014,12 @@ mod tests {
                     .delete()
                     .await
                     .ok();
-                let mut graph = client
-                    .copy_graph("imdb", "imdb_ro_copy_async")
-                    .await
-                    .expect("Could not copy graph");
-                graph
-                    .query("MATCH (a:actor) RETURN a")
-                    .execute()
-                    .await
-                    .expect("Could not get actors from copied graph")
-                    .data
-                    .collect::<Vec<_>>()
-                    .await
+                // A transient `ConnectionDown` retries with a fresh connection; any other error
+                // fails fast.
+                default_on_connection_down(
+                    "Could not copy graph",
+                    read_copied_actors(client.copy_graph("imdb", "imdb_ro_copy_async")).await,
+                )
             },
             |rows| rows == &expected,
         )
@@ -1061,19 +1056,15 @@ mod tests {
                     .delete()
                     .await
                     .ok();
-                let mut graph = client
-                    .copy_graph_op("imdb", "imdb_op_copy_async_wait")
-                    .wait()
-                    .await
-                    .expect("Could not copy graph");
-                graph
-                    .query("MATCH (a:actor) RETURN a")
-                    .execute()
-                    .await
-                    .expect("Could not get actors from copied graph")
-                    .data
-                    .collect::<Vec<_>>()
-                    .await
+                default_on_connection_down(
+                    "Could not copy graph",
+                    read_copied_actors(
+                        client
+                            .copy_graph_op("imdb", "imdb_op_copy_async_wait")
+                            .wait(),
+                    )
+                    .await,
+                )
             },
             |rows| rows == &expected,
         )

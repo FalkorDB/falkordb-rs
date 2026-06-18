@@ -6,7 +6,6 @@
 use crate::{
     client::asynchronous::FalkorAsyncClientInner,
     graph::{generate_create_index_query, generate_drop_index_query},
-    parser::redis_value_as_vec,
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
     IndexType, ProcedureQueryBuilder, QueryBuilder, QueryResult, RowStream, SlowlogEntry,
 };
@@ -95,10 +94,7 @@ impl AsyncGraph {
     pub async fn slowlog(&self) -> FalkorResult<Vec<SlowlogEntry>> {
         self.execute_command("GRAPH.SLOWLOG", None, None)
             .await
-            .and_then(|res| {
-                redis_value_as_vec(res)
-                    .map(|as_vec| as_vec.into_iter().flat_map(SlowlogEntry::parse).collect())
-            })
+            .and_then(crate::response::slowlog_entry::parse_slowlog)
     }
 
     /// Resets the slowlog, all query time data will be cleared.

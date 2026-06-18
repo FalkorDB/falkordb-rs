@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.0...v0.8.1) - 2026-06-18
+
+### Added
+
+- batch & pipelined execution (graph.batch()) ([#236](https://github.com/FalkorDB/falkordb-rs/pull/236))
+
+### Fixed
+
+- surface slowlog parse errors instead of silently dropping entries ([#237](https://github.com/FalkorDB/falkordb-rs/pull/237))
+
 ### Added
 
 - batch / pipelined execution: `graph.batch()` queues several queries and dispatches them over a

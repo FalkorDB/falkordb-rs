@@ -11,9 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - add FalkorDBError::mitigation_hint() for actionable error guidance ([#248](https://github.com/FalkorDB/falkordb-rs/pull/248))
-
-### Added
-
 - `FalkorDBError::mitigation_hint()` returns a short, actionable remediation hint for common,
   recognizable errors (or `None`). It is additive — `Display`/`Debug` and the raw message are
   unchanged — and hints are fixed `&'static str`s, so they never echo text from the underlying
@@ -24,9 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - add an llms.txt AI-readable API surface with a drift gate ([#246](https://github.com/FalkorDB/falkordb-rs/pull/246))
-
-### Added
-
 - An `llms.txt` at the repository root ([#246](https://github.com/FalkorDB/falkordb-rs/pull/246)) —
   a curated, machine-readable summary of the public API, feature flags, idioms and pitfalls for AI
   coding assistants (the `llmstxt.org` convention). The narrative lives in `docs/llms.template.md`;

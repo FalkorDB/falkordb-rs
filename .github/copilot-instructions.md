@@ -61,10 +61,11 @@ don't pile up.
 
 ## Spellcheck, commit subjects & PR titles
 
-- **PR titles must be spellcheck-clean** — CI enforces this (the `PRTitle` task in
-  `.github/spellcheck-settings.yml`). `release-plz` copies merged commit subjects (squashed PR
-  titles) **verbatim** into `CHANGELOG.md`, so an unknown word in a title fails the later
-  release PR. Keep titles clean at the source.
+- **PR titles must be spellcheck-clean** — the `PRTitle` CI task checks every PR title against the
+  same wordlist and fails it at PR time. This matters because `release-plz` copies merged commit
+  subjects (squashed PR titles) **verbatim** into `CHANGELOG.md` (itself spellchecked), so an
+  unknown word would otherwise only surface — too late — on the release PR. Keep titles clean at
+  the source.
 - When you add or rename a **public type / term**, add its name to **`.github/wordlist.txt`**.
 - In Markdown/docs, **backtick** code and type names (`` `ConnectionDown` ``) — backticked spans
   are ignored by the spellchecker.

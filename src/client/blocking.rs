@@ -720,17 +720,19 @@ mod tests {
             COPY_RETRY_TIMEOUT,
             || {
                 client.select_graph("imdb_ro_copy").delete().ok();
-                let attempt = (|| -> crate::FalkorResult<Vec<_>> {
-                    let mut graph = client.copy_graph("imdb", "imdb_ro_copy")?;
-                    Ok(graph
-                        .query("MATCH (a:actor) RETURN a")
-                        .execute()?
-                        .data
-                        .collect::<Vec<_>>())
-                })();
-                // A transient `ConnectionDown` retries with a fresh connection; any other error is a
-                // genuine failure and fails fast.
-                default_on_connection_down("Could not copy graph", attempt)
+                // A transient `ConnectionDown` retries with a fresh connection; any other error
+                // fails fast (combinator chain so the error plumbing has no untaken branches).
+                default_on_connection_down(
+                    "Could not copy graph",
+                    client
+                        .copy_graph("imdb", "imdb_ro_copy")
+                        .and_then(|mut graph| {
+                            graph
+                                .query("MATCH (a:actor) RETURN a")
+                                .execute()
+                                .map(|result| result.data.collect::<Vec<_>>())
+                        }),
+                )
             },
             |rows| rows == &expected,
         );
@@ -760,15 +762,18 @@ mod tests {
             COPY_RETRY_TIMEOUT,
             || {
                 client.select_graph("imdb_op_copy_wait").delete().ok();
-                let attempt = (|| -> crate::FalkorResult<Vec<_>> {
-                    let mut graph = client.copy_graph_op("imdb", "imdb_op_copy_wait").wait()?;
-                    Ok(graph
-                        .query("MATCH (a:actor) RETURN a")
-                        .execute()?
-                        .data
-                        .collect::<Vec<_>>())
-                })();
-                default_on_connection_down("Could not copy graph", attempt)
+                default_on_connection_down(
+                    "Could not copy graph",
+                    client
+                        .copy_graph_op("imdb", "imdb_op_copy_wait")
+                        .wait()
+                        .and_then(|mut graph| {
+                            graph
+                                .query("MATCH (a:actor) RETURN a")
+                                .execute()
+                                .map(|result| result.data.collect::<Vec<_>>())
+                        }),
+                )
             },
             |rows| rows == &expected,
         );

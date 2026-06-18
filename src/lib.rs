@@ -312,6 +312,24 @@ pub(crate) mod test_utils {
             Err(err) => panic!("{context}: {err}"),
         }
     }
+
+    /// Awaits a `copy_graph(...)`/`copy_graph_op(...).wait()` future and reads the copied graph's
+    /// actors. Shared by the async copy tests so the (necessarily `?`-based) async error plumbing
+    /// lives in one place.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn read_copied_actors(
+        copy: impl std::future::Future<Output = FalkorResult<AsyncGraph>>
+    ) -> FalkorResult<Vec<FalkorResult<Row>>> {
+        use futures::StreamExt as _;
+        let mut graph = copy.await?;
+        Ok(graph
+            .query("MATCH (a:actor) RETURN a")
+            .execute()
+            .await?
+            .data
+            .collect::<Vec<_>>()
+            .await)
+    }
 }
 
 #[cfg(test)]

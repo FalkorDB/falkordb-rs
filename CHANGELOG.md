@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.2...v0.8.3) - 2026-06-18
+
+### Other
+
+- add agent instructions for repository engineering conventions ([#242](https://github.com/FalkorDB/falkordb-rs/pull/242))
+- check pull request titles for spelling before merge ([#241](https://github.com/FalkorDB/falkordb-rs/pull/241))
+
 ## [0.8.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.1...v0.8.2) - 2026-06-18
 
 ### Fixed

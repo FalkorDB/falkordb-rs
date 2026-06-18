@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.4...v0.8.5) - 2026-06-18
+
+### Added
+
+- add an llms.txt AI-readable API surface with a drift gate ([#246](https://github.com/FalkorDB/falkordb-rs/pull/246))
+
 ### Added
 
 - An `llms.txt` at the repository root ([#246](https://github.com/FalkorDB/falkordb-rs/pull/246)) —

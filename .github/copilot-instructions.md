@@ -36,13 +36,27 @@ Tests need a running server; prefer the `*-local` wrappers, which manage Docker 
 
 1. **Design first** for non-trivial work, and **rubber-duck review** the design before coding.
 2. **Implement** the change with: code **+ tests + docs** (doc-comments, a doctest or example
-   where it helps) **+ a `CHANGELOG.md` entry**.
+   where it helps) **+ a `CHANGELOG.md` entry**. On every change, **check and align all
+   documentation** with it — see "Keep documentation in sync" below.
 3. **Validate locally via `just`** — all relevant gates green (`just done` / `just verify`,
    plus `just coverage`, `just spellcheck`, `just proptest`, `just integration` as applicable).
 4. Open a PR on a `feat:` / `fix:` / `ci:` / `docs:` branch.
 5. **Resolve every AI review thread** (Copilot **and** CodeRabbit) — reply *and* mark resolved —
    before merge. Copilot auto-reviews on push here.
 6. A human merges; `release-plz` handles the release.
+
+## Keep documentation in sync
+
+On **every** change, check and align **all** documentation so it never drifts from the code —
+treat "the docs match the code" as part of the definition of done, not a follow-up:
+
+- **`README.md`** and **`docs/*.md`** — update any affected prose, code snippets, feature lists,
+  and migration notes.
+- **`llms.txt`** (the AI-readable API surface) — regenerate with **`just llms`** whenever the
+  public API changes, and commit the result. The narrative lives in `docs/llms.template.md`; the
+  `## Public API` block is auto-generated from `src/lib.rs`. CI enforces this with
+  **`just check-llms`**, a drift gate that fails if `llms.txt` is stale.
+- **doc-comments, doctests and `examples/`** — keep them accurate and compiling.
 
 ## Flaky tests are a hard no
 

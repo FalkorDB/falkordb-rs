@@ -1,0 +1,13 @@
+# Dev-only generator for the repo-root `llms.txt`. It is a standalone crate (its own
+# `[workspace]`) so it never enters the published `falkordb` crate's dependency, lint,
+# `cargo deny` or MSRV surface. Run it via `just llms` / `just check-llms`.
+[package]
+name = "llms-gen"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+syn = { version = "2", features = ["full"] }

@@ -162,6 +162,22 @@ spellcheck:
 spellcheck-pr-title:
     printf '# %s\n' "${PR_TITLE:?set PR_TITLE to the pull-request title}" > .pr-title.md && pyspelling -c .github/spellcheck-settings.yml -n PRTitle && rm -f .pr-title.md || { rm -f .pr-title.md; exit 1; }
 
+# === llms.txt (AI-readable API surface) ======================================
+
+# Regenerate the repo-root llms.txt from docs/llms.template.md + the public API parsed
+# from src/lib.rs (via the standalone tools/llms-gen crate; stable toolchain, deterministic).
+llms:
+    cargo run --quiet --manifest-path tools/llms-gen/Cargo.toml
+
+# Unit-test the llms.txt generator (parsing, feature detection, marker splicing).
+test-llms:
+    cargo test --quiet --manifest-path tools/llms-gen/Cargo.toml
+
+# CI drift gate: run the generator's tests, regenerate llms.txt, and fail if the committed
+# copy is stale. If this fails you changed the public API — run `just llms` and commit llms.txt.
+check-llms: test-llms llms
+    git diff --exit-code -- llms.txt
+
 # === Docker / FalkorDB lifecycle =============================================
 
 # Start a FalkorDB server in Docker on the configured port.

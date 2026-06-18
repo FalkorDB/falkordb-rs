@@ -1508,6 +1508,10 @@ mod async_batch_pipelining {
             .try_get("n")
             .expect("n");
         assert_eq!(n, 2);
+        let m: i64 = results[1].as_ref().expect("max ok").data[0]
+            .try_get("m")
+            .expect("m");
+        assert_eq!(m, 2);
         graph.delete().await.expect("delete");
     }
 

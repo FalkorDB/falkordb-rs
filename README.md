@@ -143,6 +143,52 @@ graph.query("RETURN point($p)").with_param("p", coords).execute()?;
 If you really need a raw Cypher expression, `with_raw_param("key", "…")` is the explicit escape
 hatch — no escaping is applied to the value (the parameter name is still validated).
 
+### Batch & pipelined execution
+
+Normally each query is one network round-trip. `graph.batch()` queues several queries and sends them
+over a single Redis pipeline in **one round-trip**, returning one result per query **in submission
+order**. Queue queries with `query` (a `GRAPH.QUERY`) / `ro_query` (a `GRAPH.RO_QUERY`) and set
+per-query parameters on the returned handle:
+
+```rust,ignore
+let mut batch = graph.batch();
+for movie in &movies {
+    batch.query("CREATE (:Movie {title: $t})").with_param("t", movie);
+}
+batch.ro_query("MATCH (m:Movie) RETURN count(m) AS n");
+
+let results = batch.execute()?; // Vec<BatchItemResult>, one per query, in order
+for (i, item) in results.into_iter().enumerate() {
+    match item {
+        Ok(result) => { /* result.data: Vec<Row>, result.header, result.stats */ }
+        Err(err) => eprintln!("query {i} failed: {err}"),
+    }
+}
+```
+
+On the async client it is identical but for the `await`:
+
+```rust,ignore
+let mut batch = graph.batch();
+// … queue queries …
+let results = batch.execute().await?;
+```
+
+Key points:
+
+- **Per-item errors.** A failing query (bad Cypher, or a parameter that can't be encoded) becomes
+  that slot's `Err`; the other queries are unaffected. The **outer** `Result` only fails if the whole
+  batch could not be completed — and if that happens *after* the pipeline was sent, the server may
+  have run some or all queries (the state is unknown), which matters for writes.
+- **Not a transaction.** A pipeline is not `MULTI`/`EXEC`: every queued query is executed, so a
+  failure in one does **not** roll back or stop the others.
+- **Results are eager.** Each query's rows are parsed up front into a `Vec<Row>` (the same `Row` as
+  elsewhere), since many result sets coexist in one batch.
+- **Owned queries.** To build queries ahead of time, construct `BatchQuery::write(..)` /
+  `BatchQuery::read(..)`, attach params/timeout, and `batch.push(query)`.
+
+A runnable version lives in [`examples/batch.rs`](examples/batch.rs).
+
 ### Waiting for background operations
 
 Some FalkorDB operations finish **after** the command that starts them returns: when you create or

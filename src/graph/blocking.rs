@@ -156,6 +156,16 @@ impl SyncGraph {
         QueryBuilder::new(self, "GRAPH.RO_QUERY", query_string)
     }
 
+    /// Starts a [`BatchBuilder`](crate::BatchBuilder) for this graph: queue several queries with
+    /// `query`/`ro_query` (or `push`) and `execute()` them over a single pipelined round-trip,
+    /// getting one result per query in submission order.
+    ///
+    /// # Returns
+    /// A [`BatchBuilder`](crate::BatchBuilder) borrowing this graph until executed.
+    pub fn batch(&mut self) -> crate::BatchBuilder<'_, Self> {
+        crate::BatchBuilder::new(self)
+    }
+
     /// Creates a [`ProcedureQueryBuilder`] for this graph
     /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only queries are more limited with the operations they are allowed to perform.

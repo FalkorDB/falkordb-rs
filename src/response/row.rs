@@ -8,7 +8,6 @@
 use crate::{FalkorDBError, FalkorResult, FalkorValue, FromFalkorValue};
 use std::collections::HashMap;
 use std::sync::Arc;
-
 /// A single result row: the query's column names (the *header*) paired with this row's values.
 ///
 /// `Row` is what the default [`LazyResultSet`](crate::LazyResultSet) backing `QueryResult::data`
@@ -211,6 +210,35 @@ impl FromIterator<(String, FalkorValue)> for Row {
             values,
         }
     }
+}
+
+/// Parses every raw row of a query reply into a [`Row`], resolving compact ids against
+/// `graph_schema` (refreshing it once on a cache miss). Per-row parse failures are surfaced as `Err`
+/// items rather than aborting the whole set, so callers choose whether to keep going
+/// ([`RowStream`](crate::RowStream)) or collapse to the first error (the batch API).
+///
+/// Shared by [`RowStream::parse`](crate::RowStream) (async, lazy-yielding) and the batch builder
+/// (eager `Vec<Row>`), so the row-decoding logic lives in exactly one place.
+pub(crate) fn parse_rows(
+    header: Arc<[String]>,
+    raw_rows: Vec<redis::Value>,
+    graph_schema: &mut crate::GraphSchema,
+) -> Vec<FalkorResult<Row>> {
+    use crate::parser::{parse_type, ParserTypeMarker};
+    raw_rows
+        .into_iter()
+        .map(|raw| {
+            let values = parse_type(ParserTypeMarker::Array, raw, graph_schema)
+                .and_then(FalkorValue::into_vec)?;
+            if values.len() != header.len() {
+                return Err(FalkorDBError::RowShapeMismatch {
+                    header_len: header.len(),
+                    value_len: values.len(),
+                });
+            }
+            Ok(Row::new(Arc::clone(&header), values))
+        })
+        .collect()
 }
 
 #[cfg(test)]

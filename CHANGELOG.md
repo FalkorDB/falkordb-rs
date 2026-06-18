@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An `llms.txt` at the repository root ([#246](https://github.com/FalkorDB/falkordb-rs/pull/246)) —
+  a curated, machine-readable summary of the public API, feature flags, idioms and pitfalls for AI
+  coding assistants (the `llmstxt.org` convention). The narrative lives in `docs/llms.template.md`;
+  the `## Public API` section is generated from `src/lib.rs`. Run `just llms` to regenerate it, and
+  a `check-llms` CI gate keeps it from drifting as the public API changes.
+
 ## [0.8.4](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.3...v0.8.4) - 2026-06-18
 
 ### Other

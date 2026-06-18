@@ -746,6 +746,22 @@ Targeted recipes are available too, e.g. `just test-parity`, `just test-embedded
 The host, port, Docker image and feature set can be overridden on the command line, for
 example `just port=6380 test` or `just image=falkordb/falkordb:latest db-up`.
 
+### Regenerating `llms.txt`
+
+The repository ships an [`llms.txt`](llms.txt) — a curated, machine-readable summary of the public
+API, idioms and pitfalls for AI coding assistants (the [llmstxt.org](https://llmstxt.org)
+convention). Its narrative lives in [`docs/llms.template.md`](docs/llms.template.md); the
+`## Public API` block is generated from `src/lib.rs`. **Whenever you change the public API,
+regenerate it and commit the result:**
+
+```bash
+just llms        # rewrite llms.txt from the template + the current public API
+just check-llms  # drift gate: fails if the committed llms.txt is stale
+```
+
+A `check-llms` CI job runs `just check-llms` on every pull request (and before a release), so a
+stale `llms.txt` fails the build.
+
 ### Reproducing CI locally
 
 The GitHub Actions workflows invoke these same recipes, so a failing CI job can be
@@ -762,6 +778,7 @@ reproduced with a single command:
 | `integration-tests` | `just integration` and `just integration --all-features` |
 | `integration-tests-tokio` | `just integration --features tokio` |
 | `coverage` | `just coverage` |
+| `check-llms` | `just check-llms` |
 
 Run `just ci` to execute every required no-server gate at once, or `just verify` to also
 run the server-backed suite. The integration and coverage recipes need a reachable

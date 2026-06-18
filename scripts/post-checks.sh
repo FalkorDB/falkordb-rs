@@ -23,6 +23,7 @@ run just clippy-all
 run just build
 run just doc
 run just deny
+run just check-llms
 
 echo
 echo "All post-checks passed. Safe to declare the task done."

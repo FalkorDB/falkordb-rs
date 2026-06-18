@@ -41,6 +41,11 @@ jobs:
         with:
           tool: just
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
       - name: Build
         run: just build
 
@@ -53,6 +58,11 @@ jobs:
         with:
           tool: just
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
       - name: Check Clippy
         run: just clippy
 
@@ -65,6 +75,11 @@ jobs:
         with:
           tool: just
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
       - name: Doc
         run: just doc
 
@@ -77,8 +92,32 @@ jobs:
         with:
           tool: just,cargo-deny
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
       - name: Check Deny
         run: just deny
+
+  # Make sure llms.txt is in sync with the public API before publishing
+  check-llms:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
+      - name: Check llms.txt is in sync with the public API
+        run: just check-llms
 
   # Actually publish to crates.io
   crates-io:
@@ -88,6 +127,7 @@ jobs:
       - clippy
       - doc
       - deny
+      - check-llms
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

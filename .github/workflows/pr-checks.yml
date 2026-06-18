@@ -11,6 +11,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Harden against transient crates.io network blips (a registry download EOF failed a
+  # release PR's clippy, see #243): retry failed downloads and disable HTTP/2 multiplexing,
+  # the source of intermittent "unexpected eof while reading" curl errors.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
 
 # Every job runs a single `just` recipe so the exact command can be reproduced
 # locally (see the Justfile / README "Development" section).
@@ -22,6 +27,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Check Clippy
         run: just clippy
 
@@ -32,6 +38,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, cargo-deny
         with:
           tool: just,cargo-deny
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Check Deny
         run: just deny
 
@@ -42,6 +49,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Doc
         run: just doc
 
@@ -62,6 +70,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Build
         run: just build
 
@@ -72,5 +81,6 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, nextest
         with:
           tool: just,nextest
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Property tests
         run: just proptest

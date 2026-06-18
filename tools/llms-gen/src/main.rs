@@ -90,7 +90,10 @@ fn collect_use_names(
         UseTree::Name(n) => out.push(n.ident.to_string()),
         UseTree::Rename(r) => out.push(r.rename.to_string()),
         UseTree::Group(g) => g.items.iter().for_each(|t| collect_use_names(t, out)),
-        UseTree::Glob(_) => {}
+        UseTree::Glob(_) => panic!(
+            "glob re-export (`pub use …::*`) in src/lib.rs is not supported by the llms.txt \
+             generator — list the items explicitly, or extend tools/llms-gen to expand globs"
+        ),
     }
 }
 
@@ -132,7 +135,8 @@ fn walk_cfg(
             }
         }
         Meta::NameValue(_) => {}
-        Meta::List(list) => {
+        // Only `all(...)` matches the renderer's "requires every feature" semantics.
+        Meta::List(list) if list.path.is_ident("all") => {
             if let Ok(nested) =
                 list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
             {
@@ -141,6 +145,11 @@ fn walk_cfg(
                 }
             }
         }
+        Meta::List(_) => panic!(
+            "unsupported cfg predicate on a public re-export in src/lib.rs: the llms.txt \
+             generator handles only `feature = \"…\"` and `all(...)`; extend tools/llms-gen \
+             to support `any`/`not`"
+        ),
     }
 }
 
@@ -225,5 +234,17 @@ pub(crate) use private::NotPublic;
             public_api("#[cfg(all(feature = \"serde\", feature = \"tokio\"))]\npub use m::T;");
         let out = render("<!-- BEGIN API -->\n<!-- END API -->", &api);
         assert!(out.contains("- `T` — requires `serde` + `tokio`\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "glob re-export")]
+    fn rejects_glob_reexport() {
+        public_api("pub use m::*;");
+    }
+
+    #[test]
+    #[should_panic(expected = "unsupported cfg predicate")]
+    fn rejects_any_cfg() {
+        public_api("#[cfg(any(feature = \"a\", feature = \"b\"))]\npub use m::T;");
     }
 }

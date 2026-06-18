@@ -167,15 +167,17 @@ spellcheck-pr-title:
 # Regenerate the repo-root llms.txt from docs/llms.template.md + the public API parsed
 # from src/lib.rs (via the standalone tools/llms-gen crate; stable toolchain, deterministic).
 llms:
-    cargo run --quiet --manifest-path tools/llms-gen/Cargo.toml
+    cargo run --quiet --locked --manifest-path tools/llms-gen/Cargo.toml
 
 # Unit-test the llms.txt generator (parsing, feature detection, marker splicing).
 test-llms:
-    cargo test --quiet --manifest-path tools/llms-gen/Cargo.toml
+    cargo test --quiet --locked --manifest-path tools/llms-gen/Cargo.toml
 
 # CI drift gate: run the generator's tests, regenerate llms.txt, and fail if the committed
-# copy is stale. If this fails you changed the public API — run `just llms` and commit llms.txt.
+# copy is stale or missing. If this fails you changed the public API — run `just llms` and
+# commit the updated llms.txt.
 check-llms: test-llms llms
+    git ls-files --error-unmatch llms.txt > /dev/null
     git diff --exit-code -- llms.txt
 
 # === Docker / FalkorDB lifecycle =============================================
@@ -205,7 +207,7 @@ db-populate:
 check: fmt clippy build
 
 # Run every required CI gate locally (no server required).
-ci: fmt-check clippy build doc deny
+ci: fmt-check clippy build doc deny check-llms
 
 # Full post-task gate (no server required): strict clippy-all plus every CI gate.
 # Must be green before a task is declared done.

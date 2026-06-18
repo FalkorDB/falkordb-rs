@@ -1,0 +1,4 @@
+# The llms.txt drift gate regenerates the file with `\n` line endings; pin LF so the
+# `git diff --exit-code` check cannot spuriously fail under autocrlf on Windows.
+llms.txt text eol=lf
+docs/llms.template.md text eol=lf

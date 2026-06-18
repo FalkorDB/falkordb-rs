@@ -7,4 +7,5 @@
 venv/
 .history/
 /wordlist.dic
-/.pr-title.md/tools/llms-gen/target
+/.pr-title.md
+/tools/llms-gen/target/

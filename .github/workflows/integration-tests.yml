@@ -67,6 +67,11 @@ jobs:
           redis-cli -h 127.0.0.1 -p 6379 ping
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
 
       - name: Run integration tests
         run: just integration
@@ -121,6 +126,11 @@ jobs:
           redis-cli -h 127.0.0.1 -p 6379 ping
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
 
       - name: Run async integration tests
         run: just integration --features tokio

@@ -16,6 +16,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Retry transient crates.io download failures and avoid HTTP/2 "unexpected eof" errors.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
   # Ensure formatting
@@ -37,6 +40,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Build
         run: just build
 
@@ -48,6 +52,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Check Clippy
         run: just clippy
 
@@ -59,6 +64,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Doc
         run: just doc
 
@@ -70,6 +76,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, cargo-deny
         with:
           tool: just,cargo-deny
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Check Deny
         run: just deny
 

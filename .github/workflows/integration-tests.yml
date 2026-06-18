@@ -13,6 +13,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Retry transient crates.io download failures and avoid HTTP/2 "unexpected eof" errors.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
   FALKORDB_HOST: 127.0.0.1
   FALKORDB_PORT: 6379
 
@@ -62,6 +65,8 @@ jobs:
             sleep 2
           done
           redis-cli -h 127.0.0.1 -p 6379 ping
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run integration tests
         run: just integration
@@ -114,6 +119,8 @@ jobs:
             sleep 2
           done
           redis-cli -h 127.0.0.1 -p 6379 ping
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run async integration tests
         run: just integration --features tokio

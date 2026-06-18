@@ -450,8 +450,8 @@ mod tests {
     use crate::FalkorValue::Node;
     use crate::{
         test_utils::{
-            create_test_client, imdb_test_client, retry_until_with_timeout, TestSyncGraphHandle,
-            COPY_RETRY_TIMEOUT,
+            create_test_client, default_on_connection_down, imdb_test_client,
+            retry_until_with_timeout, TestSyncGraphHandle, COPY_RETRY_TIMEOUT,
         },
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
     };
@@ -720,15 +720,17 @@ mod tests {
             COPY_RETRY_TIMEOUT,
             || {
                 client.select_graph("imdb_ro_copy").delete().ok();
-                // A transient error is retryable: return an empty result so the predicate treats it
-                // as a miss and the helper retries with a fresh connection, instead of panicking.
-                let Ok(mut graph) = client.copy_graph("imdb", "imdb_ro_copy") else {
-                    return Vec::new();
-                };
-                let Ok(result) = graph.query("MATCH (a:actor) RETURN a").execute() else {
-                    return Vec::new();
-                };
-                result.data.collect::<Vec<_>>()
+                let attempt = (|| -> crate::FalkorResult<Vec<_>> {
+                    let mut graph = client.copy_graph("imdb", "imdb_ro_copy")?;
+                    Ok(graph
+                        .query("MATCH (a:actor) RETURN a")
+                        .execute()?
+                        .data
+                        .collect::<Vec<_>>())
+                })();
+                // A transient `ConnectionDown` retries with a fresh connection; any other error is a
+                // genuine failure and fails fast.
+                default_on_connection_down("Could not copy graph", attempt)
             },
             |rows| rows == &expected,
         );
@@ -758,15 +760,15 @@ mod tests {
             COPY_RETRY_TIMEOUT,
             || {
                 client.select_graph("imdb_op_copy_wait").delete().ok();
-                // A transient error is retryable: return an empty result so the predicate treats it
-                // as a miss and the helper retries with a fresh connection, instead of panicking.
-                let Ok(mut graph) = client.copy_graph_op("imdb", "imdb_op_copy_wait").wait() else {
-                    return Vec::new();
-                };
-                let Ok(result) = graph.query("MATCH (a:actor) RETURN a").execute() else {
-                    return Vec::new();
-                };
-                result.data.collect::<Vec<_>>()
+                let attempt = (|| -> crate::FalkorResult<Vec<_>> {
+                    let mut graph = client.copy_graph_op("imdb", "imdb_op_copy_wait").wait()?;
+                    Ok(graph
+                        .query("MATCH (a:actor) RETURN a")
+                        .execute()?
+                        .data
+                        .collect::<Vec<_>>())
+                })();
+                default_on_connection_down("Could not copy graph", attempt)
             },
             |rows| rows == &expected,
         );

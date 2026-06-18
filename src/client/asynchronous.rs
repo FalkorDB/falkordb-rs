@@ -589,8 +589,8 @@ mod tests {
     use super::*;
     use crate::{
         test_utils::{
-            create_async_test_client, imdb_async_test_client, retry_until_async_fn_with_timeout,
-            TestAsyncGraphHandle, COPY_RETRY_TIMEOUT,
+            create_async_test_client, default_on_connection_down, imdb_async_test_client,
+            retry_until_async_fn_with_timeout, TestAsyncGraphHandle, COPY_RETRY_TIMEOUT,
         },
         FalkorClientBuilder,
     };
@@ -1013,16 +1013,20 @@ mod tests {
                     .delete()
                     .await
                     .ok();
-                // A transient error (e.g. a `ConnectionDown` whose connection the client has just
-                // swapped out) is retryable: return an empty result so the predicate treats it as a
-                // miss and the helper retries with a fresh connection, instead of panicking the test.
-                let Ok(mut graph) = client.copy_graph("imdb", "imdb_ro_copy_async").await else {
-                    return Vec::new();
-                };
-                let Ok(result) = graph.query("MATCH (a:actor) RETURN a").execute().await else {
-                    return Vec::new();
-                };
-                result.data.collect::<Vec<_>>().await
+                let attempt: crate::FalkorResult<Vec<_>> = async {
+                    let mut graph = client.copy_graph("imdb", "imdb_ro_copy_async").await?;
+                    Ok(graph
+                        .query("MATCH (a:actor) RETURN a")
+                        .execute()
+                        .await?
+                        .data
+                        .collect::<Vec<_>>()
+                        .await)
+                }
+                .await;
+                // A transient `ConnectionDown` retries with a fresh connection; any other error is a
+                // genuine failure and fails fast.
+                default_on_connection_down("Could not copy graph", attempt)
             },
             |rows| rows == &expected,
         )
@@ -1059,19 +1063,21 @@ mod tests {
                     .delete()
                     .await
                     .ok();
-                // A transient error is retryable: return an empty result so the predicate treats it
-                // as a miss and the helper retries with a fresh connection, instead of panicking.
-                let Ok(mut graph) = client
-                    .copy_graph_op("imdb", "imdb_op_copy_async_wait")
-                    .wait()
-                    .await
-                else {
-                    return Vec::new();
-                };
-                let Ok(result) = graph.query("MATCH (a:actor) RETURN a").execute().await else {
-                    return Vec::new();
-                };
-                result.data.collect::<Vec<_>>().await
+                let attempt: crate::FalkorResult<Vec<_>> = async {
+                    let mut graph = client
+                        .copy_graph_op("imdb", "imdb_op_copy_async_wait")
+                        .wait()
+                        .await?;
+                    Ok(graph
+                        .query("MATCH (a:actor) RETURN a")
+                        .execute()
+                        .await?
+                        .data
+                        .collect::<Vec<_>>()
+                        .await)
+                }
+                .await;
+                default_on_connection_down("Could not copy graph", attempt)
             },
             |rows| rows == &expected,
         )

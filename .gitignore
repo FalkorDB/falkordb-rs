@@ -6,3 +6,5 @@
 /dump.rdb
 venv/
 .history/
+/wordlist.dic
+/.pr-title.md

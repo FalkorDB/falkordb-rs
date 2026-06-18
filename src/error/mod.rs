@@ -239,8 +239,9 @@ impl FalkorDBError {
                  query",
             ),
             Self::UnavailableProvider => Some(
-                "the connection URL needs a feature that isn't enabled — turn on the matching cargo \
-                 feature (for example `tokio` for async, or `rustls` / `native-tls` for TLS)",
+                "the requested provider or read-replica route isn't available — enable the matching \
+                 cargo feature (for example `tokio` for async, or `rustls` / `native-tls` for TLS), \
+                 and for read-only queries make sure a read replica is configured",
             ),
             Self::RedisError(message) | Self::EmbeddedServerError(message) => {
                 server_message_hint(message)
@@ -260,18 +261,24 @@ fn server_message_hint(message: &str) -> Option<&'static str> {
     if message.contains("invalid graph operation on empty key")
         || message.contains("key doesn't contains a graph")
     {
-        Some("the graph doesn't exist yet — create it by running a write query (e.g. `CREATE`) first")
-    } else if message.contains("errmsg:") {
         Some(
-            "Cypher syntax error — check the query near the reported position, and pass values with \
-             `with_param` instead of formatting them into the query string",
+            "the graph key is missing or isn't a graph — create the graph with a write query (e.g. \
+             `CREATE`) first, or pick a name that doesn't collide with an existing non-graph key",
+        )
+    } else if message.contains("errmsg:")
+        && message.contains("line:")
+        && message.contains("column:")
+    {
+        Some(
+            "Cypher syntax error — check the query near the reported line/column, and pass values \
+             with `with_param` instead of formatting them into the query string",
         )
     } else if message.contains("query timed out") {
         Some(
             "the query exceeded its timeout — raise it with `QueryBuilder::with_timeout(ms)` (or the \
              batch query's `with_timeout(ms)`)",
         )
-    } else if message.contains("wrong number of arguments")
+    } else if message.contains("wrong number of arguments for 'graph")
         || message.contains("unknown command 'graph")
     {
         Some(
@@ -384,10 +391,10 @@ mod tests {
     fn mitigation_hint_recognizes_server_messages() {
         // Frozen sample strings (not live server output) so the test never depends on a server build.
         let cases = [
-            ("Invalid graph operation on empty key", "create it"),
-            ("key doesn't contains a graph", "create it"),
+            ("Invalid graph operation on empty key", "create the graph"),
+            ("key doesn't contains a graph", "create the graph"),
             (
-                "errMsg: syntax error at line 1, column 5 (offset 4)",
+                "errMsg: syntax error line: 1, column: 5, offset: 4",
                 "Cypher syntax",
             ),
             ("Query timed out", "timeout"),
@@ -398,12 +405,10 @@ mod tests {
             ("ERR unknown command 'GRAPH.QUERY'", "FalkorDB"),
         ];
         for (message, needle) in cases {
-            let hint = FalkorDBError::RedisError(message.to_string())
-                .mitigation_hint()
-                .unwrap_or_else(|| panic!("expected a hint for {message:?}"));
+            let hint = FalkorDBError::RedisError(message.to_string()).mitigation_hint();
             assert!(
-                hint.contains(needle),
-                "{message:?} -> {hint:?} is missing {needle:?}"
+                hint.is_some_and(|h| h.contains(needle)),
+                "{message:?} -> {hint:?} should contain {needle:?}"
             );
         }
         // EmbeddedServerError shares the same recognizer.
@@ -422,6 +427,17 @@ mod tests {
         );
         // A variant with no specific guidance.
         assert_eq!(FalkorDBError::InvalidDataReceived.mitigation_hint(), None);
+        // A non-graph Redis arity error must not get the graph-command hint.
+        assert_eq!(
+            FalkorDBError::RedisError("ERR wrong number of arguments for 'AUTH' command".into())
+                .mitigation_hint(),
+            None
+        );
+        // An `errMsg:` token without a line/column position is not treated as a Cypher parse error.
+        assert_eq!(
+            FalkorDBError::RedisError("errMsg: something else entirely".into()).mitigation_hint(),
+            None
+        );
     }
 
     use proptest::prelude::*;

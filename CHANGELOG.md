@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- *(test)* de-flake copy-graph tests by retrying transient ConnectionDown ([#239](https://github.com/FalkorDB/falkordb-rs/pull/239))
+- *(test)* fix flaky copy-graph tests by retrying transient `ConnectionDown` ([#239](https://github.com/FalkorDB/falkordb-rs/pull/239))
 
 ## [0.8.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.0...v0.8.1) - 2026-06-18
 

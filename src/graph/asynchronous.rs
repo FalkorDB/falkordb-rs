@@ -174,8 +174,8 @@ impl AsyncGraph {
     ///
     /// # Returns
     /// A [`BatchBuilder`](crate::BatchBuilder) borrowing this graph until executed.
-    pub fn batch(&mut self) -> crate::graph::batch::BatchBuilder<'_, Self> {
-        crate::graph::batch::BatchBuilder::new(self)
+    pub fn batch(&mut self) -> crate::BatchBuilder<'_, Self> {
+        crate::BatchBuilder::new(self)
     }
 
     /// Creates a [`ProcedureQueryBuilder`] for this graph

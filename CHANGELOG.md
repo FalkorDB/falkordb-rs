@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.5...v0.8.6) - 2026-06-18
+
+### Added
+
+- add FalkorDBError::mitigation_hint() for actionable error guidance ([#248](https://github.com/FalkorDB/falkordb-rs/pull/248))
+
 ### Added
 
 - `FalkorDBError::mitigation_hint()` returns a short, actionable remediation hint for common,

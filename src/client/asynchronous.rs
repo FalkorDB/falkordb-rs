@@ -1013,18 +1013,16 @@ mod tests {
                     .delete()
                     .await
                     .ok();
-                let mut graph = client
-                    .copy_graph("imdb", "imdb_ro_copy_async")
-                    .await
-                    .expect("Could not copy graph");
-                graph
-                    .query("MATCH (a:actor) RETURN a")
-                    .execute()
-                    .await
-                    .expect("Could not get actors from copied graph")
-                    .data
-                    .collect::<Vec<_>>()
-                    .await
+                // A transient error (e.g. a `ConnectionDown` whose connection the client has just
+                // swapped out) is retryable: return an empty result so the predicate treats it as a
+                // miss and the helper retries with a fresh connection, instead of panicking the test.
+                let Ok(mut graph) = client.copy_graph("imdb", "imdb_ro_copy_async").await else {
+                    return Vec::new();
+                };
+                let Ok(result) = graph.query("MATCH (a:actor) RETURN a").execute().await else {
+                    return Vec::new();
+                };
+                result.data.collect::<Vec<_>>().await
             },
             |rows| rows == &expected,
         )
@@ -1061,19 +1059,19 @@ mod tests {
                     .delete()
                     .await
                     .ok();
-                let mut graph = client
+                // A transient error is retryable: return an empty result so the predicate treats it
+                // as a miss and the helper retries with a fresh connection, instead of panicking.
+                let Ok(mut graph) = client
                     .copy_graph_op("imdb", "imdb_op_copy_async_wait")
                     .wait()
                     .await
-                    .expect("Could not copy graph");
-                graph
-                    .query("MATCH (a:actor) RETURN a")
-                    .execute()
-                    .await
-                    .expect("Could not get actors from copied graph")
-                    .data
-                    .collect::<Vec<_>>()
-                    .await
+                else {
+                    return Vec::new();
+                };
+                let Ok(result) = graph.query("MATCH (a:actor) RETURN a").execute().await else {
+                    return Vec::new();
+                };
+                result.data.collect::<Vec<_>>().await
             },
             |rows| rows == &expected,
         )

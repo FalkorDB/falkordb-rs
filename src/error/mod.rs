@@ -196,6 +196,101 @@ pub enum FalkorDBError {
     },
 }
 
+impl FalkorDBError {
+    /// A short, actionable remediation hint for common, recognizable errors, or [`None`] when there
+    /// is no specific guidance for this error.
+    ///
+    /// This is purely additive convenience for humans and AI tooling: the error's
+    /// [`Display`](std::fmt::Display) / [`Debug`] output is unchanged and the raw message is always
+    /// preserved. Hints are fixed `&'static str`s — no text from the underlying error is echoed into
+    /// them, so a hint can never leak data from the original message — and unrecognized errors
+    /// return `None`. Recognition of server messages is best-effort and version-tolerant: it matches
+    /// a few well-known FalkorDB phrases and returns `None` for anything else.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use falkordb::FalkorDBError;
+    ///
+    /// // A recognized client-side error gives a hint.
+    /// assert!(FalkorDBError::ConnectionDown.mitigation_hint().is_some());
+    ///
+    /// // An unrecognized message gives `None` — the raw error is still available via `Display`.
+    /// let err = FalkorDBError::RedisError("READONLY You can't write against a replica".into());
+    /// assert_eq!(err.mitigation_hint(), None);
+    /// ```
+    #[must_use]
+    pub fn mitigation_hint(&self) -> Option<&'static str> {
+        match self {
+            Self::SingleThreadedRuntime => Some(
+                "run async operations on a multi-thread Tokio runtime, e.g. \
+                 `#[tokio::main(flavor = \"multi_thread\")]`, not the current-thread runtime",
+            ),
+            Self::NoRuntime => Some(
+                "no Tokio runtime is running — call async APIs from inside a runtime, or use the \
+                 synchronous client instead",
+            ),
+            Self::ConnectionDown => Some(
+                "the connection dropped — retry the operation; the client swaps in a fresh \
+                 connection for the next attempt",
+            ),
+            Self::MissingSchemaId(_) => Some(
+                "the local schema cache is stale; it normally self-heals on refresh, so retry the \
+                 query",
+            ),
+            Self::UnavailableProvider => Some(
+                "the requested provider or read-replica route isn't available — enable the matching \
+                 cargo feature (for example `tokio` for async, or `rustls` / `native-tls` for TLS), \
+                 and for read-only queries make sure a read replica is configured",
+            ),
+            Self::RedisError(message) | Self::EmbeddedServerError(message) => {
+                server_message_hint(message)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Best-effort recognition of well-known FalkorDB *server* error messages.
+///
+/// [`FalkorDBError::RedisError`] / [`FalkorDBError::EmbeddedServerError`] are mixed buckets — they
+/// also carry connection and client errors — so this matches conservatively on lowercased,
+/// multi-token phrases and returns [`None`] for anything it does not specifically recognize.
+fn server_message_hint(message: &str) -> Option<&'static str> {
+    let message = message.to_ascii_lowercase();
+    if message.contains("invalid graph operation on empty key")
+        || message.contains("key doesn't contains a graph")
+        || message.contains("key doesn't contain a graph")
+    {
+        Some(
+            "the graph key is missing or isn't a graph — create the graph with a write query (e.g. \
+             `CREATE`) first, or pick a name that doesn't collide with an existing non-graph key",
+        )
+    } else if message.contains("errmsg:")
+        && message.contains("line:")
+        && message.contains("column:")
+    {
+        Some(
+            "Cypher syntax error — check the query near the reported line/column, and pass values \
+             with `with_param` instead of formatting them into the query string",
+        )
+    } else if message.contains("query timed out") {
+        Some(
+            "the query exceeded its timeout — raise it with `QueryBuilder::with_timeout(ms)` (or the \
+             batch query's `with_timeout(ms)`)",
+        )
+    } else if message.contains("wrong number of arguments for 'graph")
+        || message.contains("unknown command 'graph")
+    {
+        Some(
+            "the server didn't accept this graph command — make sure it is FalkorDB (not plain \
+             Redis) and recent enough",
+        )
+    } else {
+        None
+    }
+}
+
 #[cfg(feature = "serde")]
 impl serde::de::Error for FalkorDBError {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
@@ -267,5 +362,94 @@ mod tests {
     fn test_no_connection_error() {
         let error = FalkorDBError::NoConnection;
         assert!(error.to_string().contains("Could not connect"));
+    }
+
+    #[test]
+    fn mitigation_hint_for_recognized_variants() {
+        assert!(FalkorDBError::SingleThreadedRuntime
+            .mitigation_hint()
+            .unwrap()
+            .contains("multi-thread"));
+        assert!(FalkorDBError::NoRuntime
+            .mitigation_hint()
+            .unwrap()
+            .contains("runtime"));
+        assert!(FalkorDBError::ConnectionDown
+            .mitigation_hint()
+            .unwrap()
+            .contains("retry"));
+        assert!(FalkorDBError::MissingSchemaId(SchemaType::Labels)
+            .mitigation_hint()
+            .unwrap()
+            .contains("retry"));
+        assert!(FalkorDBError::UnavailableProvider
+            .mitigation_hint()
+            .unwrap()
+            .contains("feature"));
+    }
+
+    #[test]
+    fn mitigation_hint_recognizes_server_messages() {
+        // Frozen sample strings (not live server output) so the test never depends on a server build.
+        let cases = [
+            ("Invalid graph operation on empty key", "create the graph"),
+            ("key doesn't contains a graph", "create the graph"),
+            ("key doesn't contain a graph", "create the graph"),
+            (
+                "errMsg: syntax error line: 1, column: 5, offset: 4",
+                "Cypher syntax",
+            ),
+            ("Query timed out", "timeout"),
+            (
+                "ERR wrong number of arguments for 'GRAPH.QUERY' command",
+                "FalkorDB",
+            ),
+            ("ERR unknown command 'GRAPH.QUERY'", "FalkorDB"),
+        ];
+        for (message, needle) in cases {
+            let hint = FalkorDBError::RedisError(message.to_string()).mitigation_hint();
+            assert!(
+                hint.is_some_and(|h| h.contains(needle)),
+                "{message:?} -> {hint:?} should contain {needle:?}"
+            );
+        }
+        // EmbeddedServerError shares the same recognizer.
+        assert!(FalkorDBError::EmbeddedServerError("Query timed out".into())
+            .mitigation_hint()
+            .is_some());
+    }
+
+    #[test]
+    fn mitigation_hint_is_none_for_unrecognized_errors() {
+        // An unrelated message in the mixed `RedisError` bucket must not false-positive.
+        assert_eq!(
+            FalkorDBError::RedisError("READONLY You can't write against a replica.".into())
+                .mitigation_hint(),
+            None
+        );
+        // A variant with no specific guidance.
+        assert_eq!(FalkorDBError::InvalidDataReceived.mitigation_hint(), None);
+        // A non-graph Redis arity error must not get the graph-command hint.
+        assert_eq!(
+            FalkorDBError::RedisError("ERR wrong number of arguments for 'AUTH' command".into())
+                .mitigation_hint(),
+            None
+        );
+        // An `errMsg:` token without a line/column position is not treated as a Cypher parse error.
+        assert_eq!(
+            FalkorDBError::RedisError("errMsg: something else entirely".into()).mitigation_hint(),
+            None
+        );
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn mitigation_hint_never_panics(message in ".*") {
+            // For any message, the recognizer must not panic (and returns a 'static hint or None).
+            let _ = FalkorDBError::RedisError(message.clone()).mitigation_hint();
+            let _ = FalkorDBError::EmbeddedServerError(message).mitigation_hint();
+        }
     }
 }

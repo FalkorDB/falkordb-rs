@@ -33,6 +33,8 @@
 - Run many queries in one round-trip with a batch:
   `let mut b = graph.batch(); b.query("…"); b.ro_query("…"); let results = b.execute()?;` —
   one result per query, in submission order, each independently fallible.
+- On an error, `err.mitigation_hint()` may return a short, actionable remediation tip (or `None`);
+  the raw `FalkorDBError` is always preserved.
 
 ## Pitfalls (avoid)
 

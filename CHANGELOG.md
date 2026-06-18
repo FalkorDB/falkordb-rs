@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `FalkorDBError::mitigation_hint()` returns a short, actionable remediation hint for common,
+  recognizable errors (or `None`). It is additive — `Display`/`Debug` and the raw message are
+  unchanged — and hints are fixed `&'static str`s, so they never echo text from the underlying
+  error.
+
 ## [0.8.5](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.4...v0.8.5) - 2026-06-18
 
 ### Added

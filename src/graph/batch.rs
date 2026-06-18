@@ -357,6 +357,20 @@ mod tests {
     }
 
     #[test]
+    fn batch_query_with_params_and_raw_param_encode() {
+        // Exercise with_params (bulk typed params) and with_raw_param (raw Cypher value);
+        // a successful `prepare` confirms all three params were merged and encoded.
+        let mut q = BatchQuery::write("CREATE (n {a: $a, b: $b, c: $c})");
+        q.with_params([("a", 1), ("b", 2)])
+            .with_raw_param("c", "timestamp()");
+        let queries = vec![q];
+        let (pipe, submitted, slots) = prepare("g", &queries);
+        assert_eq!(submitted, vec![0], "query with bulk + raw params encodes");
+        assert_eq!(pipe.len(), 1);
+        assert!(slots[0].is_none());
+    }
+
+    #[test]
     fn has_write_detects_any_write_query() {
         assert!(has_write(&[BatchQuery::write("x")]));
         assert!(has_write(&[BatchQuery::read("x"), BatchQuery::write("y")]));

@@ -1339,6 +1339,49 @@ mod batch_pipelining {
     }
 
     #[test]
+    fn readonly_only_batch_uses_readonly_path() {
+        let Some(mut graph) = graph_for("test_batch_ro_only") else {
+            return;
+        };
+        // Seed with a separate write, then run a batch of only read-only queries so
+        // execute() takes the read-only connection path (no writes in the batch).
+        graph
+            .query("CREATE (:N {v: 1}), (:N {v: 2})")
+            .execute()
+            .expect("seed");
+        let mut batch = graph.batch();
+        batch.ro_query("MATCH (n:N) RETURN count(n) AS n");
+        batch.ro_query("MATCH (n:N) RETURN max(n.v) AS m");
+        let results = batch.execute().expect("ro batch dispatched");
+
+        assert_eq!(results.len(), 2);
+        let n: i64 = results[0].as_ref().expect("count ok").data[0]
+            .try_get("n")
+            .expect("n");
+        assert_eq!(n, 2);
+        let m: i64 = results[1].as_ref().expect("max ok").data[0]
+            .try_get("m")
+            .expect("m");
+        assert_eq!(m, 2);
+        graph.delete().expect("delete");
+    }
+
+    #[test]
+    fn query_with_timeout_executes() {
+        let Some(mut graph) = graph_for("test_query_timeout") else {
+            return;
+        };
+        let mut result = graph
+            .query("RETURN 1 AS one")
+            .with_timeout(5000)
+            .execute()
+            .expect("query with timeout");
+        let v: i64 = result.data.next().unwrap().unwrap().try_get("one").unwrap();
+        assert_eq!(v, 1);
+        graph.delete().expect("delete");
+    }
+
+    #[test]
     fn write_then_read_new_label_in_same_batch() {
         let Some(mut graph) = graph_for("test_batch_newlabel") else {
             return;
@@ -1433,6 +1476,56 @@ mod async_batch_pipelining {
         assert!(results[0].is_ok());
         assert!(matches!(results[1], Err(FalkorDBError::RedisError(_))));
         assert!(results[2].is_ok());
+        graph.delete().await.expect("delete");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn async_empty_batch_returns_empty() {
+        let Some(mut graph) = async_graph_for("test_async_batch_empty").await else {
+            return;
+        };
+        let results = graph.batch().execute().await.expect("empty async batch ok");
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn async_readonly_only_batch_uses_readonly_path() {
+        let Some(mut graph) = async_graph_for("test_async_batch_ro_only").await else {
+            return;
+        };
+        graph
+            .query("CREATE (:N {v: 1}), (:N {v: 2})")
+            .execute()
+            .await
+            .expect("seed");
+        let mut batch = graph.batch();
+        batch.ro_query("MATCH (n:N) RETURN count(n) AS n");
+        batch.ro_query("MATCH (n:N) RETURN max(n.v) AS m");
+        let results = batch.execute().await.expect("ro async batch");
+
+        assert_eq!(results.len(), 2);
+        let n: i64 = results[0].as_ref().expect("count ok").data[0]
+            .try_get("n")
+            .expect("n");
+        assert_eq!(n, 2);
+        graph.delete().await.expect("delete");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn async_query_with_timeout_executes() {
+        use futures::TryStreamExt;
+        let Some(mut graph) = async_graph_for("test_async_query_timeout").await else {
+            return;
+        };
+        let result = graph
+            .query("RETURN 1 AS one")
+            .with_timeout(5000)
+            .execute()
+            .await
+            .expect("async query with timeout");
+        let rows: Vec<falkordb::Row> = result.data.try_collect().await.expect("collect");
+        let v: i64 = rows[0].try_get("one").unwrap();
+        assert_eq!(v, 1);
         graph.delete().await.expect("delete");
     }
 

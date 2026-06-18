@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `slowlog()` (sync and async) now surfaces a parse error for a malformed entry instead of
+  silently dropping it (the previous `flat_map` swallowed per-entry errors). Behavior for valid
+  replies is unchanged.
+
+
 ## [0.8.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.7.0...v0.8.0) - 2026-06-17
 
 ### Added

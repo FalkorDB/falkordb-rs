@@ -48,6 +48,16 @@ impl SlowlogEntry {
     }
 }
 
+/// Parses a `GRAPH.SLOWLOG` reply (a list of entries) into [`SlowlogEntry`]s, propagating a parse
+/// error for any malformed entry instead of silently dropping it. Shared by the sync and async
+/// `slowlog` methods.
+pub(crate) fn parse_slowlog(value: redis::Value) -> FalkorResult<Vec<SlowlogEntry>> {
+    redis_value_as_vec(value)?
+        .into_iter()
+        .map(SlowlogEntry::parse)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +127,50 @@ mod tests {
         assert_eq!(entry.command, "TEST");
         assert_eq!(entry.arguments, "test args");
         assert_eq!(entry.time_taken, 0.5);
+    }
+
+    fn valid_entry() -> redis::Value {
+        redis::Value::Array(vec![
+            redis::Value::BulkString(b"1700000000".to_vec()),
+            redis::Value::BulkString(b"GRAPH.QUERY".to_vec()),
+            redis::Value::BulkString(b"MATCH (n) RETURN n".to_vec()),
+            redis::Value::BulkString(b"12.5".to_vec()),
+        ])
+    }
+
+    #[test]
+    fn parse_slowlog_parses_valid_entries() {
+        let parsed = parse_slowlog(redis::Value::Array(vec![valid_entry()])).expect("valid");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].timestamp, 1_700_000_000);
+        assert_eq!(parsed[0].command, "GRAPH.QUERY");
+        assert_eq!(parsed[0].arguments, "MATCH (n) RETURN n");
+        assert_eq!(parsed[0].time_taken, 12.5);
+    }
+
+    #[test]
+    fn parse_slowlog_empty_reply_is_empty() {
+        assert!(parse_slowlog(redis::Value::Array(vec![]))
+            .expect("empty")
+            .is_empty());
+    }
+
+    #[test]
+    fn parse_slowlog_propagates_malformed_entry_error() {
+        // A second entry with the wrong element count must fail the whole call rather than being
+        // silently dropped.
+        let value = redis::Value::Array(vec![
+            valid_entry(),
+            redis::Value::Array(vec![redis::Value::Int(1)]),
+        ]);
+        assert!(matches!(
+            parse_slowlog(value),
+            Err(FalkorDBError::ParsingArrayToStructElementCount(_))
+        ));
+    }
+
+    #[test]
+    fn parse_slowlog_rejects_non_array_reply() {
+        assert!(parse_slowlog(redis::Value::Int(5)).is_err());
     }
 }

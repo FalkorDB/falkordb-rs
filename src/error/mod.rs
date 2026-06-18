@@ -260,6 +260,7 @@ fn server_message_hint(message: &str) -> Option<&'static str> {
     let message = message.to_ascii_lowercase();
     if message.contains("invalid graph operation on empty key")
         || message.contains("key doesn't contains a graph")
+        || message.contains("key doesn't contain a graph")
     {
         Some(
             "the graph key is missing or isn't a graph — create the graph with a write query (e.g. \
@@ -393,6 +394,7 @@ mod tests {
         let cases = [
             ("Invalid graph operation on empty key", "create the graph"),
             ("key doesn't contains a graph", "create the graph"),
+            ("key doesn't contain a graph", "create the graph"),
             (
                 "errMsg: syntax error line: 1, column: 5, offset: 4",
                 "Cypher syntax",

@@ -684,6 +684,22 @@ The embedded server:
 - Automatically cleans up when the client is dropped
 - Can be configured with custom paths, database directory, and socket location
 
+### Actionable error hints
+
+`FalkorDBError::mitigation_hint()` turns common, recognizable failures into a short, actionable
+remediation tip — handy for logs and AI tooling. It is purely additive: the raw error and its
+`Display`/`Debug` output are unchanged, hints are fixed `&'static str`s (so they never echo text from
+the underlying message), and unrecognized errors return `None`.
+
+```rust,no_run
+use falkordb::FalkorDBError;
+
+let err = FalkorDBError::ConnectionDown;
+if let Some(hint) = err.mitigation_hint() {
+    println!("hint: {hint}");
+}
+```
+
 ## Development
 
 This repository ships a [`just`](https://github.com/casey/just) file that automates the

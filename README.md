@@ -626,6 +626,36 @@ Parameter values supplied via `with_param` are never recorded even when query lo
 
 See [`examples/observability.rs`](examples/observability.rs) for a complete, runnable example.
 
+### Metrics
+
+Enable the `metrics` feature to emit counters and histograms through the
+[`metrics`](https://docs.rs/metrics/latest/metrics/) facade, so your application can install any
+exporter (Prometheus, OpenTelemetry, …):
+
+```bash
+cargo add falkordb --features metrics
+```
+
+Each query and procedure execution records:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `falkordb_queries_total` | counter | `command`, `operation` (`read`/`write`), `strategy` |
+| `falkordb_query_duration_seconds` | histogram | `command`, `operation` |
+| `falkordb_query_errors_total` | counter | `command`, `error_kind` |
+
+All labels are **bounded, low-cardinality** values: `command` is an allowlist of known commands
+(unknown ⇒ `other`), `operation`/`strategy`/`error_kind` are small fixed sets. The graph name, query
+text, and query fingerprint are **never** used as labels (they are unbounded and would explode metric
+cardinality) — those belong on `tracing` spans, not metrics. Like `tracing`, recording is a no-op
+until you install a recorder; for example, with `metrics-exporter-prometheus`:
+
+```rust,ignore
+let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
+builder.install().expect("failed to install Prometheus recorder");
+// ... use the client; metrics are now exported on the configured endpoint.
+```
+
 ### Typed result mapping (serde)
 
 Enable the optional `serde` feature to map query results straight into your own types instead of hand-matching every

@@ -83,8 +83,8 @@ impl FalkorAsyncClientInner {
         self.retry_policy
     }
 
-    /// The active connection strategy (used for observability span fields).
-    #[cfg(feature = "tracing")]
+    /// The active connection strategy (used for observability span fields and metric labels).
+    #[cfg(any(feature = "tracing", feature = "metrics"))]
     pub(crate) fn strategy(&self) -> ConnectionStrategy {
         self.strategy
     }

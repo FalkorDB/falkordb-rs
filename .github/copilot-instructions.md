@@ -96,9 +96,18 @@ don't pile up.
   single hand-written `### Added` is the only source of truth; there is no second auto-generated one.
 - **Every entry must carry its PR link** — `… ([#123](https://github.com/FalkorDB/falkordb-rs/pull/123))` —
   because `release-plz` no longer appends it for you. Add it once the PR number is known.
+- **Never put literal Markdown-header markup inside a bullet** — a `## [` or `###` in the *text* of an
+  entry. `release-plz`'s changelog parser matches those anywhere (not just at line start) and treats
+  them as a version/section boundary, so it stamps the new release header in the wrong place and
+  leaves the release section empty. Write "the Added section", not a backticked `###`-prefixed name.
 - **Don't hardcode the next version** — let `release-plz` compute it from the commits.
 - Use **Conventional Commits** (`feat`, `fix`, `ci`, `docs`, `perf`, `chore`, …) — they drive the
   version bump. Mark breaking changes with `feat!` / a `[**breaking**]` note.
+- **Only `feat:` / `fix:` commits cut a release** (`release_commits` in `release-plz.toml`);
+  `ci` / `docs` / `chore` / `refactor` changes ride along with the next feature/fix release instead
+  of cutting an empty one. (release-plz runs from the `main.yml` workflow on pushes to `main`.) To
+  release such changes sooner, land them with a `feat`/`fix` commit or temporarily relax
+  `release_commits`.
 - Include a `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailer on
   agent-authored commits.
 

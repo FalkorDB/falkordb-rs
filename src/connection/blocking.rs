@@ -112,6 +112,8 @@ impl BorrowedSyncConnection {
         client: Arc<FalkorSyncClientInner>,
         readonly: bool,
     ) -> Self {
+        #[cfg(feature = "metrics")]
+        crate::observability::connection_borrow_started(readonly);
         Self {
             conn: Some(conn),
             return_tx,
@@ -190,6 +192,8 @@ impl BorrowedSyncConnection {
 
 impl Drop for BorrowedSyncConnection {
     fn drop(&mut self) {
+        #[cfg(feature = "metrics")]
+        crate::observability::connection_borrow_finished(self.readonly);
         if let Some(conn) = self.conn.take() {
             self.return_tx.send(conn).ok();
         }

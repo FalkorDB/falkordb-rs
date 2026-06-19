@@ -69,11 +69,17 @@ impl FalkorSyncClientInner {
         &self,
         pool_owner: Arc<Self>,
     ) -> FalkorResult<BorrowedSyncConnection> {
+        #[cfg(feature = "metrics")]
+        let wait_start = std::time::Instant::now();
+        let conn = self
+            .connection_pool_rx
+            .lock()
+            .recv()
+            .map_err(|_| FalkorDBError::EmptyConnection)?;
+        #[cfg(feature = "metrics")]
+        crate::observability::record_pool_wait(false, wait_start.elapsed());
         Ok(BorrowedSyncConnection::new(
-            self.connection_pool_rx
-                .lock()
-                .recv()
-                .map_err(|_| FalkorDBError::EmptyConnection)?,
+            conn,
             self.connection_pool_tx.clone(),
             pool_owner,
             false,
@@ -96,15 +102,23 @@ impl FalkorSyncClientInner {
         pool_owner: Arc<Self>,
     ) -> FalkorResult<BorrowedSyncConnection> {
         match &self.readonly_pool {
-            Some(pool) => Ok(BorrowedSyncConnection::new(
-                pool.rx
+            Some(pool) => {
+                #[cfg(feature = "metrics")]
+                let wait_start = std::time::Instant::now();
+                let conn = pool
+                    .rx
                     .lock()
                     .recv()
-                    .map_err(|_| FalkorDBError::EmptyConnection)?,
-                pool.tx.clone(),
-                pool_owner,
-                true,
-            )),
+                    .map_err(|_| FalkorDBError::EmptyConnection)?;
+                #[cfg(feature = "metrics")]
+                crate::observability::record_pool_wait(true, wait_start.elapsed());
+                Ok(BorrowedSyncConnection::new(
+                    conn,
+                    pool.tx.clone(),
+                    pool_owner,
+                    true,
+                ))
+            }
             None => self.borrow_connection(pool_owner),
         }
     }

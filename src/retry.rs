@@ -388,6 +388,12 @@ pub(crate) fn run_with_retry_blocking<T>(
     attempt
         .retry(policy.backon_builder())
         .when(|err: &FalkorDBError| policy.should_retry(kind, err))
+        .notify(|err: &FalkorDBError, _delay: Duration| {
+            #[cfg(any(feature = "tracing", feature = "metrics"))]
+            crate::observability::record_retry(matches!(kind, OpKind::ReadOnly), err);
+            #[cfg(not(any(feature = "tracing", feature = "metrics")))]
+            let _ = err;
+        })
         .call()
 }
 
@@ -409,6 +415,12 @@ where
     attempt
         .retry(policy.backon_builder())
         .when(|err: &FalkorDBError| policy.should_retry(kind, err))
+        .notify(|err: &FalkorDBError, _delay: Duration| {
+            #[cfg(any(feature = "tracing", feature = "metrics"))]
+            crate::observability::record_retry(matches!(kind, OpKind::ReadOnly), err);
+            #[cfg(not(any(feature = "tracing", feature = "metrics")))]
+            let _ = err;
+        })
         .await
 }
 

@@ -15,13 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - add optional `metrics` feature emitting bounded counters and histograms ([#253](https://github.com/FalkorDB/falkordb-rs/pull/253))
 - enrich tracing spans with structured fields and a redacting query fingerprint ([#252](https://github.com/FalkorDB/falkordb-rs/pull/252))
 - add opt-in RetryPolicy for transient connection failures ([#250](https://github.com/FalkorDB/falkordb-rs/pull/250))
-
-### Other
-
-- require explicit human approval before merging to main ([#256](https://github.com/FalkorDB/falkordb-rs/pull/256))
-
-### Added
-
 - Optional `metrics` feature: emits per-operation counters, histograms and a gauge through the
   [`metrics`](https://docs.rs/metrics) facade (so the application installs any exporter) —
   `falkordb_queries_total`, `falkordb_query_duration_seconds`, `falkordb_query_errors_total`,
@@ -44,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FalkorClientBuilder::with_retry_policy(..)`; the available scope (`RetryScope::ReadOnly`) retries
   only read-only / idempotent operations, so enabling a policy never re-issues a write. New public
   types: `RetryPolicy`, `RetryScope`, `Backoff`. Backoff/jitter is powered internally by `backon`.
+
+### Other
+
+- require explicit human approval before merging to main ([#256](https://github.com/FalkorDB/falkordb-rs/pull/256))
 
 ## [0.8.6](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.5...v0.8.6) - 2026-06-18
 

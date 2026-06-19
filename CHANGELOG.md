@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.6...v0.8.7) - 2026-06-19
+
+### Added
+
+- add retry, in-flight and pool-wait observability signals ([#254](https://github.com/FalkorDB/falkordb-rs/pull/254))
+- add optional `metrics` feature emitting bounded counters and histograms ([#253](https://github.com/FalkorDB/falkordb-rs/pull/253))
+- enrich tracing spans with structured fields and a redacting query fingerprint ([#252](https://github.com/FalkorDB/falkordb-rs/pull/252))
+- add opt-in RetryPolicy for transient connection failures ([#250](https://github.com/FalkorDB/falkordb-rs/pull/250))
+
 ### Added
 
 - Optional `metrics` feature: emits per-operation counters, histograms and a gauge through the

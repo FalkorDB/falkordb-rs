@@ -28,8 +28,8 @@ matrix:
   - 'docs/*.md'
   - 'llms.txt'
 # PRTitle: spellcheck a single pull-request title (written to .pr-title.md by the
-# `spellcheck-pr-title` just recipe / the Spellcheck workflow). Catches words that
-# would otherwise reach the auto-generated release changelog and fail the gate above.
+# `spellcheck-pr-title` just recipe / the Spellcheck workflow). PR titles become the
+# squashed-merge commit subject (git history), so this keeps them typo-free at the source.
 - name: PRTitle
   expect_match: false
   aspell:

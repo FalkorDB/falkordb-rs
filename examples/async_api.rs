@@ -3,6 +3,8 @@
  * Licensed under the MIT License.
  */
 
+#![recursion_limit = "256"]
+
 use falkordb::{FalkorClientBuilder, FalkorResult};
 use futures::{StreamExt, TryStreamExt};
 use tokio::task::JoinSet;

@@ -2,6 +2,7 @@
  * Copyright FalkorDB Ltd. 2023 - present
  * Licensed under the MIT License.
  */
+#![recursion_limit = "256"]
 
 //! Integration tests for FalkorDB client
 //!

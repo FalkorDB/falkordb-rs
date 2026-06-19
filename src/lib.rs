@@ -19,6 +19,8 @@ mod embedded;
 mod error;
 mod graph;
 mod graph_schema;
+#[cfg(feature = "tracing")]
+mod observability;
 mod parser;
 mod response;
 mod retry;

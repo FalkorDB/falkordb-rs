@@ -39,6 +39,9 @@ pub(crate) struct FalkorSyncClientInner {
     /// Opt-in retry policy applied to eligible operations; [`disabled`](RetryPolicy::disabled) by
     /// default, in which case every operation is attempted exactly once.
     retry_policy: RetryPolicy,
+    /// When set, the raw query text is recorded as a span field (opt-in via `with_query_logging`).
+    #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
+    query_logging: bool,
 }
 
 impl FalkorSyncClientInner {
@@ -46,6 +49,12 @@ impl FalkorSyncClientInner {
     /// [`disabled`](RetryPolicy::disabled)).
     pub(crate) fn retry_policy(&self) -> RetryPolicy {
         self.retry_policy
+    }
+
+    /// Whether raw query text may be recorded on spans (opt-in; `false` by default).
+    #[cfg(feature = "tracing")]
+    pub(crate) fn query_logging(&self) -> bool {
+        self.query_logging
     }
 
     #[cfg_attr(
@@ -150,6 +159,7 @@ impl FalkorSyncClient {
         connection_info: FalkorConnectionInfo,
         num_connections: u8,
         retry_policy: RetryPolicy,
+        query_logging: bool,
     ) -> FalkorResult<Self> {
         let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(num_connections as usize);
 
@@ -174,6 +184,7 @@ impl FalkorSyncClient {
                 connection_pool_rx: Mutex::new(connection_pool_rx),
                 readonly_pool,
                 retry_policy,
+                query_logging,
             }),
             _connection_info: connection_info,
         })
@@ -453,6 +464,7 @@ pub(crate) fn create_empty_inner_sync_client() -> Arc<FalkorSyncClientInner> {
         connection_pool_rx: Mutex::new(rx),
         readonly_pool: None,
         retry_policy: RetryPolicy::disabled(),
+        query_logging: false,
     })
 }
 
@@ -640,6 +652,7 @@ mod tests {
             connection_pool_rx: Mutex::new(rx),
             readonly_pool: Some(pool),
             retry_policy: RetryPolicy::disabled(),
+            query_logging: false,
         });
 
         assert!(inner.has_readonly_pool());

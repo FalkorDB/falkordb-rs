@@ -36,6 +36,8 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 futures = "0.3"
 proptest = "1"
 serde_json = "1"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std", "fmt"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
@@ -99,3 +101,7 @@ name = "typed_params"
 
 [[example]]
 name = "rows"
+
+[[example]]
+name = "observability"
+required-features = ["tracing"]

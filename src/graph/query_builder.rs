@@ -256,7 +256,16 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         tracing::instrument(
             name = "Common Query Execution Steps",
             skip_all,
-            fields(readonly = (self.command == "GRAPH.RO_QUERY")),
+            fields(
+                db.system.name = "falkordb",
+                db.namespace = %self.graph.graph_name(),
+                db.operation.name = %self.command,
+                db.falkordb.read_only = tracing::field::Empty,
+                db.falkordb.strategy = tracing::field::Empty,
+                db.query.fingerprint = tracing::field::Empty,
+                db.query.text = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+            ),
             level = "trace"
         )
     )]
@@ -271,13 +280,23 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         }
 
         let client = self.graph.get_client();
-        let graph_name = self.graph.graph_name();
         let command = self.command;
+        let op_kind = op_kind_for_command(command);
+
+        #[cfg(feature = "tracing")]
+        crate::observability::record_request(
+            crate::observability::SYNC_STRATEGY,
+            matches!(op_kind, OpKind::ReadOnly),
+            &self.query_string.to_string(),
+            client.query_logging(),
+        );
+
+        let graph_name = self.graph.graph_name();
         let readonly_conn = command == "GRAPH.RO_QUERY";
         let params_ref = params.as_slice();
         let policy = client.retry_policy();
 
-        run_with_retry_blocking(&policy, op_kind_for_command(command), || {
+        let result = run_with_retry_blocking(&policy, op_kind, || {
             let conn = if readonly_conn {
                 client.borrow_readonly_connection(client.clone())
             } else {
@@ -286,7 +305,13 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
             conn.and_then(|mut conn| {
                 conn.execute_command(Some(graph_name), command, None, Some(params_ref))
             })
-        })
+        });
+
+        #[cfg(feature = "tracing")]
+        if let Err(ref err) = result {
+            crate::observability::record_error(err);
+        }
+        result
     }
 }
 
@@ -297,7 +322,16 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         tracing::instrument(
             name = "Common Query Execution Steps",
             skip_all,
-            fields(readonly = (self.command == "GRAPH.RO_QUERY")),
+            fields(
+                db.system.name = "falkordb",
+                db.namespace = %self.graph.graph_name(),
+                db.operation.name = %self.command,
+                db.falkordb.read_only = tracing::field::Empty,
+                db.falkordb.strategy = tracing::field::Empty,
+                db.query.fingerprint = tracing::field::Empty,
+                db.query.text = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+            ),
             level = "trace"
         )
     )]
@@ -312,13 +346,23 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         }
 
         let client = self.graph.get_client();
-        let graph_name = self.graph.graph_name();
         let command = self.command;
+        let op_kind = op_kind_for_command(command);
+
+        #[cfg(feature = "tracing")]
+        crate::observability::record_request(
+            crate::observability::strategy_label(&client.strategy()),
+            matches!(op_kind, OpKind::ReadOnly),
+            &self.query_string.to_string(),
+            client.query_logging(),
+        );
+
+        let graph_name = self.graph.graph_name();
         let readonly_conn = command == "GRAPH.RO_QUERY";
         let params_ref = params.as_slice();
         let policy = client.retry_policy();
 
-        run_with_retry_async(&policy, op_kind_for_command(command), || async move {
+        let result = run_with_retry_async(&policy, op_kind, || async move {
             let conn = if readonly_conn {
                 client.borrow_readonly_connection(client.clone()).await
             } else {
@@ -328,7 +372,13 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
                 .execute_command(Some(graph_name), command, None, Some(params_ref))
                 .await
         })
-        .await
+        .await;
+
+        #[cfg(feature = "tracing")]
+        if let Err(ref err) = result {
+            crate::observability::record_error(err);
+        }
+        result
     }
 
     /// Eagerly parses the reply into an owned [`RowStream`] under the schema write lock, so the
@@ -632,7 +682,16 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
         tracing::instrument(
             name = "Common Procedure Call Execution Steps",
             skip_all,
-            fields(readonly = self.readonly),
+            fields(
+                db.system.name = "falkordb",
+                db.namespace = %self.graph.graph_name(),
+                db.operation.name = %self.procedure_name,
+                db.falkordb.read_only = tracing::field::Empty,
+                db.falkordb.strategy = tracing::field::Empty,
+                db.query.fingerprint = tracing::field::Empty,
+                db.query.text = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+            ),
             level = "trace"
         )
     )]
@@ -644,6 +703,15 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
 
         let (query_string, params) =
             generate_procedure_call(self.procedure_name, self.args, self.yields);
+
+        #[cfg(feature = "tracing")]
+        crate::observability::record_request(
+            crate::observability::SYNC_STRATEGY,
+            matches!(self.op_kind, OpKind::ReadOnly),
+            &query_string,
+            self.graph.get_client().query_logging(),
+        );
+
         let query = construct_query(query_string, &params)?;
 
         let client = self.graph.get_client();
@@ -653,7 +721,7 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
         let exec_params = [query.as_str(), "--compact"];
         let policy = client.retry_policy();
 
-        run_with_retry_blocking(&policy, op_kind, || {
+        let result = run_with_retry_blocking(&policy, op_kind, || {
             let conn = if readonly_conn {
                 client.borrow_readonly_connection(client.clone())
             } else {
@@ -662,7 +730,13 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
             conn.and_then(|mut conn| {
                 conn.execute_command(Some(graph_name), command, None, Some(&exec_params))
             })
-        })
+        });
+
+        #[cfg(feature = "tracing")]
+        if let Err(ref err) = result {
+            crate::observability::record_error(err);
+        }
+        result
     }
 }
 
@@ -673,7 +747,16 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
         tracing::instrument(
             name = "Common Procedure Call Execution Steps",
             skip_all,
-            fields(readonly = self.readonly),
+            fields(
+                db.system.name = "falkordb",
+                db.namespace = %self.graph.graph_name(),
+                db.operation.name = %self.procedure_name,
+                db.falkordb.read_only = tracing::field::Empty,
+                db.falkordb.strategy = tracing::field::Empty,
+                db.query.fingerprint = tracing::field::Empty,
+                db.query.text = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+            ),
             level = "trace"
         )
     )]
@@ -685,16 +768,26 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
 
         let (query_string, params) =
             generate_procedure_call(self.procedure_name, self.args, self.yields);
-        let query = construct_query(query_string, &params)?;
 
         let client = self.graph.get_client();
+
+        #[cfg(feature = "tracing")]
+        crate::observability::record_request(
+            crate::observability::strategy_label(&client.strategy()),
+            matches!(self.op_kind, OpKind::ReadOnly),
+            &query_string,
+            client.query_logging(),
+        );
+
+        let query = construct_query(query_string, &params)?;
+
         let graph_name = self.graph.graph_name();
         let readonly_conn = self.readonly;
         let op_kind = self.op_kind;
         let exec_params = [query.as_str(), "--compact"];
         let policy = client.retry_policy();
 
-        run_with_retry_async(&policy, op_kind, || async move {
+        let result = run_with_retry_async(&policy, op_kind, || async move {
             let conn = if readonly_conn {
                 client.borrow_readonly_connection(client.clone()).await
             } else {
@@ -704,7 +797,13 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
                 .execute_command(Some(graph_name), command, None, Some(&exec_params))
                 .await
         })
-        .await
+        .await;
+
+        #[cfg(feature = "tracing")]
+        if let Err(ref err) = result {
+            crate::observability::record_error(err);
+        }
+        result
     }
 }
 

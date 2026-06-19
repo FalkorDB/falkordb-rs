@@ -916,8 +916,8 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
 }
 
 impl ProcedureQueryBuilder<'_, QueryResult<Vec<FalkorIndex>>, SyncGraph> {
-    /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`FalkorIndex`]s
-    /// This functions consumes self
+    /// Executes the procedure call and returns a [`QueryResult`] type containing a result set of [`FalkorIndex`]s
+    /// This function consumes self.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -945,8 +945,8 @@ impl ProcedureQueryBuilder<'_, QueryResult<Vec<FalkorIndex>>, SyncGraph> {
 
 #[cfg(feature = "tokio")]
 impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, AsyncGraph> {
-    /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`FalkorIndex`]s
-    /// This functions consumes self
+    /// Executes the procedure call and returns a [`QueryResult`] type containing a result set of [`FalkorIndex`]s
+    /// This function consumes self.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -976,8 +976,8 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, AsyncGraph> {
 }
 
 impl ProcedureQueryBuilder<'_, QueryResult<Vec<Constraint>>, SyncGraph> {
-    /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`Constraint`]s
-    /// This functions consumes self
+    /// Executes the procedure call and returns a [`QueryResult`] type containing a result set of [`Constraint`]s
+    /// This function consumes self.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -1005,8 +1005,8 @@ impl ProcedureQueryBuilder<'_, QueryResult<Vec<Constraint>>, SyncGraph> {
 
 #[cfg(feature = "tokio")]
 impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, AsyncGraph> {
-    /// Executes the procedure call and return a [`QueryResult`] type containing a result set of [`Constraint`]s
-    /// This functions consumes self
+    /// Executes the procedure call and returns a [`QueryResult`] type containing a result set of [`Constraint`]s
+    /// This function consumes self.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(

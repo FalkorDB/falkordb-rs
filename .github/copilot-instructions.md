@@ -79,22 +79,26 @@ don't pile up.
 ## Spellcheck, commit subjects & PR titles
 
 - **PR titles must be spellcheck-clean** — the `PRTitle` CI task checks every PR title against the
-  same wordlist and fails it at PR time. This matters because `release-plz` copies merged commit
-  subjects (squashed PR titles) **verbatim** into `CHANGELOG.md` (itself spellchecked), so an
-  unknown word would otherwise only surface — too late — on the release PR. Keep titles clean at
-  the source.
+  same wordlist and fails it at PR time. Titles become the squashed-merge commit subject (git
+  history) and their Conventional-Commit prefix drives the release, so keep them clean at the
+  source. **`CHANGELOG.md` entries are hand-written and spellchecked too** — an unknown word there
+  fails the `spellcheck` gate, so backtick code/type names or add them to the wordlist.
 - When you add or rename a **public type / term**, add its name to **`.github/wordlist.txt`**.
 - In Markdown/docs, **backtick** code and type names (`` `ConnectionDown` ``) — backticked spans
   are ignored by the spellchecker.
 
 ## CHANGELOG & releases
 
-- Keep a `## [Unreleased]` section; `release-plz` promotes it on release. **Don't hardcode the
-  next version** — let `release-plz` compute it.
-- Entry style (per the existing changelog): the `release-plz` short line + PR link, **followed by
-  detailed manual entries** under the same `### Added` / `### Fixed` heading.
-- Use **Conventional Commits** (`feat`, `fix`, `ci`, `docs`, `perf`, `chore`, …). Mark breaking
-  changes with `feat!` / a `[**breaking**]` note.
+- Keep a `## [Unreleased]` section and **hand-write every entry there yourself**, under the right
+  `### Added` / `### Changed` / `### Fixed` / `### Other` heading (Keep a Changelog). On release,
+  `release-plz` only stamps the version header below `## [Unreleased]` — it does **not** generate
+  its own bullets from commits (see the `[changelog]` `body` in `release-plz.toml`). This is why a
+  single hand-written `### Added` is the only source of truth; there is no second auto-generated one.
+- **Every entry must carry its PR link** — `… ([#123](https://github.com/FalkorDB/falkordb-rs/pull/123))` —
+  because `release-plz` no longer appends it for you. Add it once the PR number is known.
+- **Don't hardcode the next version** — let `release-plz` compute it from the commits.
+- Use **Conventional Commits** (`feat`, `fix`, `ci`, `docs`, `perf`, `chore`, …) — they drive the
+  version bump. Mark breaking changes with `feat!` / a `[**breaking**]` note.
 - Include a `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailer on
   agent-authored commits.
 

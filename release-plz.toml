@@ -1,2 +1,15 @@
 [workspace]
 semver_check = false # disable API breaking changes checks, I suggest this becomes 'true' after we release 1.0
+
+[changelog]
+# Changelog entries are hand-written under "## [Unreleased]" in CHANGELOG.md (see the
+# "CHANGELOG & releases" section of .github/copilot-instructions.md). On release, release-plz
+# only stamps the version header below "## [Unreleased]" — this `body` has no commit loop, so it
+# must NOT emit its own commit-derived bullets. That avoids the duplicate "### Added" section we
+# used to get when release-plz's generated bullets landed next to the hand-written ones.
+# `trim = false` keeps the surrounding blank lines so the stamped header stays Keep-a-Changelog
+# formatted. The header expression matches release-plz's default (compare-link + date).
+trim = false
+body = """
+## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+"""

@@ -19,10 +19,9 @@ jobs:
           config_path: .github/spellcheck-settings.yml
           task_name: Markdown
 
-  # Spellcheck the pull-request title with the same wordlist/dictionary. Because
-  # release-plz copies merged commit subjects (= squashed PR titles) verbatim into
-  # CHANGELOG.md, an unknown word in a title would only surface — too late — on the
-  # release PR. Catching it here keeps every release PR's spellcheck green.
+  # Spellcheck the pull-request title with the same wordlist/dictionary. The title becomes
+  # the squashed-merge commit subject (git history) and its Conventional-Commit prefix drives
+  # the release, so catch unknown words here at the source.
   pr-title:
     name: PR title spelling
     if: github.event_name == 'pull_request'

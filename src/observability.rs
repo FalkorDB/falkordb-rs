@@ -128,6 +128,27 @@ pub(crate) fn record_error(error: &FalkorDBError) {
     tracing::Span::current().record("error.type", error_kind(error));
 }
 
+/// Record the result-side fields on the current (outer `execute`) span, once the response has been
+/// parsed into a result: the number of rows the server returned and its internal execution time (in
+/// milliseconds, when the server reports it). These are only known after the seam span has closed,
+/// so they live on the outer span rather than on `Common Query Execution Steps`.
+#[cfg(feature = "tracing")]
+pub(crate) fn record_result(
+    returned_rows: usize,
+    server_time_ms: Option<f64>,
+) {
+    let span = tracing::Span::current();
+    // `usize` fits `u64` on every supported target; saturate defensively rather than truncate on a
+    // hypothetical wider-than-64-bit platform.
+    span.record(
+        "db.response.returned_rows",
+        u64::try_from(returned_rows).unwrap_or(u64::MAX),
+    );
+    if let Some(ms) = server_time_ms {
+        span.record("db.falkordb.server_time_ms", ms);
+    }
+}
+
 /// A bounded label for a wire command, for use as a metric label. An allowlist of known commands
 /// (unknown ⇒ `"other"`), so a metric label can never carry a user-controlled or high-cardinality
 /// string. Procedure calls are labeled by their wire command (`GRAPH.QUERY`/`GRAPH.RO_QUERY`), never
@@ -526,6 +547,45 @@ mod span_capture_tests {
             fields.get("db.query.text").map(String::as_str),
             Some("MATCH (n) RETURN n")
         );
+    }
+
+    #[test]
+    fn records_returned_rows_and_server_time() {
+        let fields = capture(|| {
+            let span = tracing::trace_span!(
+                "test",
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            );
+            let _enter = span.enter();
+            super::record_result(42, Some(1.5));
+        });
+        assert_eq!(
+            fields.get("db.response.returned_rows").map(String::as_str),
+            Some("42")
+        );
+        assert_eq!(
+            fields.get("db.falkordb.server_time_ms").map(String::as_str),
+            Some("1.5")
+        );
+    }
+
+    #[test]
+    fn omits_server_time_when_the_server_does_not_report_it() {
+        let fields = capture(|| {
+            let span = tracing::trace_span!(
+                "test",
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            );
+            let _enter = span.enter();
+            super::record_result(0, None);
+        });
+        assert_eq!(
+            fields.get("db.response.returned_rows").map(String::as_str),
+            Some("0")
+        );
+        assert!(!fields.contains_key("db.falkordb.server_time_ms"));
     }
 }
 

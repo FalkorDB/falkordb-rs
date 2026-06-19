@@ -14,9 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - add optional `metrics` feature emitting bounded counters and histograms ([#253](https://github.com/FalkorDB/falkordb-rs/pull/253))
 - enrich tracing spans with structured fields and a redacting query fingerprint ([#252](https://github.com/FalkorDB/falkordb-rs/pull/252))
 - add opt-in RetryPolicy for transient connection failures ([#250](https://github.com/FalkorDB/falkordb-rs/pull/250))
-
-### Added
-
 - Optional `metrics` feature: emits per-operation counters, histograms and a gauge through the
   [`metrics`](https://docs.rs/metrics) facade (so the application installs any exporter) —
   `falkordb_queries_total`, `falkordb_query_duration_seconds`, `falkordb_query_errors_total`,

@@ -7,7 +7,8 @@ semver_check = false # disable API breaking changes checks, I suggest this becom
 # they appear in CHANGELOG.md only through the hand-written `## [Unreleased]` entry you add. The
 # regex matches a Conventional-Commit `feat`/`fix` subject with an optional `(scope)` and optional
 # `!`, requiring the `:` (so a malformed subject like `feat(x) …` without a colon won't trigger a
-# release). To force a release without a feat/fix, push to a `release-plz-…` branch.
+# release). To release such changes sooner, land them with a feat/fix commit or temporarily relax
+# this filter.
 release_commits = '^(feat|fix)(\(.+?\))?!?:'
 
 [changelog]

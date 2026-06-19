@@ -105,7 +105,9 @@ don't pile up.
   version bump. Mark breaking changes with `feat!` / a `[**breaking**]` note.
 - **Only `feat:` / `fix:` commits cut a release** (`release_commits` in `release-plz.toml`);
   `ci` / `docs` / `chore` / `refactor` changes ride along with the next feature/fix release instead
-  of cutting an empty one. To force a release without a `feat`/`fix`, push to a `release-plz-…` branch.
+  of cutting an empty one. (release-plz runs from the `main.yml` workflow on pushes to `main`.) To
+  release such changes sooner, land them with a `feat`/`fix` commit or temporarily relax
+  `release_commits`.
 - Include a `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailer on
   agent-authored commits.
 

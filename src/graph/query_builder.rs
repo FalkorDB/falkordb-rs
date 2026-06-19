@@ -283,9 +283,11 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         let command = self.command;
         let op_kind = op_kind_for_command(command);
 
+        #[cfg(any(feature = "tracing", feature = "metrics"))]
+        let strategy = crate::observability::SYNC_STRATEGY;
         #[cfg(feature = "tracing")]
         crate::observability::record_request(
-            crate::observability::SYNC_STRATEGY,
+            strategy,
             matches!(op_kind, OpKind::ReadOnly),
             &self.query_string.to_string(),
             client.query_logging(),
@@ -296,6 +298,8 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         let params_ref = params.as_slice();
         let policy = client.retry_policy();
 
+        #[cfg(feature = "metrics")]
+        let metrics_start = std::time::Instant::now();
         let result = run_with_retry_blocking(&policy, op_kind, || {
             let conn = if readonly_conn {
                 client.borrow_readonly_connection(client.clone())
@@ -311,6 +315,14 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         if let Err(ref err) = result {
             crate::observability::record_error(err);
         }
+        #[cfg(feature = "metrics")]
+        crate::observability::record_query_metrics(
+            command,
+            matches!(op_kind, OpKind::ReadOnly),
+            strategy,
+            metrics_start.elapsed(),
+            result.as_ref().err(),
+        );
         result
     }
 }
@@ -349,9 +361,11 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         let command = self.command;
         let op_kind = op_kind_for_command(command);
 
+        #[cfg(any(feature = "tracing", feature = "metrics"))]
+        let strategy = crate::observability::strategy_label(&client.strategy());
         #[cfg(feature = "tracing")]
         crate::observability::record_request(
-            crate::observability::strategy_label(&client.strategy()),
+            strategy,
             matches!(op_kind, OpKind::ReadOnly),
             &self.query_string.to_string(),
             client.query_logging(),
@@ -362,6 +376,8 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         let params_ref = params.as_slice();
         let policy = client.retry_policy();
 
+        #[cfg(feature = "metrics")]
+        let metrics_start = std::time::Instant::now();
         let result = run_with_retry_async(&policy, op_kind, || async move {
             let conn = if readonly_conn {
                 client.borrow_readonly_connection(client.clone()).await
@@ -378,6 +394,14 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         if let Err(ref err) = result {
             crate::observability::record_error(err);
         }
+        #[cfg(feature = "metrics")]
+        crate::observability::record_query_metrics(
+            command,
+            matches!(op_kind, OpKind::ReadOnly),
+            strategy,
+            metrics_start.elapsed(),
+            result.as_ref().err(),
+        );
         result
     }
 
@@ -704,9 +728,11 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
         let (query_string, params) =
             generate_procedure_call(self.procedure_name, self.args, self.yields);
 
+        #[cfg(any(feature = "tracing", feature = "metrics"))]
+        let strategy = crate::observability::SYNC_STRATEGY;
         #[cfg(feature = "tracing")]
         crate::observability::record_request(
-            crate::observability::SYNC_STRATEGY,
+            strategy,
             matches!(self.op_kind, OpKind::ReadOnly),
             &query_string,
             self.graph.get_client().query_logging(),
@@ -721,6 +747,8 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
         let exec_params = [query.as_str(), "--compact"];
         let policy = client.retry_policy();
 
+        #[cfg(feature = "metrics")]
+        let metrics_start = std::time::Instant::now();
         let result = run_with_retry_blocking(&policy, op_kind, || {
             let conn = if readonly_conn {
                 client.borrow_readonly_connection(client.clone())
@@ -736,6 +764,14 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
         if let Err(ref err) = result {
             crate::observability::record_error(err);
         }
+        #[cfg(feature = "metrics")]
+        crate::observability::record_query_metrics(
+            command,
+            matches!(op_kind, OpKind::ReadOnly),
+            strategy,
+            metrics_start.elapsed(),
+            result.as_ref().err(),
+        );
         result
     }
 }
@@ -771,9 +807,11 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
 
         let client = self.graph.get_client();
 
+        #[cfg(any(feature = "tracing", feature = "metrics"))]
+        let strategy = crate::observability::strategy_label(&client.strategy());
         #[cfg(feature = "tracing")]
         crate::observability::record_request(
-            crate::observability::strategy_label(&client.strategy()),
+            strategy,
             matches!(self.op_kind, OpKind::ReadOnly),
             &query_string,
             client.query_logging(),
@@ -787,6 +825,8 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
         let exec_params = [query.as_str(), "--compact"];
         let policy = client.retry_policy();
 
+        #[cfg(feature = "metrics")]
+        let metrics_start = std::time::Instant::now();
         let result = run_with_retry_async(&policy, op_kind, || async move {
             let conn = if readonly_conn {
                 client.borrow_readonly_connection(client.clone()).await
@@ -803,6 +843,14 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
         if let Err(ref err) = result {
             crate::observability::record_error(err);
         }
+        #[cfg(feature = "metrics")]
+        crate::observability::record_query_metrics(
+            command,
+            matches!(op_kind, OpKind::ReadOnly),
+            strategy,
+            metrics_start.elapsed(),
+            result.as_ref().err(),
+        );
         result
     }
 }

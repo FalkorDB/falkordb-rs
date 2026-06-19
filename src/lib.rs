@@ -19,7 +19,7 @@ mod embedded;
 mod error;
 mod graph;
 mod graph_schema;
-#[cfg(feature = "tracing")]
+#[cfg(any(feature = "tracing", feature = "metrics"))]
 mod observability;
 mod parser;
 mod response;

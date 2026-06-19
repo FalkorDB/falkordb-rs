@@ -14,6 +14,7 @@
 #[cfg(feature = "tokio")]
 use crate::ConnectionStrategy;
 use crate::FalkorDBError;
+#[cfg(feature = "tracing")]
 use std::sync::OnceLock;
 
 /// Compute a privacy-safe, stable fingerprint of a Cypher query.
@@ -23,6 +24,7 @@ use std::sync::OnceLock;
 /// or parameter values share a fingerprint, and no sensitive value enters the hash. Redaction is
 /// best-effort (a regex, not a full Cypher parser). The value is an FNV-1a hash rendered as 16 hex
 /// digits; it is **not** guaranteed stable across crate versions (group within a deployment).
+#[cfg(feature = "tracing")]
 pub(crate) fn query_fingerprint(query: &str) -> String {
     let normalized = redact_literals(query);
     format!("{:016x}", fnv1a_64(normalized.as_bytes()))
@@ -30,6 +32,7 @@ pub(crate) fn query_fingerprint(query: &str) -> String {
 
 /// Replace string / numeric / boolean / null literals with `?`. Identifiers, labels, property
 /// names, keywords and structure are preserved, so the redacted text captures the query shape.
+#[cfg(feature = "tracing")]
 fn redact_literals(query: &str) -> String {
     static LITERAL: OnceLock<regex::Regex> = OnceLock::new();
     let re = LITERAL.get_or_init(|| {
@@ -44,6 +47,7 @@ fn redact_literals(query: &str) -> String {
 }
 
 /// FNV-1a 64-bit hash. Deterministic and dependency-free; adequate for a grouping fingerprint.
+#[cfg(feature = "tracing")]
 fn fnv1a_64(bytes: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -99,6 +103,7 @@ pub(crate) const SYNC_STRATEGY: &str = "pooled";
 /// the operation is read-only, and the privacy-safe query fingerprint — plus the raw query template
 /// **only** when `log_raw` is set (the opt-in `with_query_logging` flag). Parameter values are never
 /// recorded — they live in the query preamble, not in `query_template`.
+#[cfg(feature = "tracing")]
 pub(crate) fn record_request(
     strategy: &'static str,
     read_only: bool,
@@ -118,14 +123,73 @@ pub(crate) fn record_request(
 }
 
 /// Record the bounded error kind on the current span when an operation fails.
+#[cfg(feature = "tracing")]
 pub(crate) fn record_error(error: &FalkorDBError) {
     tracing::Span::current().record("error.type", error_kind(error));
+}
+
+/// A bounded label for a wire command, for use as a metric label. An allowlist of known commands
+/// (unknown ⇒ `"other"`), so a metric label can never carry a user-controlled or high-cardinality
+/// string. Procedure calls are labeled by their wire command (`GRAPH.QUERY`/`GRAPH.RO_QUERY`), never
+/// by the procedure name.
+#[cfg(feature = "metrics")]
+pub(crate) fn command_label(command: &str) -> &'static str {
+    match command {
+        "GRAPH.QUERY" => "GRAPH.QUERY",
+        "GRAPH.RO_QUERY" => "GRAPH.RO_QUERY",
+        "GRAPH.PROFILE" => "GRAPH.PROFILE",
+        "GRAPH.EXPLAIN" => "GRAPH.EXPLAIN",
+        "GRAPH.DELETE" => "GRAPH.DELETE",
+        "GRAPH.COPY" => "GRAPH.COPY",
+        "GRAPH.SLOWLOG" => "GRAPH.SLOWLOG",
+        "GRAPH.CONFIG" => "GRAPH.CONFIG",
+        "INFO" => "INFO",
+        _ => "other",
+    }
+}
+
+/// Emit the per-operation metrics with **bounded** labels: `command` (allowlisted), `operation`
+/// (`read`/`write`), `strategy`, and `error_kind` on failure. The graph name, query text and
+/// fingerprint are deliberately **never** used as labels — they are unbounded and belong on spans,
+/// not metrics, where they would explode cardinality.
+#[cfg(feature = "metrics")]
+pub(crate) fn record_query_metrics(
+    command: &str,
+    read_only: bool,
+    strategy: &'static str,
+    duration: std::time::Duration,
+    error: Option<&FalkorDBError>,
+) {
+    let command = command_label(command);
+    let operation = if read_only { "read" } else { "write" };
+    metrics::counter!(
+        "falkordb_queries_total",
+        "command" => command,
+        "operation" => operation,
+        "strategy" => strategy,
+    )
+    .increment(1);
+    metrics::histogram!(
+        "falkordb_query_duration_seconds",
+        "command" => command,
+        "operation" => operation,
+    )
+    .record(duration.as_secs_f64());
+    if let Some(err) = error {
+        metrics::counter!(
+            "falkordb_query_errors_total",
+            "command" => command,
+            "error_kind" => error_kind(err),
+        )
+        .increment(1);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(feature = "tracing")]
     #[test]
     fn fingerprint_is_stable_for_same_query() {
         assert_eq!(
@@ -134,6 +198,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tracing")]
     #[test]
     fn fingerprint_is_value_independent_for_inlined_literals() {
         // The whole point of redaction: differing literal values must not change the fingerprint.
@@ -149,6 +214,7 @@ mod tests {
         assert_eq!(n1, n2, "numeric literals must be redacted before hashing");
     }
 
+    #[cfg(feature = "tracing")]
     #[test]
     fn fingerprint_distinguishes_query_shape() {
         assert_ne!(
@@ -157,6 +223,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tracing")]
     #[test]
     fn redaction_removes_literal_values_and_fingerprint_is_hex() {
         let query = "MATCH (u {ssn: '123-45-6789', name: 'secret'}) RETURN u";
@@ -182,6 +249,7 @@ mod tests {
         assert!(fingerprint.bytes().all(|b| b.is_ascii_hexdigit()));
     }
 
+    #[cfg(feature = "tracing")]
     #[test]
     fn redaction_preserves_shape_and_strips_literals() {
         assert_eq!(
@@ -264,7 +332,7 @@ mod tests {
 /// critically, that the field names match the `#[instrument(fields(...))]` declarations on the
 /// execution seams (a mismatch would silently no-op). Uses a `tracing-subscriber` registry so
 /// `Span::current()` resolves correctly.
-#[cfg(test)]
+#[cfg(all(test, feature = "tracing"))]
 mod span_capture_tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -385,5 +453,65 @@ mod span_capture_tests {
             fields.get("db.query.text").map(String::as_str),
             Some("MATCH (n) RETURN n")
         );
+    }
+}
+
+/// Tests for the `metrics` emission: the labels must be a bounded set and must never carry a graph
+/// name, query text, fingerprint, or error payload.
+#[cfg(all(test, feature = "metrics"))]
+mod metrics_tests {
+    use super::*;
+    use metrics_util::debugging::DebuggingRecorder;
+    use std::time::Duration;
+
+    #[test]
+    fn command_label_is_a_bounded_allowlist() {
+        assert_eq!(command_label("GRAPH.RO_QUERY"), "GRAPH.RO_QUERY");
+        assert_eq!(command_label("GRAPH.QUERY"), "GRAPH.QUERY");
+        assert_eq!(command_label("GRAPH.PROFILE"), "GRAPH.PROFILE");
+        // Anything not on the allowlist (incl. a procedure name or a hostile string) is bucketed.
+        assert_eq!(command_label("DB.INDEXES"), "other");
+        assert_eq!(command_label("'; DROP graph --"), "other");
+    }
+
+    #[test]
+    fn record_query_metrics_emits_three_series_with_only_bounded_labels() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            record_query_metrics(
+                "GRAPH.QUERY",
+                false,
+                "pooled",
+                Duration::from_millis(5),
+                Some(&crate::FalkorDBError::RedisError(
+                    "secret server detail".into(),
+                )),
+            );
+        });
+
+        let mut names = Vec::new();
+        for (composite, _unit, _desc, _value) in snapshotter.snapshot().into_vec() {
+            let key = composite.key();
+            names.push(key.name().to_string());
+            for label in key.labels() {
+                // Labels must be from the bounded set; never a payload / graph / query / fingerprint.
+                assert!(
+                    matches!(
+                        label.key(),
+                        "command" | "operation" | "strategy" | "error_kind"
+                    ),
+                    "unexpected (potentially unbounded) metric label: {:?}",
+                    label.key()
+                );
+                assert!(
+                    !label.value().contains("secret"),
+                    "metric label leaked an error payload: {label:?}"
+                );
+            }
+        }
+        assert!(names.iter().any(|n| n == "falkordb_queries_total"));
+        assert!(names.iter().any(|n| n == "falkordb_query_duration_seconds"));
+        assert!(names.iter().any(|n| n == "falkordb_query_errors_total"));
     }
 }

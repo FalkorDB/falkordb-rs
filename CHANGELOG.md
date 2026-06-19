@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional `metrics` feature: emits per-operation counters and a duration histogram through the
+  [`metrics`](https://docs.rs/metrics) facade (so the application installs any exporter) —
+  `falkordb_queries_total`, `falkordb_query_duration_seconds`, and `falkordb_query_errors_total`. All
+  labels are **bounded, low-cardinality** (`command` allowlist, `operation`, `strategy`, `error_kind`);
+  the graph name, query text and fingerprint are never used as labels. No-op until a recorder is
+  installed.
 - Observability: when the `tracing` feature is enabled, the query- and procedure-execution spans are
   enriched with structured, low-cardinality fields (named after the OpenTelemetry database semantic
   conventions): `db.system.name`, `db.namespace` (graph), `db.operation.name`, `db.falkordb.read_only`,

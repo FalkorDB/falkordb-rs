@@ -21,6 +21,7 @@ mod graph;
 mod graph_schema;
 mod parser;
 mod response;
+mod retry;
 mod value;
 
 /// A [`Result`] which only returns [`FalkorDBError`] as its E type
@@ -45,6 +46,7 @@ pub use response::{
     slowlog_entry::SlowlogEntry,
     QueryResult,
 };
+pub use retry::{Backoff, RetryPolicy, RetryScope};
 pub use value::{
     config::ConfigValue,
     graph_entities::{Edge, EntityType, Node},

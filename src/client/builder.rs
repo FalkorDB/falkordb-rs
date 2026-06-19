@@ -5,7 +5,7 @@
 
 use crate::{
     client::{ConnectionStrategy, FalkorClientProvider},
-    FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorSyncClient,
+    FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorSyncClient, RetryPolicy,
 };
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::Duration;
@@ -20,6 +20,7 @@ pub struct FalkorClientBuilder<const R: char> {
     #[cfg_attr(not(feature = "tokio"), allow(dead_code))]
     max_inflight: Option<NonZeroUsize>,
     tcp_settings: Option<redis::io::tcp::TcpSettings>,
+    retry_policy: RetryPolicy,
 }
 
 impl<const R: char> FalkorClientBuilder<R> {
@@ -60,6 +61,35 @@ impl<const R: char> FalkorClientBuilder<R> {
     ) -> Self {
         Self {
             strategy: self.strategy.with_connection_count(num_connections),
+            ..self
+        }
+    }
+
+    /// Configure an opt-in [`RetryPolicy`] that automatically re-issues *eligible* operations on
+    /// *transient* connection failures, with bounded backoff.
+    ///
+    /// **Disabled by default**: without this call the client attempts every operation exactly once,
+    /// exactly as before. The available scope ([`RetryScope::ReadOnly`](crate::RetryScope)) retries
+    /// only read-only / idempotent operations, so enabling a policy never re-issues a write.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use falkordb::{FalkorClientBuilder, RetryPolicy};
+    ///
+    /// # fn doc() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = FalkorClientBuilder::new()
+    ///     .with_retry_policy(RetryPolicy::read_only().max_attempts(4))
+    ///     .build()?;
+    /// # let _ = client;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_retry_policy(
+        self,
+        retry_policy: RetryPolicy,
+    ) -> Self {
+        Self {
+            retry_policy,
             ..self
         }
     }
@@ -198,6 +228,7 @@ impl FalkorClientBuilder<'S'> {
             },
             max_inflight: None,
             tcp_settings: None,
+            retry_policy: RetryPolicy::disabled(),
         }
     }
 
@@ -226,6 +257,7 @@ impl FalkorClientBuilder<'S'> {
             client,
             actual_connection_info,
             self.strategy.connection_count().get(),
+            self.retry_policy,
         )
     }
 }
@@ -244,6 +276,7 @@ impl FalkorClientBuilder<'A'> {
             },
             max_inflight: None,
             tcp_settings: None,
+            retry_policy: RetryPolicy::disabled(),
         }
     }
 
@@ -339,6 +372,7 @@ impl FalkorClientBuilder<'A'> {
             actual_connection_info,
             self.strategy,
             self.max_inflight,
+            self.retry_policy,
         )
         .await
     }

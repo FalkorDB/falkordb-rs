@@ -10,7 +10,7 @@ use crate::{
         blocking::FalkorSyncConnection,
     },
     parser::{parse_config_hashmap, redis_value_as_untyped_string_vec},
-    AsyncGraph, ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult,
+    AsyncGraph, ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, RetryPolicy,
 };
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,9 +68,18 @@ pub struct FalkorAsyncClientInner {
     /// has no readable replicas, in which case read-only queries reuse the primary
     /// backend (preserving the previous behavior).
     readonly: Option<AsyncExecutor>,
+    /// Opt-in retry policy applied to eligible operations; [`disabled`](RetryPolicy::disabled) by
+    /// default, in which case every operation is attempted exactly once.
+    retry_policy: RetryPolicy,
 }
 
 impl FalkorAsyncClientInner {
+    /// The retry policy configured for this client (defaults to
+    /// [`disabled`](RetryPolicy::disabled)).
+    pub(crate) fn retry_policy(&self) -> RetryPolicy {
+        self.retry_policy
+    }
+
     /// Borrow a connection from the given executor. For the pooled strategy this waits
     /// for an available connection; for the multiplexed strategy it hands out a cheap
     /// clone immediately.
@@ -224,6 +233,7 @@ impl FalkorAsyncClient {
         connection_info: FalkorConnectionInfo,
         requested_strategy: ConnectionStrategy,
         max_inflight: Option<NonZeroUsize>,
+        retry_policy: RetryPolicy,
     ) -> FalkorResult<Self> {
         // A multiplexed ConnectionManager built from a Sentinel-resolved client pins to a
         // single node and reconnects to the same address rather than re-resolving the
@@ -264,6 +274,7 @@ impl FalkorAsyncClient {
                 strategy,
                 primary,
                 readonly,
+                retry_policy,
             }),
             _connection_info: connection_info,
         })
@@ -935,6 +946,7 @@ mod tests {
             },
             primary,
             readonly: Some(readonly),
+            retry_policy: RetryPolicy::disabled(),
         });
 
         assert!(inner.has_readonly_pool());

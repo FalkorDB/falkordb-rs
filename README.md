@@ -523,6 +523,54 @@ transparently fall back to the primary connection, and `reads_from_replicas()`
 returns `false`. See [`examples/readonly_replica.rs`](examples/readonly_replica.rs)
 for a complete working example.
 
+### Resilience / automatic retries
+
+A client can opt in to a `RetryPolicy` that automatically re-issues *eligible* operations on
+*transient* connection failures, with bounded backoff. It is **disabled by default**, so a client
+built without one behaves exactly as before (every operation is attempted once):
+
+```no_run
+use falkordb::{Backoff, FalkorClientBuilder, RetryPolicy};
+use std::time::Duration;
+
+# fn doc() -> Result<(), Box<dyn std::error::Error>> {
+let client = FalkorClientBuilder::new()
+    .with_retry_policy(
+        RetryPolicy::read_only()                         // retry read-only ops only
+            .max_attempts(4)                             // 1 initial try + up to 3 retries
+            .backoff(Backoff::exponential(Duration::from_millis(50))
+                .max_delay(Duration::from_secs(1))),     // 50ms, 100ms, 200ms, … capped at 1s
+    )
+    .build()?;
+# let _ = client;
+# Ok(())
+# }
+```
+
+The same `with_retry_policy(..)` is available on the async builder
+(`FalkorClientBuilder::new_async()`).
+
+**Write safety.** The only scope available today, `RetryScope::ReadOnly`, retries **read-only /
+idempotent** operations only (`ro_query`, `explain`, `list_indices`, `list_constraints`, read-only
+procedure calls). **Writes are never retried**, so enabling a policy can never duplicate a write.
+Classification is by the API you call, never by inspecting Cypher — `query()` is treated as a write
+even when it only reads, so use `ro_query()` for retryable reads.
+
+Only transient connection errors are retried (a dropped/unavailable connection, or a Sentinel
+resolution failure); deterministic errors (syntax, constraint violations, parse/type errors,
+wait-operation timeouts) are returned immediately. Retries compose with the client's existing
+connection healing: each attempt re-borrows a connection, so a recovered connection is picked up on
+the next try.
+
+**Scope.** Retry currently wraps query and procedure *execution* — `ro_query`, `query`, `explain`,
+`profile`, `call_procedure`/`call_procedure_ro`, and `list_indices`/`list_constraints` (only the
+read-only ones are eligible). Direct client/admin calls (`list_graphs`, configuration getters/setters,
+`slowlog`, server `INFO`) and the internal schema-cache refresh that can run while a result is parsed
+are **not** wrapped yet, so a transient failure there still surfaces even with a policy enabled.
+Broadening the coverage is a planned follow-up.
+
+See [`examples/retry.rs`](examples/retry.rs) for a complete, runnable example.
+
 ### Tracing
 
 This crate fully supports instrumentation using the [`tracing`](https://docs.rs/tracing/latest/tracing/) crate, to use

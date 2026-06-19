@@ -6,6 +6,7 @@
 use crate::{
     graph::HasGraphSchema,
     parser::{parse_header, redis_value_as_vec, SchemaParsable},
+    retry::{op_kind_for_command, run_with_retry_blocking, OpKind},
     Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParams, FalkorResult, GraphSchema,
     IntoFalkorParam, IntoFalkorParams, LazyResultSet, QueryResult, SyncGraph,
 };
@@ -16,7 +17,7 @@ use std::{
 };
 
 #[cfg(feature = "tokio")]
-use crate::{AsyncGraph, RowStream};
+use crate::{retry::run_with_retry_async, AsyncGraph, RowStream};
 
 #[cfg(feature = "serde")]
 use crate::TypedLazyResultSet;
@@ -270,19 +271,21 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         }
 
         let client = self.graph.get_client();
-        let conn = if self.command == "GRAPH.RO_QUERY" {
-            client.borrow_readonly_connection(client.clone())
-        } else {
-            client.borrow_connection(client.clone())
-        };
+        let graph_name = self.graph.graph_name();
+        let command = self.command;
+        let readonly_conn = command == "GRAPH.RO_QUERY";
+        let params_ref = params.as_slice();
+        let policy = client.retry_policy();
 
-        conn.and_then(|mut conn| {
-            conn.execute_command(
-                Some(self.graph.graph_name()),
-                self.command,
-                None,
-                Some(params.as_slice()),
-            )
+        run_with_retry_blocking(&policy, op_kind_for_command(command), || {
+            let conn = if readonly_conn {
+                client.borrow_readonly_connection(client.clone())
+            } else {
+                client.borrow_connection(client.clone())
+            };
+            conn.and_then(|mut conn| {
+                conn.execute_command(Some(graph_name), command, None, Some(params_ref))
+            })
         })
     }
 }
@@ -309,20 +312,23 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         }
 
         let client = self.graph.get_client();
-        let conn = if self.command == "GRAPH.RO_QUERY" {
-            client.borrow_readonly_connection(client.clone()).await
-        } else {
-            client.borrow_connection(client.clone()).await
-        };
+        let graph_name = self.graph.graph_name();
+        let command = self.command;
+        let readonly_conn = command == "GRAPH.RO_QUERY";
+        let params_ref = params.as_slice();
+        let policy = client.retry_policy();
 
-        conn?
-            .execute_command(
-                Some(self.graph.graph_name()),
-                self.command,
-                None,
-                Some(params.as_slice()),
-            )
-            .await
+        run_with_retry_async(&policy, op_kind_for_command(command), || async move {
+            let conn = if readonly_conn {
+                client.borrow_readonly_connection(client.clone()).await
+            } else {
+                client.borrow_connection(client.clone()).await
+            };
+            conn?
+                .execute_command(Some(graph_name), command, None, Some(params_ref))
+                .await
+        })
+        .await
     }
 
     /// Eagerly parses the reply into an owned [`RowStream`] under the schema write lock, so the
@@ -513,6 +519,7 @@ pub struct ProcedureQueryBuilder<'a, Output, G> {
     _unused: PhantomData<Output>,
     graph: &'a mut G,
     readonly: bool,
+    op_kind: OpKind,
     procedure_name: &'a str,
     args: Option<&'a [&'a str]>,
     yields: Option<&'a [&'a str]>,
@@ -528,6 +535,7 @@ impl<'a, Out, G> ProcedureQueryBuilder<'a, Out, G> {
 
             graph,
             readonly: false,
+            op_kind: OpKind::Write,
             procedure_name,
             args: None,
             yields: None,
@@ -542,10 +550,19 @@ impl<'a, Out, G> ProcedureQueryBuilder<'a, Out, G> {
             _unused: PhantomData,
             graph,
             readonly: true,
+            op_kind: OpKind::ReadOnly,
             procedure_name,
             args: None,
             yields: None,
         }
+    }
+
+    /// Mark this procedure call as read-only / idempotent for retry purposes, independent of the
+    /// wire command. Used by internal listing procedures (`DB.INDEXES`, `DB.CONSTRAINTS`) which are
+    /// dispatched over `GRAPH.QUERY` yet only read, so they remain safe to re-issue.
+    pub(crate) fn read_only(mut self) -> Self {
+        self.op_kind = OpKind::ReadOnly;
+        self
     }
 
     /// Pass arguments to the procedure call
@@ -630,19 +647,21 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
         let query = construct_query(query_string, &params)?;
 
         let client = self.graph.get_client();
-        let conn = if self.readonly {
-            client.borrow_readonly_connection(client.clone())
-        } else {
-            client.borrow_connection(client.clone())
-        };
+        let graph_name = self.graph.graph_name();
+        let readonly_conn = self.readonly;
+        let op_kind = self.op_kind;
+        let exec_params = [query.as_str(), "--compact"];
+        let policy = client.retry_policy();
 
-        conn.and_then(|mut conn| {
-            conn.execute_command(
-                Some(self.graph.graph_name()),
-                command,
-                None,
-                Some(&[query.as_str(), "--compact"]),
-            )
+        run_with_retry_blocking(&policy, op_kind, || {
+            let conn = if readonly_conn {
+                client.borrow_readonly_connection(client.clone())
+            } else {
+                client.borrow_connection(client.clone())
+            };
+            conn.and_then(|mut conn| {
+                conn.execute_command(Some(graph_name), command, None, Some(&exec_params))
+            })
         })
     }
 }
@@ -669,20 +688,23 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
         let query = construct_query(query_string, &params)?;
 
         let client = self.graph.get_client();
-        let conn = if self.readonly {
-            client.borrow_readonly_connection(client.clone()).await
-        } else {
-            client.borrow_connection(client.clone()).await
-        };
+        let graph_name = self.graph.graph_name();
+        let readonly_conn = self.readonly;
+        let op_kind = self.op_kind;
+        let exec_params = [query.as_str(), "--compact"];
+        let policy = client.retry_policy();
 
-        conn?
-            .execute_command(
-                Some(self.graph.graph_name()),
-                command,
-                None,
-                Some(&[query.as_str(), "--compact"]),
-            )
-            .await
+        run_with_retry_async(&policy, op_kind, || async move {
+            let conn = if readonly_conn {
+                client.borrow_readonly_connection(client.clone()).await
+            } else {
+                client.borrow_connection(client.clone()).await
+            };
+            conn?
+                .execute_command(Some(graph_name), command, None, Some(&exec_params))
+                .await
+        })
+        .await
     }
 }
 

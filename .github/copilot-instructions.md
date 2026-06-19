@@ -43,10 +43,10 @@ Tests need a running server; prefer the `*-local` wrappers, which manage Docker 
 4. Open a PR on a `feat:` / `fix:` / `ci:` / `docs:` branch.
 5. **Resolve every AI review thread** (Copilot **and** CodeRabbit) — reply *and* mark resolved —
    before merge. Copilot auto-reviews on push here.
-6. **Never merge to `main` yourself — wait for explicit human approval.** Do **not** run
-   `gh pr merge` / `--admin --squash` to self-merge, even when every check is green and all AI
-   threads are resolved. Open the PR, get it green, and **stop** until the maintainer reviews and
-   approves the merge. After a human merges, `release-plz` handles the release.
+6. **Never merge to `main` yourself — wait for explicit human approval.** Do **not** run any
+   `gh pr merge …` variant (e.g. `gh pr merge --admin --squash`) to self-merge, even when every
+   check is green and all AI threads are resolved. Open the PR, get it green, and **stop** until the
+   maintainer reviews and approves the merge. After a human merges, `release-plz` handles the release.
 
 ## Keep documentation in sync
 

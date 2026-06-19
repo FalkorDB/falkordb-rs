@@ -3,6 +3,8 @@
  * Licensed under the MIT License.
  */
 
+#![recursion_limit = "256"]
+
 //! Async streaming results with `futures::StreamExt` / `TryStreamExt`.
 //!
 //! Run with: `cargo run --example async_stream --features tokio`

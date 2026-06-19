@@ -3,6 +3,8 @@
  * Licensed under the MIT License.
  */
 
+#![recursion_limit = "256"]
+
 //! Demonstrates the multiplexed async connection strategy: many concurrent queries
 //! share a small number of auto-reconnecting sockets, each carrying several in-flight
 //! commands at once.

@@ -583,6 +583,49 @@ cargo add falkordb --features tracing
 Note that different functions use different filtration levels, to avoid spamming your tests, be sure to enable the
 correct level as you desire it.
 
+When the `tracing` feature is enabled, the query- and procedure-execution spans are enriched with
+structured, low-cardinality fields you can slice and filter on (named after the
+[OpenTelemetry database conventions](https://opentelemetry.io/docs/specs/semconv/database/) so they
+map cleanly when exported via `tracing-opentelemetry`):
+
+| Field | Example | Meaning |
+|---|---|---|
+| `db.system.name` | `falkordb` | constant |
+| `db.namespace` | `social` | the graph name |
+| `db.operation.name` | `GRAPH.RO_QUERY` / `db.idx.fulltext.queryNodes` | the command or procedure |
+| `db.falkordb.read_only` | `true` | whether the operation is read-only |
+| `db.falkordb.strategy` | `multiplexed` | the active connection strategy |
+| `db.query.fingerprint` | `a1b2c3d4e5f60718` | a privacy-safe hash of the query *shape* |
+| `error.type` | `connection_down` | a bounded error kind, recorded on failure |
+
+**Privacy by default.** The raw query text and parameter values are **never** recorded by default —
+only the `db.query.fingerprint`, which is a hash of the query with all literals (strings, numbers,
+`true`/`false`/`null`) redacted, so two queries that differ only in their values share a fingerprint
+and no value ever enters a span. If you need the raw Cypher for debugging in a trusted environment,
+opt in explicitly:
+
+```no_run
+use falkordb::FalkorClientBuilder;
+
+# fn doc() -> Result<(), Box<dyn std::error::Error>> {
+let client = FalkorClientBuilder::new()
+    .with_query_logging(true) // records `db.query.text`; off by default
+    .build()?;
+# let _ = client;
+# Ok(())
+# }
+```
+
+Parameter values supplied via `with_param` are never recorded even when query logging is enabled
+(they live in the query preamble, not the query text).
+
+> **Note:** the async query/procedure futures are deeply nested (retry + instrumentation). If you
+> `tokio::spawn` them with the `tracing` feature enabled and hit a `recursion limit` /
+> `overflow evaluating ... Send` error, add `#![recursion_limit = "256"]` to your crate root — the
+> standard fix for deep `async` + `tracing` stacks.
+
+See [`examples/observability.rs`](examples/observability.rs) for a complete, runnable example.
+
 ### Typed result mapping (serde)
 
 Enable the optional `serde` feature to map query results straight into your own types instead of hand-matching every

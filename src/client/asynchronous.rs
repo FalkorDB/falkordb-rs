@@ -71,6 +71,9 @@ pub struct FalkorAsyncClientInner {
     /// Opt-in retry policy applied to eligible operations; [`disabled`](RetryPolicy::disabled) by
     /// default, in which case every operation is attempted exactly once.
     retry_policy: RetryPolicy,
+    /// When set, the raw query text is recorded as a span field (opt-in via `with_query_logging`).
+    #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
+    query_logging: bool,
 }
 
 impl FalkorAsyncClientInner {
@@ -78,6 +81,18 @@ impl FalkorAsyncClientInner {
     /// [`disabled`](RetryPolicy::disabled)).
     pub(crate) fn retry_policy(&self) -> RetryPolicy {
         self.retry_policy
+    }
+
+    /// The active connection strategy (used for observability span fields).
+    #[cfg(feature = "tracing")]
+    pub(crate) fn strategy(&self) -> ConnectionStrategy {
+        self.strategy
+    }
+
+    /// Whether raw query text may be recorded on spans (opt-in; `false` by default).
+    #[cfg(feature = "tracing")]
+    pub(crate) fn query_logging(&self) -> bool {
+        self.query_logging
     }
 
     /// Borrow a connection from the given executor. For the pooled strategy this waits
@@ -234,6 +249,7 @@ impl FalkorAsyncClient {
         requested_strategy: ConnectionStrategy,
         max_inflight: Option<NonZeroUsize>,
         retry_policy: RetryPolicy,
+        query_logging: bool,
     ) -> FalkorResult<Self> {
         // A multiplexed ConnectionManager built from a Sentinel-resolved client pins to a
         // single node and reconnects to the same address rather than re-resolving the
@@ -275,6 +291,7 @@ impl FalkorAsyncClient {
                 primary,
                 readonly,
                 retry_policy,
+                query_logging,
             }),
             _connection_info: connection_info,
         })
@@ -947,6 +964,7 @@ mod tests {
             primary,
             readonly: Some(readonly),
             retry_policy: RetryPolicy::disabled(),
+            query_logging: false,
         });
 
         assert!(inner.has_readonly_pool());

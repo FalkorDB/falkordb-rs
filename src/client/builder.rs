@@ -21,6 +21,7 @@ pub struct FalkorClientBuilder<const R: char> {
     max_inflight: Option<NonZeroUsize>,
     tcp_settings: Option<redis::io::tcp::TcpSettings>,
     retry_policy: RetryPolicy,
+    query_logging: bool,
 }
 
 impl<const R: char> FalkorClientBuilder<R> {
@@ -90,6 +91,23 @@ impl<const R: char> FalkorClientBuilder<R> {
     ) -> Self {
         Self {
             retry_policy,
+            ..self
+        }
+    }
+
+    /// Opt in to recording the **raw query text** as a span field (`db.query.text`) on the client's
+    /// `tracing` spans. **Off by default** for privacy: by default only a redacted query
+    /// fingerprint (`db.query.fingerprint`) is recorded, never the query text or parameter values.
+    ///
+    /// Enable this only in trusted environments — the raw Cypher you pass can contain inlined
+    /// literals (secrets/PII). Parameter values supplied via `with_param` are never recorded even
+    /// when this is on. Has no effect unless the `tracing` feature is enabled.
+    pub fn with_query_logging(
+        self,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            query_logging: enabled,
             ..self
         }
     }
@@ -229,6 +247,7 @@ impl FalkorClientBuilder<'S'> {
             max_inflight: None,
             tcp_settings: None,
             retry_policy: RetryPolicy::disabled(),
+            query_logging: false,
         }
     }
 
@@ -258,6 +277,7 @@ impl FalkorClientBuilder<'S'> {
             actual_connection_info,
             self.strategy.connection_count().get(),
             self.retry_policy,
+            self.query_logging,
         )
     }
 }
@@ -277,6 +297,7 @@ impl FalkorClientBuilder<'A'> {
             max_inflight: None,
             tcp_settings: None,
             retry_policy: RetryPolicy::disabled(),
+            query_logging: false,
         }
     }
 
@@ -373,6 +394,7 @@ impl FalkorClientBuilder<'A'> {
             self.strategy,
             self.max_inflight,
             self.retry_policy,
+            self.query_logging,
         )
         .await
     }
@@ -389,6 +411,7 @@ mod tests {
 
         assert!(FalkorClientBuilder::new()
             .with_connection_info(connection_info.unwrap())
+            .with_query_logging(true)
             .build()
             .is_ok());
     }

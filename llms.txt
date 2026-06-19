@@ -59,6 +59,7 @@ hand; if you change the public API, run `just llms` and commit the updated `llms
 - `AsyncCopyGraphBuilder` — requires `tokio`
 - `AsyncGraph` — requires `tokio`
 - `AsyncIndexOpBuilder` — requires `tokio`
+- `Backoff`
 - `BatchBuilder`
 - `BatchItemResult`
 - `BatchQuery`
@@ -100,6 +101,8 @@ hand; if you change the public API, run `just llms` and commit the updated `llms
 - `QueryBuilder`
 - `QueryResult`
 - `RawParam`
+- `RetryPolicy`
+- `RetryScope`
 - `Row`
 - `RowStream` — requires `tokio`
 - `SchemaType`

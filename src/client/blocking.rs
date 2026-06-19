@@ -7,7 +7,7 @@ use crate::{
     client::{FalkorClientProvider, ProvidesSyncConnections},
     connection::blocking::{BorrowedSyncConnection, FalkorSyncConnection},
     parser::{parse_config_hashmap, redis_value_as_untyped_string_vec},
-    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, SyncGraph,
+    ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, RetryPolicy, SyncGraph,
 };
 use parking_lot::Mutex;
 use std::{
@@ -36,9 +36,18 @@ pub(crate) struct FalkorSyncClientInner {
     /// deployment has no readable replicas, in which case read-only queries reuse
     /// the primary pool (preserving the previous behavior).
     readonly_pool: Option<SyncConnectionPool>,
+    /// Opt-in retry policy applied to eligible operations; [`disabled`](RetryPolicy::disabled) by
+    /// default, in which case every operation is attempted exactly once.
+    retry_policy: RetryPolicy,
 }
 
 impl FalkorSyncClientInner {
+    /// The retry policy configured for this client (defaults to
+    /// [`disabled`](RetryPolicy::disabled)).
+    pub(crate) fn retry_policy(&self) -> RetryPolicy {
+        self.retry_policy
+    }
+
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -140,6 +149,7 @@ impl FalkorSyncClient {
         mut client: FalkorClientProvider,
         connection_info: FalkorConnectionInfo,
         num_connections: u8,
+        retry_policy: RetryPolicy,
     ) -> FalkorResult<Self> {
         let (connection_pool_tx, connection_pool_rx) = mpsc::sync_channel(num_connections as usize);
 
@@ -163,6 +173,7 @@ impl FalkorSyncClient {
                 connection_pool_tx,
                 connection_pool_rx: Mutex::new(connection_pool_rx),
                 readonly_pool,
+                retry_policy,
             }),
             _connection_info: connection_info,
         })
@@ -441,6 +452,7 @@ pub(crate) fn create_empty_inner_sync_client() -> Arc<FalkorSyncClientInner> {
         connection_pool_tx: tx,
         connection_pool_rx: Mutex::new(rx),
         readonly_pool: None,
+        retry_policy: RetryPolicy::disabled(),
     })
 }
 
@@ -627,6 +639,7 @@ mod tests {
             connection_pool_tx: tx,
             connection_pool_rx: Mutex::new(rx),
             readonly_pool: Some(pool),
+            retry_policy: RetryPolicy::disabled(),
         });
 
         assert!(inner.has_readonly_pool());

@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in, client-wide `RetryPolicy` that automatically re-issues *eligible* operations on *transient*
+  connection failures with bounded backoff. **Disabled by default**, so existing behavior is
+  byte-for-byte unchanged. Configure it on either builder with
+  `FalkorClientBuilder::with_retry_policy(..)`; the available scope (`RetryScope::ReadOnly`) retries
+  only read-only / idempotent operations, so enabling a policy never re-issues a write. New public
+  types: `RetryPolicy`, `RetryScope`, `Backoff`. Backoff/jitter is powered internally by `backon`.
+
 ## [0.8.6](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.5...v0.8.6) - 2026-06-18
 
 ### Added

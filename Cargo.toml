@@ -16,6 +16,7 @@ all-features = true
 [lib]
 
 [dependencies]
+backon = { version = "1.6", default-features = false, features = ["std", "std-blocking-sleep"] }
 futures-core = { version = "0.3", default-features = false, optional = true }
 parking_lot = { version = "0.12.5", default-features = false }
 redis = { version = "1.2.2", default-features = false, features = ["sentinel"] }
@@ -55,7 +56,7 @@ default = []
 native-tls = ["redis/tls-native-tls"]
 rustls = ["redis/tls-rustls"]
 
-tokio = ["dep:tokio", "dep:futures-core", "redis/tokio-comp", "redis/connection-manager"]
+tokio = ["dep:tokio", "dep:futures-core", "redis/tokio-comp", "redis/connection-manager", "backon/tokio-sleep"]
 tokio-native-tls = ["tokio", "redis/tokio-native-tls-comp"]
 tokio-rustls = ["tokio", "redis/tokio-rustls-comp"]
 

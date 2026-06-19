@@ -150,3 +150,10 @@ ci
 perf
 llms
 llmstxt
+RetryPolicy
+RetryScope
+Backoff
+backon
+millis
+jitter
+getters

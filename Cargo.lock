@@ -77,6 +77,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
 dependencies = [
  "fastrand",
+ "tokio",
 ]
 
 [[package]]
@@ -417,6 +418,7 @@ name = "falkordb"
 version = "0.8.6"
 dependencies = [
  "approx",
+ "backon",
  "criterion",
  "futures",
  "futures-core",

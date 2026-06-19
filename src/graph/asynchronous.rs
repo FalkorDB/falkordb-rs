@@ -220,6 +220,7 @@ impl AsyncGraph {
     )]
     pub async fn list_indices(&mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
         ProcedureQueryBuilder::<QueryResult<Vec<FalkorIndex>>, Self>::new(self, "DB.INDEXES")
+            .read_only()
             .execute()
             .await
     }
@@ -285,6 +286,7 @@ impl AsyncGraph {
     )]
     pub async fn list_constraints(&mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
         ProcedureQueryBuilder::<QueryResult<Vec<Constraint>>, Self>::new(self, "DB.CONSTRAINTS")
+            .read_only()
             .execute()
             .await
     }

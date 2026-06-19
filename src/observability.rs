@@ -138,7 +138,12 @@ pub(crate) fn record_result(
     server_time_ms: Option<f64>,
 ) {
     let span = tracing::Span::current();
-    span.record("db.response.returned_rows", returned_rows as u64);
+    // `usize` fits `u64` on every supported target; saturate defensively rather than truncate on a
+    // hypothetical wider-than-64-bit platform.
+    span.record(
+        "db.response.returned_rows",
+        u64::try_from(returned_rows).unwrap_or(u64::MAX),
+    );
     if let Some(ms) = server_time_ms {
         span.record("db.falkordb.server_time_ms", ms);
     }

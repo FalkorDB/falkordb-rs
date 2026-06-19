@@ -423,7 +423,7 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
 }
 
 impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, SyncGraph> {
-    /// Executes the query, retuning a [`QueryResult`], with a [`LazyResultSet`] as its `data` member
+    /// Executes the query, returning a [`QueryResult`], with a [`LazyResultSet`] as its `data` member
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(

@@ -2,11 +2,13 @@
 semver_check = false # disable API breaking changes checks, I suggest this becomes 'true' after we release 1.0
 
 # Only open a release PR when there's an actual feature or fix. ci/docs/chore/refactor-only
-# changes then ride along with the next `feat`/`fix` release instead of cutting a thin or empty
-# one (the regex matches `feat:`/`feat(scope)`/`feat!:` and the same for `fix`). Filtered commits
-# are still listed in the changelog of the next release. To force a release without a feat/fix,
-# push to a `release-plz-…` branch.
-release_commits = "^(feat|fix)[(!:]"
+# changes don't cut a release on their own — they ride along with the next `feat`/`fix` release.
+# Because the [changelog] body below is header-only, such commits are NOT auto-listed anywhere;
+# they appear in CHANGELOG.md only through the hand-written `## [Unreleased]` entry you add. The
+# regex matches a Conventional-Commit `feat`/`fix` subject with an optional `(scope)` and optional
+# `!`, requiring the `:` (so a malformed subject like `feat(x) …` without a colon won't trigger a
+# release). To force a release without a feat/fix, push to a `release-plz-…` branch.
+release_commits = '^(feat|fix)(\(.+?\))?!?:'
 
 [changelog]
 # Changelog entries are hand-written under "## [Unreleased]" in CHANGELOG.md (see the

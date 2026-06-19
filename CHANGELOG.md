@@ -18,9 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Observability: when the `tracing` feature is enabled, the query- and procedure-execution spans are
   enriched with structured, low-cardinality fields (named after the OpenTelemetry database semantic
   conventions): `db.system.name`, `db.namespace` (graph), `db.operation.name`, `db.falkordb.read_only`,
-  `db.falkordb.strategy`, a privacy-safe `db.query.fingerprint`, and `error.type` on failure. The raw
-  query text and parameter values are **never** recorded by default — the fingerprint is a hash of the
-  query with all literals redacted. Opt in to recording the raw Cypher (`db.query.text`) with the new
+  `db.falkordb.strategy`, a privacy-safe `db.query.fingerprint`, and `error.type` on failure. The outer
+  `execute` span additionally records `db.response.returned_rows` and `db.falkordb.server_time_ms` (the
+  server's internal execution time, when reported). The raw query text and parameter values are
+  **never** recorded by default — the fingerprint is a hash of the query with all literals redacted.
+  Opt in to recording the raw Cypher (`db.query.text`) with the new
   `FalkorClientBuilder::with_query_logging(true)`.
 - Opt-in, client-wide `RetryPolicy` that automatically re-issues *eligible* operations on *transient*
   connection failures with bounded backoff. **Disabled by default**, so existing behavior is

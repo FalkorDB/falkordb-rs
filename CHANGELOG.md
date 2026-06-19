@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Other
+
+- stop `release-plz` from generating a second, duplicate `### Added` section: it now only stamps the
+  version header, and `CHANGELOG.md` entries are hand-written under `## [Unreleased]` ([#258](https://github.com/FalkorDB/falkordb-rs/pull/258))
+
 ## [0.8.7](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.6...v0.8.7) - 2026-06-19
 
 ### Added

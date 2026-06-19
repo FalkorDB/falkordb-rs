@@ -597,6 +597,8 @@ map cleanly when exported via `tracing-opentelemetry`):
 | `db.falkordb.strategy` | `multiplexed` | the active connection strategy |
 | `db.query.fingerprint` | `a1b2c3d4e5f60718` | a privacy-safe hash of the query *shape* |
 | `error.type` | `connection_down` | a bounded error kind, recorded on failure |
+| `db.response.returned_rows` | `42` | rows the server returned (on the outer `execute` span) |
+| `db.falkordb.server_time_ms` | `1.18` | the server's internal execution time, when reported |
 
 **Privacy by default.** The raw query text and parameter values are **never** recorded by default —
 only the `db.query.fingerprint`, which is a hash of the query with all literals (strings, numbers,

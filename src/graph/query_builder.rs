@@ -426,11 +426,26 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<LazyResultSet<'a>>, T, SyncGra
     /// Executes the query, retuning a [`QueryResult`], with a [`LazyResultSet`] as its `data` member
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute Lazy Result Set Query", skip_all, level = "info")
+        tracing::instrument(
+            name = "Execute Lazy Result Set Query",
+            skip_all,
+            fields(
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            ),
+            level = "info"
+        )
     )]
     pub fn execute(mut self) -> FalkorResult<QueryResult<LazyResultSet<'a>>> {
-        self.common_execute_steps()
-            .and_then(|res| self.generate_query_result_set(res))
+        let result = self
+            .common_execute_steps()
+            .and_then(|res| self.generate_query_result_set(res))?;
+        #[cfg(feature = "tracing")]
+        crate::observability::record_result(
+            result.data.len(),
+            result.get_internal_execution_time(),
+        );
+        Ok(result)
     }
 }
 
@@ -440,12 +455,27 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<RowStream>, T, AsyncGraph> {
     /// `Send + 'static` [`futures_core::Stream`] of `FalkorResult<Row>`.
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute Row Stream Query", skip_all, level = "info")
+        tracing::instrument(
+            name = "Execute Row Stream Query",
+            skip_all,
+            fields(
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            ),
+            level = "info"
+        )
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<RowStream>> {
-        self.common_execute_steps()
+        let result = self
+            .common_execute_steps()
             .await
-            .and_then(|res| self.generate_async_result_set(res))
+            .and_then(|res| self.generate_async_result_set(res))?;
+        #[cfg(feature = "tracing")]
+        crate::observability::record_result(
+            result.data.len(),
+            result.get_internal_execution_time(),
+        );
+        Ok(result)
     }
 }
 
@@ -493,12 +523,27 @@ where
     /// [`TypedLazyResultSet`] that deserializes each row into `U`.
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute Typed Query", skip_all, level = "info")
+        tracing::instrument(
+            name = "Execute Typed Query",
+            skip_all,
+            fields(
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            ),
+            level = "info"
+        )
     )]
     pub fn execute(mut self) -> FalkorResult<QueryResult<TypedLazyResultSet<'a, U>>> {
-        self.common_execute_steps()
+        let result = self
+            .common_execute_steps()
             .and_then(|res| self.generate_query_result_set(res))
-            .map(|result| result.into_typed::<U>())
+            .map(|result| result.into_typed::<U>())?;
+        #[cfg(feature = "tracing")]
+        crate::observability::record_result(
+            result.data.len(),
+            result.get_internal_execution_time(),
+        );
+        Ok(result)
     }
 }
 
@@ -531,13 +576,28 @@ where
     /// deserializes each row into `U`.
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute Typed Row Stream Query", skip_all, level = "info")
+        tracing::instrument(
+            name = "Execute Typed Row Stream Query",
+            skip_all,
+            fields(
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            ),
+            level = "info"
+        )
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<TypedRowStream<U>>> {
-        self.common_execute_steps()
+        let result = self
+            .common_execute_steps()
             .await
             .and_then(|res| self.generate_async_result_set(res))
-            .map(|result| result.into_typed::<U>())
+            .map(|result| result.into_typed::<U>())?;
+        #[cfg(feature = "tracing")]
+        crate::observability::record_result(
+            result.data.len(),
+            result.get_internal_execution_time(),
+        );
+        Ok(result)
     }
 }
 
@@ -860,11 +920,26 @@ impl ProcedureQueryBuilder<'_, QueryResult<Vec<FalkorIndex>>, SyncGraph> {
     /// This functions consumes self
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute FalkorIndex Query", skip_all, level = "info")
+        tracing::instrument(
+            name = "Execute FalkorIndex Query",
+            skip_all,
+            fields(
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            ),
+            level = "info"
+        )
     )]
     pub fn execute(mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
-        self.common_execute_steps()
-            .and_then(|res| self.parse_query_result_of_type(res))
+        let result = self
+            .common_execute_steps()
+            .and_then(|res| self.parse_query_result_of_type(res))?;
+        #[cfg(feature = "tracing")]
+        crate::observability::record_result(
+            result.data.len(),
+            result.get_internal_execution_time(),
+        );
+        Ok(result)
     }
 }
 
@@ -874,13 +949,29 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, AsyncGraph> {
     /// This functions consumes self
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute FalkorIndex Query", skip_all, level = "info")
+        tracing::instrument(
+            name = "Execute FalkorIndex Query",
+            skip_all,
+            fields(
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            ),
+            level = "info"
+        )
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
         let res = self.common_execute_steps().await?;
-        let schema = self.graph.schema_handle();
-        let mut guard = schema.write();
-        parse_procedure_result(res, &mut guard)
+        let result = {
+            let schema = self.graph.schema_handle();
+            let mut guard = schema.write();
+            parse_procedure_result(res, &mut guard)?
+        };
+        #[cfg(feature = "tracing")]
+        crate::observability::record_result(
+            result.data.len(),
+            result.get_internal_execution_time(),
+        );
+        Ok(result)
     }
 }
 
@@ -889,11 +980,26 @@ impl ProcedureQueryBuilder<'_, QueryResult<Vec<Constraint>>, SyncGraph> {
     /// This functions consumes self
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute Constraint Procedure Call", skip_all, level = "info")
+        tracing::instrument(
+            name = "Execute Constraint Procedure Call",
+            skip_all,
+            fields(
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            ),
+            level = "info"
+        )
     )]
     pub fn execute(mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
-        self.common_execute_steps()
-            .and_then(|res| self.parse_query_result_of_type(res))
+        let result = self
+            .common_execute_steps()
+            .and_then(|res| self.parse_query_result_of_type(res))?;
+        #[cfg(feature = "tracing")]
+        crate::observability::record_result(
+            result.data.len(),
+            result.get_internal_execution_time(),
+        );
+        Ok(result)
     }
 }
 
@@ -903,13 +1009,29 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, AsyncGraph> {
     /// This functions consumes self
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Execute Constraint Procedure Call", skip_all, level = "info")
+        tracing::instrument(
+            name = "Execute Constraint Procedure Call",
+            skip_all,
+            fields(
+                db.response.returned_rows = tracing::field::Empty,
+                db.falkordb.server_time_ms = tracing::field::Empty,
+            ),
+            level = "info"
+        )
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
         let res = self.common_execute_steps().await?;
-        let schema = self.graph.schema_handle();
-        let mut guard = schema.write();
-        parse_procedure_result(res, &mut guard)
+        let result = {
+            let schema = self.graph.schema_handle();
+            let mut guard = schema.write();
+            parse_procedure_result(res, &mut guard)?
+        };
+        #[cfg(feature = "tracing")]
+        crate::observability::record_result(
+            result.data.len(),
+            result.get_internal_execution_time(),
+        );
+        Ok(result)
     }
 }
 

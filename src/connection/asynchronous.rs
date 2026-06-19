@@ -136,6 +136,8 @@ impl BorrowedAsyncConnection {
         client: Arc<FalkorAsyncClientInner>,
         readonly: bool,
     ) -> Self {
+        #[cfg(feature = "metrics")]
+        crate::observability::connection_borrow_started(readonly);
         Self {
             conn: Some(conn),
             return_to: ConnReturn::Pool(return_tx),
@@ -151,6 +153,8 @@ impl BorrowedAsyncConnection {
         client: Arc<FalkorAsyncClientInner>,
         readonly: bool,
     ) -> Self {
+        #[cfg(feature = "metrics")]
+        crate::observability::connection_borrow_started(readonly);
         Self {
             conn: Some(conn),
             return_to: ConnReturn::Discard,
@@ -229,6 +233,8 @@ impl Drop for BorrowedAsyncConnection {
     /// bounded channel, which always has a free slot because this borrow consumed one;
     /// multiplexed clones are cheap shared handles and are simply dropped.
     fn drop(&mut self) {
+        #[cfg(feature = "metrics")]
+        crate::observability::connection_borrow_finished(self.readonly);
         if let (Some(conn), ConnReturn::Pool(return_tx)) = (self.conn.take(), &self.return_to) {
             match return_tx.try_send(conn) {
                 Ok(()) => {}

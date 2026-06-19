@@ -643,6 +643,9 @@ Each query and procedure execution records:
 | `falkordb_queries_total` | counter | `command`, `operation` (`read`/`write`), `strategy` |
 | `falkordb_query_duration_seconds` | histogram | `command`, `operation` |
 | `falkordb_query_errors_total` | counter | `command`, `error_kind` |
+| `falkordb_retries_total` | counter | `operation`, `error_kind` |
+| `falkordb_connections_in_flight` | gauge | `route` (`primary`/`replica`) |
+| `falkordb_connection_pool_wait_seconds` | histogram | `route` (pooled strategy only) |
 
 All labels are **bounded, low-cardinality** values: `command` is an allowlist of known commands
 (unknown ⇒ `other`), `operation`/`strategy`/`error_kind` are small fixed sets. The graph name, query

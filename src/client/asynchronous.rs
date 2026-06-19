@@ -104,17 +104,25 @@ impl FalkorAsyncClientInner {
         readonly: bool,
     ) -> FalkorResult<BorrowedAsyncConnection> {
         match executor {
-            AsyncExecutor::Pooled(pool) => Ok(BorrowedAsyncConnection::new(
-                pool.rx
+            AsyncExecutor::Pooled(pool) => {
+                #[cfg(feature = "metrics")]
+                let wait_start = std::time::Instant::now();
+                let conn = pool
+                    .rx
                     .lock()
                     .await
                     .recv()
                     .await
-                    .ok_or(FalkorDBError::EmptyConnection)?,
-                pool.tx.clone(),
-                pool_owner,
-                readonly,
-            )),
+                    .ok_or(FalkorDBError::EmptyConnection)?;
+                #[cfg(feature = "metrics")]
+                crate::observability::record_pool_wait(readonly, wait_start.elapsed());
+                Ok(BorrowedAsyncConnection::new(
+                    conn,
+                    pool.tx.clone(),
+                    pool_owner,
+                    readonly,
+                ))
+            }
             AsyncExecutor::Multiplexed(executor) => Ok(BorrowedAsyncConnection::new_multiplexed(
                 executor.pick(),
                 pool_owner,

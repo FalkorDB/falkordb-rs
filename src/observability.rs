@@ -185,6 +185,79 @@ pub(crate) fn record_query_metrics(
     }
 }
 
+/// Record a single retry of a transient failure: a low-cardinality `tracing` debug event and a
+/// `falkordb_retries_total` counter increment. Never includes the query text or error payload.
+#[cfg(any(feature = "tracing", feature = "metrics"))]
+pub(crate) fn record_retry(
+    read_only: bool,
+    error: &FalkorDBError,
+) {
+    let operation = if read_only { "read" } else { "write" };
+    let kind = error_kind(error);
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        target: "falkordb",
+        operation,
+        error_kind = kind,
+        "retrying transient connection failure"
+    );
+    #[cfg(feature = "metrics")]
+    metrics::counter!(
+        "falkordb_retries_total",
+        "operation" => operation,
+        "error_kind" => kind,
+    )
+    .increment(1);
+}
+
+/// The bounded `route` metric label for a borrow: whether it came from the replica-routed pool or
+/// the primary. (The borrow's read-only flag means "served from a replica", not "read operation" —
+/// a read-only query falls back to the primary when no replica route exists.)
+#[cfg(feature = "metrics")]
+fn route_label(from_replica: bool) -> &'static str {
+    if from_replica {
+        "replica"
+    } else {
+        "primary"
+    }
+}
+
+/// Increment the in-flight-connections gauge as a connection is borrowed. Paired with
+/// [`connection_borrow_finished`] in the borrow's `Drop`, so the gauge reflects connections
+/// currently checked out (pooled) / concurrently borrowed (multiplexed).
+#[cfg(feature = "metrics")]
+pub(crate) fn connection_borrow_started(from_replica: bool) {
+    metrics::gauge!(
+        "falkordb_connections_in_flight",
+        "route" => route_label(from_replica),
+    )
+    .increment(1.0);
+}
+
+/// Decrement the in-flight-connections gauge as a borrowed connection is returned/dropped.
+#[cfg(feature = "metrics")]
+pub(crate) fn connection_borrow_finished(from_replica: bool) {
+    metrics::gauge!(
+        "falkordb_connections_in_flight",
+        "route" => route_label(from_replica),
+    )
+    .decrement(1.0);
+}
+
+/// Record how long a pooled borrow waited for a connection. Only emitted for the pooled strategy
+/// (a multiplexed borrow is a near-instant clone, so timing it would dilute the histogram).
+#[cfg(feature = "metrics")]
+pub(crate) fn record_pool_wait(
+    from_replica: bool,
+    waited: std::time::Duration,
+) {
+    metrics::histogram!(
+        "falkordb_connection_pool_wait_seconds",
+        "route" => route_label(from_replica),
+    )
+    .record(waited.as_secs_f64());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,5 +586,35 @@ mod metrics_tests {
         assert!(names.iter().any(|n| n == "falkordb_queries_total"));
         assert!(names.iter().any(|n| n == "falkordb_query_duration_seconds"));
         assert!(names.iter().any(|n| n == "falkordb_query_errors_total"));
+    }
+
+    #[test]
+    fn retry_and_connection_metrics_use_only_bounded_labels() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            record_retry(true, &crate::FalkorDBError::ConnectionDown);
+            connection_borrow_started(false);
+            record_pool_wait(true, Duration::from_micros(50));
+            connection_borrow_finished(false);
+        });
+
+        let mut names = Vec::new();
+        for (composite, _unit, _desc, _value) in snapshotter.snapshot().into_vec() {
+            let key = composite.key();
+            names.push(key.name().to_string());
+            for label in key.labels() {
+                assert!(
+                    matches!(label.key(), "operation" | "error_kind" | "route"),
+                    "unexpected (potentially unbounded) metric label: {:?}",
+                    label.key()
+                );
+            }
+        }
+        assert!(names.iter().any(|n| n == "falkordb_retries_total"));
+        assert!(names.iter().any(|n| n == "falkordb_connections_in_flight"));
+        assert!(names
+            .iter()
+            .any(|n| n == "falkordb_connection_pool_wait_seconds"));
     }
 }

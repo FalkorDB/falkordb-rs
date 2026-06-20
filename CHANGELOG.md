@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Other
+
+- restructure the README into chapters with a table of contents, a Cargo feature-flags table, and a
+  runnable-examples index ([#262](https://github.com/FalkorDB/falkordb-rs/pull/262))
+- compile the README doctests and every example in CI so the documentation and examples can't
+  silently drift ([#261](https://github.com/FalkorDB/falkordb-rs/pull/261))
+
 ## [0.8.8](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.7...v0.8.8) - 2026-06-19
 
 ### Other

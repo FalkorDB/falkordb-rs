@@ -103,10 +103,10 @@ don't pile up.
 - **Don't hardcode the next version** — let `release-plz` compute it from the commits.
 - Use **Conventional Commits** (`feat`, `fix`, `ci`, `docs`, `perf`, `chore`, …) — they drive the
   version bump. Mark breaking changes with `feat!` / a `[**breaking**]` note.
-- **Only `feat:` / `fix:` commits cut a release** (`release_commits` in `release-plz.toml`);
-  `ci` / `docs` / `chore` / `refactor` changes ride along with the next feature/fix release instead
-  of cutting an empty one. (release-plz runs from the `main.yml` workflow on pushes to `main`.) To
-  release such changes sooner, land them with a `feat`/`fix` commit or temporarily relax
+- **Only `feat:` / `fix:` / `docs:` commits cut a release** (`release_commits` in `release-plz.toml`);
+  `ci` / `chore` / `refactor` / `test` / `build` changes ride along with the next release instead
+  of cutting one on their own. (release-plz runs from the `main.yml` workflow on pushes to `main`.) To
+  release such changes sooner, land them with a `feat`/`fix`/`docs` commit or temporarily relax
   `release_commits`.
 - Include a `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailer on
   agent-authored commits.

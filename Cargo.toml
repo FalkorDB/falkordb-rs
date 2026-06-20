@@ -111,3 +111,19 @@ name = "rows"
 [[example]]
 name = "observability"
 required-features = ["tracing"]
+
+[[example]]
+name = "readonly_replica"
+
+[[example]]
+name = "retry"
+
+[[example]]
+name = "udf_usage"
+
+[[example]]
+name = "waiting_ops"
+
+[[example]]
+name = "tls"
+required-features = ["rustls"]

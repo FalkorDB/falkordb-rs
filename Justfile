@@ -57,6 +57,13 @@ build:
 build-all:
     cargo build --all-targets --features {{features}}
 
+# Compile every example under the features it needs. CI gate; no server needed. Examples aren't
+# built by `just build`, so this is what keeps them compiling. The TLS example is built in a
+# separate pass with the sync `rustls` backend, which can't coexist with `tokio` in one build.
+build-examples:
+    cargo build --examples --features {{features}}
+    cargo build --example tls --features rustls
+
 # Build the API docs (matches the `check-doc` CI gate).
 doc:
     cargo doc --all
@@ -64,6 +71,11 @@ doc:
 # Build docs (no deps) and open them in a browser.
 doc-open:
     cargo doc --all --no-deps --open
+
+# Run documentation tests — the README (it's the crate-level doc via `include_str!`) and every
+# doc-comment code block — with the dev feature set. No server needed (blocks are `no_run`/pure).
+doctest:
+    cargo test --doc --features {{features}}
 
 # === Test ====================================================================
 # These need a reachable FalkorDB server. Use `just test-local` to manage one.
@@ -207,7 +219,7 @@ db-populate:
 check: fmt clippy build
 
 # Run every required CI gate locally (no server required).
-ci: fmt-check clippy build doc deny check-llms
+ci: fmt-check clippy build doc doctest build-examples deny check-llms
 
 # Full post-task gate (no server required): strict clippy-all plus every CI gate.
 # Must be green before a task is declared done.

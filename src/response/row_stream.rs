@@ -26,6 +26,7 @@ use std::task::{Context, Poll};
 /// `map(..).buffer_unordered(..)`, …).
 ///
 /// ```rust,no_run
+/// # #![recursion_limit = "256"]
 /// # async fn run(mut graph: falkordb::AsyncGraph) -> Result<(), falkordb::FalkorDBError> {
 /// use futures::TryStreamExt;
 /// let movies: Vec<falkordb::Row> = graph

@@ -19,6 +19,7 @@ use std::task::{Context, Poll};
 /// [`futures_core::Stream`], yielding one `FalkorResult<T>` per row.
 ///
 /// ```rust,no_run
+/// # #![recursion_limit = "256"]
 /// # use serde::Deserialize;
 /// # #[derive(Deserialize)] struct Movie { title: String }
 /// # async fn run(mut graph: falkordb::AsyncGraph) -> Result<(), falkordb::FalkorDBError> {

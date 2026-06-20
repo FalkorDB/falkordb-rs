@@ -1,0 +1,10 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/reference/configuration
+reviews:
+  pre_merge_checks:
+    # Disable the docstring-coverage check. It reports 0% (against an 80% threshold) on
+    # example- or CI-only PRs because example `main()` functions are documented with
+    # module-level `//!` docs — the convention every example in this repo follows — which
+    # the check does not count. Docstrings here are enforced by `cargo doc` + review, not
+    # this check, so leaving it on only produces false positives.
+    docstrings:
+      mode: "off"

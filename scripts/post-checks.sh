@@ -22,6 +22,8 @@ run just clippy
 run just clippy-all
 run just build
 run just doc
+run just doctest
+run just build-examples
 run just deny
 run just check-llms
 

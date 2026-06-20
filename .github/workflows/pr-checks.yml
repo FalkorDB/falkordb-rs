@@ -18,7 +18,7 @@ env:
   CARGO_HTTP_MULTIPLEXING: "false"
 
 # Every job runs a single `just` recipe so the exact command can be reproduced
-# locally (see the Justfile / README "Development" section).
+# locally (see the Justfile / CONTRIBUTING.md).
 jobs:
   check-clippy:
     runs-on: ubuntu-latest
@@ -67,6 +67,46 @@ jobs:
           cache-bin: "false"
       - name: Doc
         run: just doc
+
+  check-doctest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
+      - name: Doc tests (README + doc comments)
+        run: just doctest
+
+  check-examples:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
+      - name: Build examples
+        run: just build-examples
 
   check-fmt:
     runs-on: ubuntu-latest

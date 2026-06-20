@@ -45,6 +45,7 @@ OpenTelemetry-aligned tracing and metrics.
 - [API documentation](#api-documentation)
 - [Migration guides](#migration-guides)
 - [Contributing](#contributing)
+- [Community and license](#community-and-license)
 
 ## Quickstart
 
@@ -874,7 +875,7 @@ The embedded server:
 
 ## Examples
 
-Every example is a runnable file under [`examples/`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples) and is compiled in CI.
+Every example is a runnable file under [`examples/`](https://github.com/FalkorDB/falkordb-rs/tree/main/examples) and is compiled in CI.
 Run one with `cargo run` plus the flags shown:
 
 | Example | Shows | Run with |
@@ -915,4 +916,4 @@ Development setup, the full `just` recipe reference, and how to run the tests an
 - [Discord](https://discord.com/invite/6M4QwDXn2w)
 - [FalkorDB Cloud](https://app.falkordb.cloud)
 
-Licensed under the [MIT License](https://github.com/FalkorDB/falkordb-rs?tab=License-1-ov-file).
+Licensed under the [MIT License](https://github.com/FalkorDB/falkordb-rs/blob/main/LICENSE).

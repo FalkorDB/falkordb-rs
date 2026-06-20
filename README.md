@@ -12,11 +12,43 @@
 
 [![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 
-### FalkorDB Rust client
+The official Rust client for [FalkorDB](https://www.falkordb.com/) — a fast, low-latency
+graph database. One ergonomic API across a blocking client and an async (`tokio`) client, with
+typed results, parameter binding, batching, an embedded server, TLS, automatic retries, and
+OpenTelemetry-aligned tracing and metrics.
 
-## Usage
+## Highlights
 
-### Installation
+- **Sync and async** — a blocking client and a `tokio` async client share the same ergonomic API.
+- **Header-aware, typed results** — read columns by name or index, or map rows straight into your own `serde` types.
+- **Safe parameters** — bind Rust values as Cypher literals; no hand-quoting, no injection.
+- **Batching and pipelining** — send many queries in a single round-trip.
+- **Async streaming** — result sets are `Stream`s that compose with the full `futures` toolbox.
+- **Resilient** — opt-in `RetryPolicy` with bounded backoff for transient failures; writes are never retried.
+- **Observable** — OpenTelemetry-aligned `tracing` spans and `metrics` counters/histograms, privacy-safe by default.
+- **Replica-aware** — routes read-only queries to replicas behind Redis Sentinel.
+- **Embedded server** — spin up a self-contained FalkorDB for tests and prototyping.
+
+## Table of contents
+
+- [Highlights](#highlights)
+- [Quickstart](#quickstart)
+- [Cargo feature flags](#cargo-feature-flags)
+- [Guide](#guide)
+  - [Queries and results](#queries-and-results)
+  - [Async](#async)
+  - [Execution patterns](#execution-patterns)
+  - [Connections and networking](#connections-and-networking)
+  - [Resilience and observability](#resilience-and-observability)
+  - [Embedded server](#embedded-server)
+- [Examples](#examples)
+- [API documentation](#api-documentation)
+- [Migration guides](#migration-guides)
+- [Contributing](#contributing)
+
+## Quickstart
+
+### Install
 
 Install it with [`cargo add`](https://doc.rust-lang.org/cargo/commands/cargo-add.html):
 
@@ -24,7 +56,7 @@ Install it with [`cargo add`](https://doc.rust-lang.org/cargo/commands/cargo-add
 cargo add falkordb
 ```
 
-### Run FalkorDB instance
+### Run a FalkorDB server
 
 Docker:
 
@@ -32,9 +64,9 @@ Docker:
 docker run --rm -p 6379:6379 falkordb/falkordb
 ```
 
-### Code Example
+### Your first query
 
-```rust,no_run
+```no_run
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
@@ -62,15 +94,38 @@ while let Some(row) = nodes.data.next() {
 }
 ```
 
-## Features
+## Cargo feature flags
 
-### Header-aware result rows
+All features are **off by default** — enable only what you need:
+
+| Feature | Enables |
+|---|---|
+| `tokio` | The async client and API on the `tokio` runtime (multi-threaded scheduler). |
+| `serde` | Map query results into your own `serde::Deserialize` types. |
+| `tracing` | OpenTelemetry-aligned `tracing` spans with a privacy-safe query fingerprint. |
+| `metrics` | Counters and histograms via the `metrics` facade (install any exporter). |
+| `embedded` | Run a self-contained embedded FalkorDB server. |
+| `rustls` / `native-tls` | TLS for the sync client, via `rustls` or `native-tls`. |
+| `tokio-rustls` / `tokio-native-tls` | TLS for the async client. |
+
+```bash
+cargo add falkordb --features tokio,serde
+```
+
+## Guide
+
+Each capability below has a short explanation, a minimal snippet, and a link to a complete,
+runnable example. The async client mirrors the sync API — `await` the terminals.
+
+### Queries and results
+
+#### Header-aware result rows
 
 `QueryResult::data` iterates the result set as `FalkorResult<Row>`. Each `Row` pairs the query
 header (the column aliases) with that row's values, so you read columns by **name or index** and a
 row that fails to parse surfaces as an `Err` instead of being silently swallowed:
 
-```rust,no_run
+```no_run
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
@@ -109,12 +164,12 @@ To opt back into the pre-0.7 behavior (bare `Vec<FalkorValue>` rows, parse error
 [`examples/rows.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/rows.rs). Upgrading from 0.6? See the
 [0.7 migration guide](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.7.md).
 
-### Type-safe query parameters
+#### Type-safe query parameters
 
 Pass Rust values straight into a query — the client encodes them as Cypher literals and escapes
 them for you, so you never hand-quote strings or risk Cypher injection:
 
-```rust,ignore
+```ignore
 let res = graph
     .query("MATCH (m:Movie {title: $title}) WHERE m.year IN $years RETURN m")
     .with_param("title", "The Matrix")
@@ -125,7 +180,7 @@ let res = graph
 Add several at once from an array, `Vec`, or map with `with_params` (the values share a single
 type; use chained `with_param` calls, as above, for a mix of types):
 
-```rust,ignore
+```ignore
 .with_params([("min_year", 1990), ("max_year", 2000)])
 ```
 
@@ -134,7 +189,7 @@ Supported value types include integers, floats, boolean values, strings, `Option
 cannot be bound directly (a FalkorDB limitation) — pass the components and construct them in the
 query:
 
-```rust,ignore
+```ignore
 use std::collections::BTreeMap;
 let coords = BTreeMap::from([("latitude", 32.07), ("longitude", 34.79)]);
 graph.query("RETURN point($p)").with_param("p", coords).execute()?;
@@ -143,130 +198,72 @@ graph.query("RETURN point($p)").with_param("p", coords).execute()?;
 If you really need a raw Cypher expression, `with_raw_param("key", "…")` is the explicit escape
 hatch — no escaping is applied to the value (the parameter name is still validated).
 
-### Batch & pipelined execution
+#### Typed result mapping with serde
 
-Normally each query is one network round-trip. `graph.batch()` queues several queries and sends them
-over a single Redis pipeline in **one round-trip**, returning one result per query **in submission
-order**. Queue queries with `query` (a `GRAPH.QUERY`) / `ro_query` (a `GRAPH.RO_QUERY`) and set
-per-query parameters on the returned handle:
+Enable the optional `serde` feature to map query results straight into your own types instead of hand-matching every
+`FalkorValue` variant:
 
-```rust,ignore
-let mut batch = graph.batch();
-for movie in &movies {
-    batch.query("CREATE (:Movie {title: $t})").with_param("t", movie);
+```bash
+cargo add falkordb --features serde
+```
+
+Derive `serde::Deserialize` on your type and call `FalkorValue::deserialize_into` (or the free function
+`falkordb::from_falkor_value`) on a returned value. A node is deserialized from its properties, and scalars, `Option`,
+sequences and maps map onto the matching Rust types:
+
+```ignore
+use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
+use serde::Deserialize;
+#[derive(Debug, Deserialize)]
+struct Movie {
+    title: String,
+    year: i64,
+    rating: Option<f64>,
 }
-batch.ro_query("MATCH (m:Movie) RETURN count(m) AS n");
-
-let results = batch.execute()?; // Vec<BatchItemResult>, one per query, in order
-for (i, item) in results.into_iter().enumerate() {
-    match item {
-        Ok(result) => { /* result.data: Vec<Row>, result.header, result.stats */ }
-        Err(err) => eprintln!("query {i} failed: {err}"),
+let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
+    .expect("Invalid connection info");
+let client = FalkorClientBuilder::new()
+    .with_connection_info(connection_info)
+    .build()
+    .expect("Failed to build client");
+let mut graph = client.select_graph("imdb");
+let mut result = graph.query("MATCH (m:Movie) RETURN m").execute()
+    .expect("Failed executing query");
+for row in result.data.by_ref() {
+    let row = row.expect("row failed to parse");
+    if let Some(node) = row.into_iter().next() {
+        let movie: Movie = node.deserialize_into().expect("Failed to map node");
+        println!("{} ({})", movie.title, movie.year);
     }
 }
 ```
 
-On the async client it is identical but for the `await`:
+A runnable version lives in [`examples/typed_mapping.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/typed_mapping.rs).
 
-```rust,ignore
-let mut batch = graph.batch();
-// … queue queries …
-let results = batch.execute().await?;
+To map a whole result set in one shot, call `query_as::<T>()` before `execute()`. Each row is
+deserialized into a `T`, and the result's `data` becomes an iterator of `FalkorResult<T>`, so it
+collects directly into a `Vec`:
+
+```ignore
+let movies: Vec<Movie> = graph
+    .query("MATCH (m:Movie) RETURN m")
+    .query_as::<Movie>()
+    .execute()
+    .expect("Failed executing query")
+    .data
+    .collect::<Result<_, _>>()
+    .expect("Failed mapping rows");
 ```
 
-Key points:
+A single-column row (such as `RETURN m`) is deserialized from that one column's value, so a node
+maps from its properties and `RETURN count(m)` maps a scalar. A multi-column row (such as
+`RETURN m.title AS title, m.year AS year`) maps each column alias onto the matching struct field,
+or yields the values in order for a tuple. The query `header` and `stats` remain available on the
+returned result.
 
-- **Per-item errors.** A failing query (bad Cypher, or a parameter that can't be encoded) becomes
-  that slot's `Err`; the other queries are unaffected. The **outer** `Result` only fails if the whole
-  batch could not be completed — and if that happens *after* the pipeline was sent, the server may
-  have run some or all queries (the state is unknown), which matters for writes.
-- **Not a transaction.** A pipeline is not `MULTI`/`EXEC`: every queued query is executed, so a
-  failure in one does **not** roll back or stop the others.
-- **Results are eager.** Each query's rows are parsed up front into a `Vec<Row>` (the same `Row` as
-  elsewhere), since many result sets coexist in one batch.
-- **Owned queries.** To build queries ahead of time, construct `BatchQuery::write(..)` /
-  `BatchQuery::read(..)`, attach params/timeout, and `batch.push(query)`.
+### Async
 
-A runnable version lives in [`examples/batch.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/batch.rs).
-
-### Waiting for background operations
-
-Some FalkorDB operations finish **after** the command that starts them returns: when you create or
-drop an index or constraint, the request returns immediately while the index is populated (or the
-constraint is enforced) on a background worker thread, and `GRAPH.COPY` can fail transiently while
-the server is unable to `fork`. The eager methods
-(`create_index`, `create_unique_constraint`, `copy_graph`, …) stay fire-and-forget, but every
-one of them now has an additive `*_op` builder that adds explicit, opt-in waiting while keeping
-full backward compatibility.
-
-Each builder offers `.execute()` (non-blocking, identical to the eager method) and `.wait()` /
-`.wait_with(WaitOptions)` terminals. For index and constraint builders, `.wait()` blocks until the
-operation has actually taken effect (the index/constraint becomes operational or is dropped),
-returning [`FalkorDBError::Timeout`] if it does not happen in time. For the copy builder, `GRAPH.COPY`
-is already blocking on the server, so `.wait()` simply retries transient `could not fork` failures
-with backoff; it does **not** verify the copied contents (that remains the caller's responsibility).
-
-```rust,no_run
-use falkordb::{EntityType, FalkorClientBuilder, FalkorConnectionInfo, IndexType, WaitOptions};
-use std::time::Duration;
-
-let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
-            .expect("Invalid connection info");
-let client = FalkorClientBuilder::new()
-           .with_connection_info(connection_info)
-           .build()
-           .expect("Failed to build client");
-let mut graph = client.select_graph("social");
-
-// Fire-and-forget, exactly like `create_index` (returns as soon as the server accepts it):
-graph.create_index_op(IndexType::Range, EntityType::Node, "Person", &["age"], None)
-     .execute()
-     .expect("Failed to request index creation");
-
-// Block until the index is actually operational (default 30s readiness timeout):
-graph.create_index_op(IndexType::Range, EntityType::Node, "Person", &["name"], None)
-     .wait()
-     .expect("Index did not become operational");
-
-// A unique constraint reports a *distinct* error if existing data violates it:
-match graph.create_unique_constraint_op(EntityType::Node, "Person", &["email"])
-           .wait_with(WaitOptions::with_timeout(Duration::from_secs(10)))
-{
-    Ok(()) => println!("constraint is enforced"),
-    Err(falkordb::FalkorDBError::ConstraintFailed { .. }) => println!("data violates the constraint"),
-    Err(other) => panic!("unexpected error: {other}"),
-}
-
-// Copy a graph, retrying transient `could not fork` failures:
-let _copy = client.copy_graph_op("social", "social_backup")
-                  .wait()
-                  .expect("Failed to copy graph");
-```
-
-The same builders exist on the async client/graph; just `await` the terminals:
-
-```rust,ignore
-use falkordb::{EntityType, FalkorClientBuilder, FalkorConnectionInfo, IndexType};
-
-let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
-            .expect("Invalid connection info");
-let client = FalkorClientBuilder::new_async()
-           .with_connection_info(connection_info)
-           .build()
-           .await
-           .expect("Failed to build client");
-let mut graph = client.select_graph("social");
-
-graph.create_index_op(IndexType::Range, EntityType::Node, "Person", &["name"], None)
-     .wait()
-     .await
-     .expect("Index did not become operational");
-```
-
-[`FalkorDBError::Timeout`]: https://docs.rs/falkordb/latest/falkordb/enum.FalkorDBError.html
-
-
-### `tokio` support
+#### tokio support
 
 This client supports nonblocking API using the [`tokio`](https://tokio.rs/) runtime.
 It can be enabled like so:
@@ -281,7 +278,7 @@ does not support the `current_thread` one, but this will probably be supported i
 
 The API uses an almost identical API, but the various functions need to be awaited:
 
-```rust,ignore
+```ignore
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 use futures::StreamExt; // brings `.next().await` onto the result stream
 
@@ -317,12 +314,12 @@ spawned task and driven with the full `StreamExt` / `TryStreamExt` toolbox. The 
 handle itself is `Send + Clone`: cloning is cheap and **shares one schema cache**, so to use a graph
 from several concurrent tasks you just clone it — no `Arc<Mutex<_>>` wrapping required.
 
-### Async streaming
+#### Async streaming
 
 Because results are a `Stream`, the standard combinators just work. Import the extension traits
 (`use futures::{StreamExt, TryStreamExt};`) and:
 
-```rust,ignore
+```ignore
 use futures::{StreamExt, TryStreamExt};
 // Collect a typed stream in one line (errors short-circuit):
 let years: Vec<i64> = graph
@@ -366,8 +363,7 @@ let enriched: Vec<i64> = graph
 
 A runnable version lives in [`examples/async_stream.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/async_stream.rs).
 
-
-### Connection Strategy and Multiplexing
+#### Connection strategy and multiplexing
 
 The asynchronous client chooses how it manages its underlying Redis connections via a
 `ConnectionStrategy`:
@@ -419,7 +415,116 @@ Notes and caveats:
 
 A runnable example is provided in [`examples/multiplexed_async.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/multiplexed_async.rs).
 
-### SSL/TLS Support
+### Execution patterns
+
+#### Batch and pipelined execution
+
+Normally each query is one network round-trip. `graph.batch()` queues several queries and sends them
+over a single Redis pipeline in **one round-trip**, returning one result per query **in submission
+order**. Queue queries with `query` (a `GRAPH.QUERY`) / `ro_query` (a `GRAPH.RO_QUERY`) and set
+per-query parameters on the returned handle:
+
+```ignore
+let mut batch = graph.batch();
+for movie in &movies {
+    batch.query("CREATE (:Movie {title: $t})").with_param("t", movie);
+}
+batch.ro_query("MATCH (m:Movie) RETURN count(m) AS n");
+
+let results = batch.execute()?; // Vec<BatchItemResult>, one per query, in order
+for (i, item) in results.into_iter().enumerate() {
+    match item {
+        Ok(result) => { /* result.data: Vec<Row>, result.header, result.stats */ }
+        Err(err) => eprintln!("query {i} failed: {err}"),
+    }
+}
+```
+
+On the async client it is identical but for the `await`:
+
+```ignore
+let mut batch = graph.batch();
+// … queue queries …
+let results = batch.execute().await?;
+```
+
+Key points:
+
+- **Per-item errors.** A failing query (bad Cypher, or a parameter that can't be encoded) becomes
+  that slot's `Err`; the other queries are unaffected. The **outer** `Result` only fails if the whole
+  batch could not be completed — and if that happens *after* the pipeline was sent, the server may
+  have run some or all queries (the state is unknown), which matters for writes.
+- **Not a transaction.** A pipeline is not `MULTI`/`EXEC`: every queued query is executed, so a
+  failure in one does **not** roll back or stop the others.
+- **Results are eager.** Each query's rows are parsed up front into a `Vec<Row>` (the same `Row` as
+  elsewhere), since many result sets coexist in one batch.
+- **Owned queries.** To build queries ahead of time, construct `BatchQuery::write(..)` /
+  `BatchQuery::read(..)`, attach params/timeout, and `batch.push(query)`.
+
+A runnable version lives in [`examples/batch.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/batch.rs).
+
+#### Waiting for background operations
+
+Some FalkorDB operations finish **after** the command that starts them returns: when you create or
+drop an index or constraint, the request returns immediately while the index is populated (or the
+constraint is enforced) on a background worker thread, and `GRAPH.COPY` can fail transiently while
+the server is unable to `fork`. The eager methods
+(`create_index`, `create_unique_constraint`, `copy_graph`, …) stay fire-and-forget, but every
+one of them now has an additive `*_op` builder that adds explicit, opt-in waiting while keeping
+full backward compatibility.
+
+Each builder offers `.execute()` (non-blocking, identical to the eager method) and `.wait()` /
+`.wait_with(WaitOptions)` terminals. For index and constraint builders, `.wait()` blocks until the
+operation has actually taken effect (the index/constraint becomes operational or is dropped),
+returning [`FalkorDBError::Timeout`] if it does not happen in time. For the copy builder, `GRAPH.COPY`
+is already blocking on the server, so `.wait()` simply retries transient `could not fork` failures
+with backoff; it does **not** verify the copied contents (that remains the caller's responsibility).
+
+```no_run
+use falkordb::{EntityType, FalkorClientBuilder, FalkorConnectionInfo, IndexType, WaitOptions};
+use std::time::Duration;
+
+let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
+            .expect("Invalid connection info");
+let client = FalkorClientBuilder::new()
+           .with_connection_info(connection_info)
+           .build()
+           .expect("Failed to build client");
+let mut graph = client.select_graph("social");
+
+// Fire-and-forget, exactly like `create_index` (returns as soon as the server accepts it):
+graph.create_index_op(IndexType::Range, EntityType::Node, "Person", &["age"], None)
+     .execute()
+     .expect("Failed to request index creation");
+
+// Block until the index is actually operational (default 30s readiness timeout):
+graph.create_index_op(IndexType::Range, EntityType::Node, "Person", &["name"], None)
+     .wait()
+     .expect("Index did not become operational");
+
+// A unique constraint reports a *distinct* error if existing data violates it:
+match graph.create_unique_constraint_op(EntityType::Node, "Person", &["email"])
+           .wait_with(WaitOptions::with_timeout(Duration::from_secs(10)))
+{
+    Ok(()) => println!("constraint is enforced"),
+    Err(falkordb::FalkorDBError::ConstraintFailed { .. }) => println!("data violates the constraint"),
+    Err(other) => panic!("unexpected error: {other}"),
+}
+
+// Copy a graph, retrying transient `could not fork` failures:
+let _copy = client.copy_graph_op("social", "social_backup")
+                  .wait()
+                  .expect("Failed to copy graph");
+```
+
+The same builders exist on the async client — just `await` the terminals. See
+[`examples/waiting_ops.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/waiting_ops.rs) for a complete, runnable example.
+
+[`FalkorDBError::Timeout`]: https://docs.rs/falkordb/latest/falkordb/enum.FalkorDBError.html
+
+### Connections and networking
+
+#### TLS support
 
 This client is currently built upon the [`redis`](https://docs.rs/redis/latest/redis/) crate, and therefore supports TLS
 using
@@ -448,13 +553,15 @@ cargo add falkordb --features native-tls
 cargo add falkordb --features tokio-native-tls
 ```
 
-### TCP Keepalive
+A runnable example is provided in [`examples/tls.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/tls.rs).
+
+#### TCP keepalive
 
 Long-lived clients behind NATs, stateful firewalls, or idle-timeout-enforcing
 proxies can silently lose their TCP sessions. The builder exposes TCP-level
 socket settings to prevent this:
 
-```rust,no_run
+```no_run
 use falkordb::FalkorClientBuilder;
 use std::time::Duration;
 
@@ -481,7 +588,7 @@ let client = FalkorClientBuilder::new()
 > Unix-domain socket / embedded connections and the Sentinel connection path are
 > not affected.
 
-### Read-only Queries and Replica Routing
+#### Read-only queries and replica routing
 
 Read-only queries (`ro_query` and `call_procedure_ro`) can be served from
 replica nodes, taking read load off the primary. When the client connects to a
@@ -494,7 +601,7 @@ replica. Writes always go to the primary.
 > alongside the primary pool. Size your pool limits and file-descriptor limits
 > accordingly.
 
-```rust,no_run
+```no_run
 use falkordb::FalkorClientBuilder;
 
 let client = FalkorClientBuilder::new()
@@ -523,7 +630,9 @@ transparently fall back to the primary connection, and `reads_from_replicas()`
 returns `false`. See [`examples/readonly_replica.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/readonly_replica.rs)
 for a complete working example.
 
-### Resilience / automatic retries
+### Resilience and observability
+
+#### Automatic retries
 
 A client can opt in to a `RetryPolicy` that automatically re-issues *eligible* operations on
 *transient* connection failures, with bounded backoff. It is **disabled by default**, so a client
@@ -571,7 +680,7 @@ Broadening the coverage is a planned follow-up.
 
 See [`examples/retry.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/retry.rs) for a complete, runnable example.
 
-### Tracing
+#### Tracing
 
 This crate fully supports instrumentation using the [`tracing`](https://docs.rs/tracing/latest/tracing/) crate, to use
 it, simply, enable the `tracing` feature:
@@ -628,7 +737,7 @@ Parameter values supplied via `with_param` are never recorded even when query lo
 
 See [`examples/observability.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/observability.rs) for a complete, runnable example.
 
-### Metrics
+#### Metrics
 
 Enable the `metrics` feature to emit counters and histograms through the
 [`metrics`](https://docs.rs/metrics/latest/metrics/) facade, so your application can install any
@@ -655,76 +764,29 @@ text, and query fingerprint are **never** used as labels (they are unbounded and
 cardinality) — those belong on `tracing` spans, not metrics. Like `tracing`, recording is a no-op
 until you install a recorder; for example, with `metrics-exporter-prometheus`:
 
-```rust,ignore
+```ignore
 let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
 builder.install().expect("failed to install Prometheus recorder");
 // ... use the client; metrics are now exported on the configured endpoint.
 ```
 
-### Typed result mapping (serde)
+#### Actionable error hints
 
-Enable the optional `serde` feature to map query results straight into your own types instead of hand-matching every
-`FalkorValue` variant:
+`FalkorDBError::mitigation_hint()` turns common, recognizable failures into a short, actionable
+remediation tip — handy for logs and AI tooling. It is purely additive: the raw error and its
+`Display`/`Debug` output are unchanged, hints are fixed `&'static str`s (so they never echo text from
+the underlying message), and unrecognized errors return `None`.
 
-```bash
-cargo add falkordb --features serde
-```
+```no_run
+use falkordb::FalkorDBError;
 
-Derive `serde::Deserialize` on your type and call `FalkorValue::deserialize_into` (or the free function
-`falkordb::from_falkor_value`) on a returned value. A node is deserialized from its properties, and scalars, `Option`,
-sequences and maps map onto the matching Rust types:
-
-```rust,ignore
-use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
-use serde::Deserialize;
-#[derive(Debug, Deserialize)]
-struct Movie {
-    title: String,
-    year: i64,
-    rating: Option<f64>,
-}
-let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
-    .expect("Invalid connection info");
-let client = FalkorClientBuilder::new()
-    .with_connection_info(connection_info)
-    .build()
-    .expect("Failed to build client");
-let mut graph = client.select_graph("imdb");
-let mut result = graph.query("MATCH (m:Movie) RETURN m").execute()
-    .expect("Failed executing query");
-for row in result.data.by_ref() {
-    let row = row.expect("row failed to parse");
-    if let Some(node) = row.into_iter().next() {
-        let movie: Movie = node.deserialize_into().expect("Failed to map node");
-        println!("{} ({})", movie.title, movie.year);
-    }
+let err = FalkorDBError::ConnectionDown;
+if let Some(hint) = err.mitigation_hint() {
+    println!("hint: {hint}");
 }
 ```
 
-A runnable version lives in [`examples/typed_mapping.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/typed_mapping.rs).
-
-To map a whole result set in one shot, call `query_as::<T>()` before `execute()`. Each row is
-deserialized into a `T`, and the result's `data` becomes an iterator of `FalkorResult<T>`, so it
-collects directly into a `Vec`:
-
-```rust,ignore
-let movies: Vec<Movie> = graph
-    .query("MATCH (m:Movie) RETURN m")
-    .query_as::<Movie>()
-    .execute()
-    .expect("Failed executing query")
-    .data
-    .collect::<Result<_, _>>()
-    .expect("Failed mapping rows");
-```
-
-A single-column row (such as `RETURN m`) is deserialized from that one column's value, so a node
-maps from its properties and `RETURN count(m)` maps a scalar. A multi-column row (such as
-`RETURN m.title AS title, m.year AS year`) maps each column alias onto the matching struct field,
-or yields the values in order for a tuple. The query `header` and `stats` remain available on the
-returned result.
-
-### Embedded FalkorDB Server
+### Embedded server
 
 This client supports running an embedded FalkorDB server, which is useful for:
 - Testing without external dependencies
@@ -754,7 +816,7 @@ RHEL 8/9 and Amazon Linux 2023 on x86_64) and macOS aarch64 (Apple Silicon).
 
 #### Self-contained vs. already-installed
 
-```rust,no_run
+```no_run
 use falkordb::EmbeddedConfig;
 use std::path::PathBuf;
 
@@ -775,7 +837,7 @@ The cache directory defaults to `~/.cache/falkordb-rs` (Linux) or
 
 #### Usage Example
 
-```rust,no_run
+```no_run
 use falkordb::{EmbeddedConfig, FalkorClientBuilder, FalkorConnectionInfo};
 
 // Create an embedded configuration with defaults
@@ -810,23 +872,47 @@ The embedded server:
 - Automatically cleans up when the client is dropped
 - Can be configured with custom paths, database directory, and socket location
 
-### Actionable error hints
+## Examples
 
-`FalkorDBError::mitigation_hint()` turns common, recognizable failures into a short, actionable
-remediation tip — handy for logs and AI tooling. It is purely additive: the raw error and its
-`Display`/`Debug` output are unchanged, hints are fixed `&'static str`s (so they never echo text from
-the underlying message), and unrecognized errors return `None`.
+Every example is a runnable file under [`examples/`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples) and is compiled in CI.
+Run one with `cargo run` plus the flags shown:
 
-```rust,no_run
-use falkordb::FalkorDBError;
+| Example | Shows | Run with |
+|---|---|---|
+| [`basic_usage`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/basic_usage.rs) | A minimal connect, query, and iterate flow | `--example basic_usage` |
+| [`rows`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/rows.rs) | Header-aware rows: read columns by name or index with strict typed access | `--example rows` |
+| [`typed_params`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/typed_params.rs) | Type-safe, injection-proof query parameters | `--example typed_params` |
+| [`typed_mapping`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/typed_mapping.rs) | Map query results into your own `serde` types | `--features serde --example typed_mapping` |
+| [`batch`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/batch.rs) | Batch / pipelined execution: many queries in one round-trip | `--example batch` |
+| [`waiting_ops`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/waiting_ops.rs) | Wait for background index / constraint / copy operations to take effect | `--example waiting_ops` |
+| [`udf_usage`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/udf_usage.rs) | Load a user-defined-function (UDF) library | `--example udf_usage` |
+| [`async_api`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/async_api.rs) | The async (`tokio`) client end to end | `--features tokio --example async_api` |
+| [`async_stream`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/async_stream.rs) | Async streaming with `futures` combinators | `--features tokio --example async_stream` |
+| [`multiplexed_async`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/multiplexed_async.rs) | The multiplexed async connection strategy | `--features tokio --example multiplexed_async` |
+| [`readonly_replica`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/readonly_replica.rs) | Route read-only queries to replica nodes | `--example readonly_replica` |
+| [`retry`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/retry.rs) | The opt-in retry policy for transient failures | `--example retry` |
+| [`tls`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/tls.rs) | Connect to FalkorDB over TLS | `--features rustls --example tls` |
+| [`observability`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/observability.rs) | `tracing` span enrichment and the query fingerprint | `--features tracing --example observability` |
+| [`embedded_usage`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/embedded_usage.rs) | Run an embedded FalkorDB server | `--features embedded --example embedded_usage` |
 
-let err = FalkorDBError::ConnectionDown;
-if let Some(hint) = err.mitigation_hint() {
-    println!("hint: {hint}");
-}
-```
+## API documentation
+
+The complete API reference is published on [docs.rs](https://docs.rs/falkordb/latest/falkordb/).
+
+## Migration guides
+
+- [Migrating to 0.7](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.7.md)
+- [Migrating to 0.8](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.8.md)
 
 ## Contributing
 
 Development setup, the full `just` recipe reference, and how to run the tests and benchmarks live in
 [`CONTRIBUTING.md`](https://github.com/FalkorDB/falkordb-rs/blob/main/CONTRIBUTING.md).
+
+## Community and license
+
+- [GitHub Discussions](https://github.com/orgs/FalkorDB/discussions)
+- [Discord](https://discord.com/invite/6M4QwDXn2w)
+- [FalkorDB Cloud](https://app.falkordb.cloud)
+
+Licensed under the [MIT License](https://github.com/FalkorDB/falkordb-rs?tab=License-1-ov-file).

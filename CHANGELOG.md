@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.9](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.8...v0.8.9) - 2026-06-20
+
 ### Other
 
 - restructure the README into chapters with a table of contents, a Cargo feature-flags table, and a

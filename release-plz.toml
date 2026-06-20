@@ -1,15 +1,16 @@
 [workspace]
 semver_check = false # disable API breaking changes checks, I suggest this becomes 'true' after we release 1.0
 
-# Only open a release PR when there's an actual feature or fix. ci/docs/chore/refactor-only
-# changes don't cut a release on their own — they ride along with the next `feat`/`fix` release.
+# Only open a release PR for user-facing changes: features, fixes, and docs (the README is the
+# crates.io / docs.rs landing page, so a docs change is worth releasing). ci/chore/refactor/test/
+# build-only changes don't cut a release on their own — they ride along with the next release.
 # Because the [changelog] body below is header-only, such commits are NOT auto-listed anywhere;
 # they appear in CHANGELOG.md only through the hand-written `## [Unreleased]` entry you add. The
-# regex matches a Conventional-Commit `feat`/`fix` subject with an optional `(scope)` and optional
-# `!`, requiring the `:` (so a malformed subject like `feat(x) …` without a colon won't trigger a
-# release). To release such changes sooner, land them with a feat/fix commit or temporarily relax
-# this filter.
-release_commits = '^(feat|fix)(\(.+?\))?!?:'
+# regex matches a Conventional-Commit `feat`/`fix`/`docs` subject with an optional `(scope)` and
+# optional `!`, requiring the `:` (so a malformed subject like `feat(x) …` without a colon won't
+# trigger a release). To release other changes sooner, land them with a feat/fix/docs commit or
+# temporarily relax this filter.
+release_commits = '^(feat|fix|docs)(\(.+?\))?!?:'
 
 [changelog]
 # Changelog entries are hand-written under "## [Unreleased]" in CHANGELOG.md (see the

@@ -1564,3 +1564,59 @@ mod async_batch_pipelining {
         graph.delete().await.expect("delete");
     }
 }
+
+mod temporal_values {
+    use super::{get_test_connection_info, skip_if_no_server};
+    use falkordb::{Date, Duration, FalkorClientBuilder, Time};
+
+    fn graph_for(name: &str) -> Option<falkordb::SyncGraph> {
+        if skip_if_no_server() {
+            return None;
+        }
+        let conn_info = get_test_connection_info().ok()?;
+        let client = FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+            .ok()?;
+        let mut graph = client.select_graph(name);
+        let _ = graph.delete();
+        Some(graph)
+    }
+
+    /// End-to-end: FalkorDB temporal scalars (markers 14/15/16) decode into the typed
+    /// `Date` / `Time` / `Duration` values rather than surfacing as `Unparseable`.
+    #[test]
+    fn test_temporal_values_round_trip() {
+        let Some(mut graph) = graph_for("test_temporal_round_trip") else {
+            return;
+        };
+        let mut result = graph
+            .query("RETURN date('1947-11-29') AS d, localtime() AS t, duration({days: 3}) AS dur")
+            .execute()
+            .expect("temporal query should succeed");
+        let row = result
+            .data
+            .next()
+            .expect("expected a row")
+            .expect("row should parse");
+
+        // `date('1947-11-29')` is seconds since the Unix epoch at UTC midnight (negative, pre-1970).
+        let d: Date = row.try_get("d").expect("date column");
+        assert_eq!(d.raw(), -697_161_600);
+
+        // `localtime()` is a `Time`; its exact value is dynamic, so just assert it decoded into the
+        // typed value (rather than `Unparseable`). Temporal scalars are non-negative.
+        let t: Time = row.try_get("t").expect("time column");
+        assert!(t.raw() >= 0);
+
+        // `duration({days: 3})` is 3 * 86400 seconds.
+        let dur: Duration = row.try_get("dur").expect("duration column");
+        assert_eq!(dur.as_seconds(), 259_200);
+        assert_eq!(
+            dur.as_std_duration(),
+            Some(std::time::Duration::from_secs(259_200))
+        );
+
+        let _ = graph.delete();
+    }
+}

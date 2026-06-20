@@ -511,6 +511,18 @@ impl IntoFalkorParam for FalkorValue {
             FalkorValue::Node(_) => Err(param_err("a Node cannot be used as a query parameter")),
             FalkorValue::Edge(_) => Err(param_err("an Edge cannot be used as a query parameter")),
             FalkorValue::Path(_) => Err(param_err("a Path cannot be used as a query parameter")),
+            FalkorValue::DateTime(_) => Err(param_err(
+                "a DateTime cannot be used as a query parameter; build it in Cypher instead, e.g. `datetime($s)`",
+            )),
+            FalkorValue::Date(_) => Err(param_err(
+                "a Date cannot be used as a query parameter; build it in Cypher instead, e.g. `date($s)`",
+            )),
+            FalkorValue::Time(_) => Err(param_err(
+                "a Time cannot be used as a query parameter; build it in Cypher instead, e.g. `localtime($s)`",
+            )),
+            FalkorValue::Duration(_) => Err(param_err(
+                "a Duration cannot be used as a query parameter; build it in Cypher instead, e.g. `duration($s)`",
+            )),
             FalkorValue::Unparseable(_) => Err(param_err(
                 "an unparseable value cannot be used as a query parameter",
             )),
@@ -954,6 +966,15 @@ mod tests {
         use crate::value::graph_entities::Edge;
         assert!(to_cypher_param(&FalkorValue::Edge(Edge::default())).is_err());
         assert!(to_cypher_param(&FalkorValue::Unparseable("boom".to_string())).is_err());
+    }
+
+    #[test]
+    fn test_encode_temporal_values_are_rejected() {
+        use crate::value::temporal::{Date, DateTime, Duration, Time};
+        assert!(to_cypher_param(&FalkorValue::DateTime(DateTime::new(1))).is_err());
+        assert!(to_cypher_param(&FalkorValue::Date(Date::new(1))).is_err());
+        assert!(to_cypher_param(&FalkorValue::Time(Time::new(1))).is_err());
+        assert!(to_cypher_param(&FalkorValue::Duration(Duration::new(1))).is_err());
     }
 
     fn preamble_of(params: FalkorParams) -> String {

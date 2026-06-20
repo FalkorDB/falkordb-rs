@@ -20,6 +20,21 @@ pub trait HasGraphSchema {
     fn get_graph_schema_mut(&mut self) -> &mut GraphSchema;
 }
 
+/// The similarity function a vector index uses when comparing vectors.
+///
+/// Passed to [`SyncGraph::create_node_vector_index`](crate::SyncGraph::create_node_vector_index)
+/// and the matching edge/async helpers. [`VectorSimilarity::Euclidean`] is the FalkorDB default.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default, strum::Display)]
+#[strum(serialize_all = "lowercase")]
+#[non_exhaustive]
+pub enum VectorSimilarity {
+    /// Euclidean (L2) distance — the FalkorDB default.
+    #[default]
+    Euclidean,
+    /// Cosine similarity.
+    Cosine,
+}
+
 pub(crate) fn generate_create_index_query<P: Display>(
     index_field_type: IndexType,
     entity_type: EntityType,
@@ -46,11 +61,13 @@ pub(crate) fn generate_create_index_query<P: Display>(
 
     let options_string = options
         .map(|hashmap| {
-            hashmap
+            let mut entries = hashmap
                 .iter()
-                .map(|(key, val)| format!("'{key}':'{val}'"))
-                .collect::<Vec<_>>()
-                .join(",")
+                .map(|(key, val)| format!("{key}: {}", format_index_option_value(val)))
+                .collect::<Vec<_>>();
+            // Sort for deterministic output regardless of HashMap iteration order.
+            entries.sort();
+            entries.join(", ")
         })
         .map(|options_string| format!(" OPTIONS {{ {} }}", options_string))
         .unwrap_or_default();
@@ -59,6 +76,37 @@ pub(crate) fn generate_create_index_query<P: Display>(
         "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
         properties_string, options_string
     )
+}
+
+/// Formats a single index `OPTIONS` value as a Cypher map value.
+///
+/// FalkorDB's `OPTIONS` map uses unquoted identifier keys and rejects quoted ones, and it expects
+/// numeric options (e.g. a vector index `dimension`) to be bare numbers rather than quoted strings.
+/// Integer-looking values are therefore emitted verbatim, while everything else is single-quoted
+/// with embedded backslashes and single quotes escaped (e.g. `'euclidean'`). The only options
+/// FalkorDB accepts today are an integer `dimension` and a string `similarityFunction`, both handled
+/// correctly here.
+fn format_index_option_value(value: &str) -> String {
+    if value.parse::<i64>().is_ok() {
+        value.to_string()
+    } else {
+        let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+        format!("'{escaped}'")
+    }
+}
+
+/// Builds the `OPTIONS` map for a vector index from its `dimension` and similarity function.
+pub(crate) fn vector_index_options(
+    dimension: u32,
+    similarity_function: VectorSimilarity,
+) -> HashMap<String, String> {
+    HashMap::from([
+        ("dimension".to_string(), dimension.to_string()),
+        (
+            "similarityFunction".to_string(),
+            similarity_function.to_string(),
+        ),
+    ])
 }
 
 pub(crate) fn generate_drop_index_query<P: Display>(
@@ -166,6 +214,45 @@ mod tests {
         assert!(query.contains("OPTIONS"));
         assert!(query.contains("option1"));
         assert!(query.contains("value1"));
+    }
+
+    #[test]
+    fn test_vector_index_options_are_valid_cypher() {
+        let options = vector_index_options(128, VectorSimilarity::Euclidean);
+        let query = generate_create_index_query(
+            IndexType::Vector,
+            EntityType::Node,
+            "Item",
+            &["embedding"],
+            Some(&options),
+        );
+        assert!(query.contains("CREATE VECTOR INDEX"));
+        // Keys are unquoted, the numeric dimension is bare, and the function name is single-quoted —
+        // the form FalkorDB accepts. Sorting makes the option order deterministic.
+        assert!(
+            query.contains("OPTIONS { dimension: 128, similarityFunction: 'euclidean' }"),
+            "{query}"
+        );
+        // The previous, server-rejected quoted-key form must never be produced.
+        assert!(!query.contains("'dimension'"));
+    }
+
+    #[test]
+    fn test_format_index_option_value() {
+        assert_eq!(format_index_option_value("128"), "128");
+        assert_eq!(format_index_option_value("-3"), "-3");
+        assert_eq!(format_index_option_value("euclidean"), "'euclidean'");
+        // Non-integer numerics are treated as strings (quoted), keeping the emitter simple and safe.
+        assert_eq!(format_index_option_value("1.5"), "'1.5'");
+        // Embedded single quotes and backslashes are escaped.
+        assert_eq!(format_index_option_value("a'b\\c"), "'a\\'b\\\\c'");
+    }
+
+    #[test]
+    fn test_vector_similarity_display() {
+        assert_eq!(VectorSimilarity::Euclidean.to_string(), "euclidean");
+        assert_eq!(VectorSimilarity::Cosine.to_string(), "cosine");
+        assert_eq!(VectorSimilarity::default(), VectorSimilarity::Euclidean);
     }
 
     #[test]

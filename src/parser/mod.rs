@@ -4,8 +4,8 @@
  */
 
 use crate::{
-    value::vec32::Vec32, ConfigValue, Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
-    Node, Path, Point,
+    value::{temporal, vec32::Vec32},
+    ConfigValue, Edge, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Node, Path, Point,
 };
 use std::collections::HashMap;
 
@@ -24,6 +24,10 @@ pub(crate) enum ParserTypeMarker {
     Map = 10,
     Point = 11,
     Vec32 = 12,
+    DateTime = 13,
+    Date = 14,
+    Time = 15,
+    Duration = 16,
 }
 
 impl TryFrom<i64> for ParserTypeMarker {
@@ -43,6 +47,10 @@ impl TryFrom<i64> for ParserTypeMarker {
             10 => Self::Map,
             11 => Self::Point,
             12 => Self::Vec32,
+            13 => Self::DateTime,
+            14 => Self::Date,
+            15 => Self::Time,
+            16 => Self::Duration,
             _ => Err(FalkorDBError::ParsingUnknownType)?,
         })
     }
@@ -320,6 +328,10 @@ pub(crate) fn parse_type(
         ParserTypeMarker::Map => FalkorValue::Map(parse_regular_falkor_map(val, graph_schema)?),
         ParserTypeMarker::Point => FalkorValue::Point(Point::parse(val)?),
         ParserTypeMarker::Vec32 => FalkorValue::Vec32(Vec32::parse(val)?),
+        ParserTypeMarker::DateTime => FalkorValue::DateTime(temporal::DateTime::parse(val)?),
+        ParserTypeMarker::Date => FalkorValue::Date(temporal::Date::parse(val)?),
+        ParserTypeMarker::Time => FalkorValue::Time(temporal::Time::parse(val)?),
+        ParserTypeMarker::Duration => FalkorValue::Duration(temporal::Duration::parse(val)?),
     };
 
     Ok(res)
@@ -728,5 +740,80 @@ mod tests {
 
         assert_eq!(res.get("IntKey"), Some(FalkorValue::I64(1)).as_ref());
         assert_eq!(res.get("BoolKey"), Some(FalkorValue::Bool(true)).as_ref());
+    }
+
+    #[test]
+    fn test_try_from_temporal_markers() {
+        assert_eq!(
+            ParserTypeMarker::try_from(13).unwrap(),
+            ParserTypeMarker::DateTime
+        );
+        assert_eq!(
+            ParserTypeMarker::try_from(14).unwrap(),
+            ParserTypeMarker::Date
+        );
+        assert_eq!(
+            ParserTypeMarker::try_from(15).unwrap(),
+            ParserTypeMarker::Time
+        );
+        assert_eq!(
+            ParserTypeMarker::try_from(16).unwrap(),
+            ParserTypeMarker::Duration
+        );
+        // The first marker beyond the temporal range is still unknown.
+        assert_eq!(
+            ParserTypeMarker::try_from(17),
+            Err(FalkorDBError::ParsingUnknownType)
+        );
+    }
+
+    #[test]
+    fn test_parse_type_temporal_values() {
+        let mut graph_schema = GraphSchema::new("test_graph", create_empty_inner_sync_client());
+
+        assert_eq!(
+            parse_type(
+                ParserTypeMarker::DateTime,
+                redis::Value::Int(1700),
+                &mut graph_schema
+            )
+            .unwrap(),
+            FalkorValue::DateTime(temporal::DateTime::new(1700))
+        );
+        assert_eq!(
+            parse_type(
+                ParserTypeMarker::Date,
+                redis::Value::Int(-697_161_600),
+                &mut graph_schema
+            )
+            .unwrap(),
+            FalkorValue::Date(temporal::Date::new(-697_161_600))
+        );
+        assert_eq!(
+            parse_type(
+                ParserTypeMarker::Time,
+                redis::Value::Int(3600),
+                &mut graph_schema
+            )
+            .unwrap(),
+            FalkorValue::Time(temporal::Time::new(3600))
+        );
+        assert_eq!(
+            parse_type(
+                ParserTypeMarker::Duration,
+                redis::Value::Int(259_200),
+                &mut graph_schema
+            )
+            .unwrap(),
+            FalkorValue::Duration(temporal::Duration::new(259_200))
+        );
+
+        // A temporal marker over a non-integer payload surfaces a parse error.
+        assert!(parse_type(
+            ParserTypeMarker::Duration,
+            redis::Value::SimpleString("nope".to_string()),
+            &mut graph_schema
+        )
+        .is_err());
     }
 }

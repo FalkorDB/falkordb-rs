@@ -11,6 +11,7 @@
 use crate::value::graph_entities::{Edge, Node};
 use crate::value::path::Path;
 use crate::value::point::Point;
+use crate::value::temporal::{Date, DateTime, Duration, Time};
 use crate::value::vec32::Vec32;
 use crate::{FalkorDBError, FalkorResult, FalkorValue};
 use std::collections::HashMap;
@@ -53,6 +54,10 @@ pub(crate) fn variant_name(value: &FalkorValue) -> &'static str {
         FalkorValue::F64(_) => "F64",
         FalkorValue::Point(_) => "Point",
         FalkorValue::Path(_) => "Path",
+        FalkorValue::DateTime(_) => "DateTime",
+        FalkorValue::Date(_) => "Date",
+        FalkorValue::Time(_) => "Time",
+        FalkorValue::Duration(_) => "Duration",
         FalkorValue::None => "None",
         FalkorValue::Unparseable(_) => "Unparseable",
     }
@@ -152,6 +157,10 @@ impl_entity_from_value!(
     Point => Point => "Point",
     Path => Path => "Path",
     Vec32 => Vec32 => "Vec32",
+    DateTime => DateTime => "DateTime",
+    Date => Date => "Date",
+    Time => Time => "Time",
+    Duration => Duration => "Duration",
 );
 
 impl<T: FromFalkorValue> FromFalkorValue for Option<T> {
@@ -284,6 +293,35 @@ mod tests {
     }
 
     #[test]
+    fn test_temporal_conversions() {
+        assert_eq!(
+            convert::<DateTime>(FalkorValue::DateTime(DateTime::new(5))).unwrap(),
+            DateTime::new(5)
+        );
+        assert_eq!(
+            convert::<Date>(FalkorValue::Date(Date::new(-1))).unwrap(),
+            Date::new(-1)
+        );
+        assert_eq!(
+            convert::<Time>(FalkorValue::Time(Time::new(7))).unwrap(),
+            Time::new(7)
+        );
+        assert_eq!(
+            convert::<Duration>(FalkorValue::Duration(Duration::new(9))).unwrap(),
+            Duration::new(9)
+        );
+
+        // Strict: a non-temporal value (or the wrong temporal type) is a type error.
+        assert_eq!(
+            convert::<Duration>(FalkorValue::I64(9)),
+            Err(FalkorDBError::TypeError {
+                expected: "Duration",
+                got: "I64"
+            })
+        );
+    }
+
+    #[test]
     fn test_type_error_reports_variant() {
         assert_eq!(
             convert::<i64>(FalkorValue::Bool(true)),
@@ -299,9 +337,10 @@ mod tests {
         use crate::value::graph_entities::{Edge, Node};
         use crate::value::path::Path;
         use crate::value::point::Point;
+        use crate::value::temporal::{Date, DateTime, Duration, Time};
         use crate::value::vec32::Vec32;
 
-        let cases: [(FalkorValue, &str); 13] = [
+        let cases: [(FalkorValue, &str); 17] = [
             (FalkorValue::Node(Node::default()), "Node"),
             (FalkorValue::Edge(Edge::default()), "Edge"),
             (FalkorValue::Array(vec![]), "Array"),
@@ -313,6 +352,10 @@ mod tests {
             (FalkorValue::F64(0.0), "F64"),
             (FalkorValue::Point(Point::default()), "Point"),
             (FalkorValue::Path(Path::default()), "Path"),
+            (FalkorValue::DateTime(DateTime::default()), "DateTime"),
+            (FalkorValue::Date(Date::default()), "Date"),
+            (FalkorValue::Time(Time::default()), "Time"),
+            (FalkorValue::Duration(Duration::default()), "Duration"),
             (FalkorValue::None, "None"),
             (FalkorValue::Unparseable(String::new()), "Unparseable"),
         ];

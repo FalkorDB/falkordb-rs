@@ -37,6 +37,7 @@ pub use graph::{
     blocking::SyncGraph,
     ops::{ConstraintOpBuilder, CopyGraphBuilder, IndexOpBuilder, WaitOperation, WaitOptions},
     query_builder::{ProcedureQueryBuilder, QueryBuilder},
+    VectorSimilarity,
 };
 pub use graph_schema::{GraphSchema, SchemaType};
 pub use response::{
@@ -54,6 +55,7 @@ pub use value::{
     graph_entities::{Edge, EntityType, Node},
     path::Path,
     point::Point,
+    temporal::{Date, DateTime, Duration, Time},
     to_cypher_param, FalkorParams, FalkorValue, FromFalkorValue, IntoFalkorParam, IntoFalkorParams,
     RawParam,
 };

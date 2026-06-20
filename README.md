@@ -199,6 +199,12 @@ graph.query("RETURN point($p)").with_param("p", coords).execute()?;
 If you really need a raw Cypher expression, `with_raw_param("key", "…")` is the explicit escape
 hatch — no escaping is applied to the value (the parameter name is still validated).
 
+Temporal values returned by queries — `datetime`, `date`, `time`/`localtime` and `duration` —
+decode into the typed `DateTime`, `Date`, `Time` and `Duration` values (each preserving the raw
+FalkorDB scalar via `.raw()`; `Duration` also offers `.as_seconds()` / `.as_std_duration()`). They
+are read from results but cannot be bound back as parameters — build them in the query with the
+matching Cypher function (e.g. `date($s)`).
+
 #### Typed result mapping with serde
 
 Enable the optional `serde` feature to map query results straight into your own types instead of hand-matching every
@@ -520,6 +526,10 @@ let _copy = client.copy_graph_op("social", "social_backup")
 
 The same builders exist on the async client — just `await` the terminals. See
 [`examples/waiting_ops.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/waiting_ops.rs) for a complete, runnable example.
+
+For vector indexes, the typed helpers `create_node_vector_index` / `create_edge_vector_index` take a
+`dimension` and a `VectorSimilarity` (`Euclidean` or `Cosine`) and generate the correct
+`OPTIONS { dimension: N, similarityFunction: '…' }` clause for you.
 
 [`FalkorDBError::Timeout`]: https://docs.rs/falkordb/latest/falkordb/enum.FalkorDBError.html
 

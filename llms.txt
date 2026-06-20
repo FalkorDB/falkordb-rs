@@ -71,6 +71,9 @@ hand; if you change the public API, run `just llms` and commit the updated `llms
 - `ConstraintStatus`
 - `ConstraintType`
 - `CopyGraphBuilder`
+- `Date`
+- `DateTime`
+- `Duration`
 - `Edge`
 - `EmbeddedConfig` — requires `embedded`
 - `EmbeddedServer` — requires `embedded`
@@ -108,8 +111,10 @@ hand; if you change the public API, run `just llms` and commit the updated `llms
 - `SchemaType`
 - `SlowlogEntry`
 - `SyncGraph`
+- `Time`
 - `TypedLazyResultSet` — requires `serde`
 - `TypedRowStream` — requires `serde` + `tokio`
+- `VectorSimilarity`
 - `WaitOperation`
 - `WaitOptions`
 - `from_falkor_row` — requires `serde`

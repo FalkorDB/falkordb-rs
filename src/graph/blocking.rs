@@ -5,7 +5,10 @@
 
 use crate::{
     client::blocking::FalkorSyncClientInner,
-    graph::{generate_create_index_query, generate_drop_index_query, HasGraphSchema},
+    graph::{
+        generate_create_index_query, generate_drop_index_query, vector_index_options,
+        HasGraphSchema, VectorSimilarity,
+    },
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
     IndexType, LazyResultSet, ProcedureQueryBuilder, QueryBuilder, QueryResult, SlowlogEntry,
 };
@@ -246,6 +249,68 @@ impl SyncGraph {
             query_str,
         )
         .execute()
+    }
+
+    /// Creates a vector index on a node label, for similarity search over the given properties.
+    ///
+    /// This is a typed convenience wrapper over [`create_index`](Self::create_index) that emits a
+    /// valid `OPTIONS { dimension: N, similarityFunction: '…' }` clause.
+    ///
+    /// # Arguments
+    /// * `label`: Nodes with this label will be indexed.
+    /// * `properties`: The vector properties to index.
+    /// * `dimension`: The dimensionality of the indexed vectors.
+    /// * `similarity_function`: The [`VectorSimilarity`] function to compare vectors with.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Graph Create Node Vector Index", skip_all, level = "info")
+    )]
+    pub fn create_node_vector_index<P: Display>(
+        &mut self,
+        label: &str,
+        properties: &[P],
+        dimension: u32,
+        similarity_function: VectorSimilarity,
+    ) -> FalkorResult<QueryResult<LazyResultSet>> {
+        let options = vector_index_options(dimension, similarity_function);
+        self.create_index(
+            IndexType::Vector,
+            EntityType::Node,
+            label,
+            properties,
+            Some(&options),
+        )
+    }
+
+    /// Creates a vector index on a relationship type, for similarity search over the given properties.
+    ///
+    /// This is a typed convenience wrapper over [`create_index`](Self::create_index) that emits a
+    /// valid `OPTIONS { dimension: N, similarityFunction: '…' }` clause.
+    ///
+    /// # Arguments
+    /// * `relation`: Relationships of this type will be indexed.
+    /// * `properties`: The vector properties to index.
+    /// * `dimension`: The dimensionality of the indexed vectors.
+    /// * `similarity_function`: The [`VectorSimilarity`] function to compare vectors with.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Graph Create Edge Vector Index", skip_all, level = "info")
+    )]
+    pub fn create_edge_vector_index<P: Display>(
+        &mut self,
+        relation: &str,
+        properties: &[P],
+        dimension: u32,
+        similarity_function: VectorSimilarity,
+    ) -> FalkorResult<QueryResult<LazyResultSet>> {
+        let options = vector_index_options(dimension, similarity_function);
+        self.create_index(
+            IndexType::Vector,
+            EntityType::Edge,
+            relation,
+            properties,
+            Some(&options),
+        )
     }
 
     /// Drop an existing index, by specifying its type, entity, label and specific properties
@@ -585,6 +650,55 @@ mod tests {
             .execute()
             .expect("Could not drop index");
         assert_eq!(res.get_indices_deleted(), Some(1));
+    }
+
+    #[test]
+    fn test_create_vector_index_node_and_edge() {
+        let mut graph = open_empty_test_graph("test_vector_index_helpers");
+
+        // With the OPTIONS-encoding fix the server accepts these; previously it rejected the
+        // quoted `'dimension'` key with a parse error.
+        graph
+            .inner
+            .create_node_vector_index("Item", &["embedding"], 4, VectorSimilarity::Euclidean)
+            .expect("node vector index creation should succeed");
+        graph
+            .inner
+            .create_edge_vector_index("SIMILAR", &["v"], 8, VectorSimilarity::Cosine)
+            .expect("edge vector index creation should succeed");
+
+        let node_vec = |indices: &Vec<FalkorIndex>| {
+            indices.iter().any(|index| {
+                index.entity_type == EntityType::Node
+                    && index
+                        .field_types
+                        .get("embedding")
+                        .is_some_and(|types| types.contains(&IndexType::Vector))
+            })
+        };
+        let edge_vec = |indices: &Vec<FalkorIndex>| {
+            indices.iter().any(|index| {
+                index.entity_type == EntityType::Edge
+                    && index
+                        .field_types
+                        .get("v")
+                        .is_some_and(|types| types.contains(&IndexType::Vector))
+            })
+        };
+
+        // Indices build asynchronously; wait until both vector indices are listed.
+        let indices = retry_until(
+            || {
+                graph
+                    .inner
+                    .list_indices()
+                    .expect("Could not list indices")
+                    .data
+            },
+            |indices| node_vec(indices) && edge_vec(indices),
+        );
+        assert!(node_vec(&indices), "node vector index should be listed");
+        assert!(edge_vec(&indices), "edge vector index should be listed");
     }
 
     #[test]

@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Decode FalkorDB temporal values (`datetime`, `date`, `time`/`localtime`, `duration`) into the new
+  typed `DateTime`, `Date`, `Time` and `Duration` values instead of surfacing them as `Unparseable`.
+  Each preserves the raw FalkorDB scalar (`.raw()`), and `Duration` adds `.as_seconds()` /
+  `.as_std_duration()`.
+- Typed vector-index helpers `create_node_vector_index` / `create_edge_vector_index` (sync and
+  async) plus a `VectorSimilarity` enum, so a correct `OPTIONS { dimension: N, similarityFunction:
+  '…' }` clause is generated for you.
+
+### Fixed
+
+- Vector index creation generated invalid Cypher (`OPTIONS { 'dimension':'4' }`) that FalkorDB
+  rejected with a parse error; index `OPTIONS` now use unquoted identifier keys and emit numeric
+  values (such as a vector `dimension`) unquoted, so vector indexes can actually be created.
+
+### Changed
+
+- **Breaking:** `FalkorValue` is now `#[non_exhaustive]` and gained `DateTime`, `Date`, `Time` and
+  `Duration` variants. Exhaustive `match` expressions over a `FalkorValue` must add a wildcard
+  (`_ => …`) arm.
+
 ## [0.8.9](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.8...v0.8.9) - 2026-06-20
 
 ### Other

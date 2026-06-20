@@ -62,6 +62,8 @@ fn main() -> FalkorResult<()> {
         .copy_graph_op("waiting_ops_example", "waiting_ops_backup")
         .wait()?;
 
+    // Tidy up both graphs so re-running the example leaves nothing behind.
+    client.select_graph("waiting_ops_backup").delete()?;
     graph.delete()?;
 
     Ok(())

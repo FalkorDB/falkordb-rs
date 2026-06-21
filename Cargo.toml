@@ -127,3 +127,9 @@ name = "waiting_ops"
 [[example]]
 name = "tls"
 required-features = ["rustls"]
+
+[[example]]
+name = "temporal"
+
+[[example]]
+name = "vector_index"

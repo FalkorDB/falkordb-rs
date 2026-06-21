@@ -199,6 +199,14 @@ graph.query("RETURN point($p)").with_param("p", coords).execute()?;
 If you really need a raw Cypher expression, `with_raw_param("key", "…")` is the explicit escape
 hatch — no escaping is applied to the value (the parameter name is still validated).
 
+Temporal values returned by queries — `datetime`, `date`, `time`/`localtime` and `duration` —
+decode into the typed `DateTime`, `Date`, `Time` and `Duration` values. Each exposes its scalar as a
+typed `Seconds` (`value.seconds()`), and `DateTime`/`Duration` support a small type-safe algebra
+(`DateTime - DateTime` → `Duration`, `DateTime ± Duration` → `DateTime`, plus `Duration`
+add/subtract/negate) with overflow-checked `checked_*` variants. They are read from results but
+cannot be bound back as parameters — build them in the query with the matching Cypher function (e.g.
+`date($s)`). A runnable version lives in [`examples/temporal.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/temporal.rs).
+
 #### Typed result mapping with serde
 
 Enable the optional `serde` feature to map query results straight into your own types instead of hand-matching every
@@ -520,6 +528,15 @@ let _copy = client.copy_graph_op("social", "social_backup")
 
 The same builders exist on the async client — just `await` the terminals. See
 [`examples/waiting_ops.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/waiting_ops.rs) for a complete, runnable example.
+
+For vector indexes, the typed helpers `create_node_vector_index` / `create_edge_vector_index` take a
+`dimension` and a `VectorSimilarity` (`Euclidean` or `Cosine`) and generate the correct
+`OPTIONS { dimension: N, similarityFunction: '…' }` clause for you. Like the other index operations
+they are fire-and-forget, and they have matching `create_node_vector_index_op` /
+`create_edge_vector_index_op` builders that integrate with the waiting ergonomics above —
+`.wait()` blocks until the vector index is operational (and `.execute()` is the non-blocking
+equivalent). A runnable version lives in
+[`examples/vector_index.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/vector_index.rs).
 
 [`FalkorDBError::Timeout`]: https://docs.rs/falkordb/latest/falkordb/enum.FalkorDBError.html
 
@@ -884,6 +901,8 @@ Run one with `cargo run` plus the flags shown:
 | [`rows`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/rows.rs) | Header-aware rows: read columns by name or index with strict typed access | `--example rows` |
 | [`typed_params`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/typed_params.rs) | Type-safe, injection-proof query parameters | `--example typed_params` |
 | [`typed_mapping`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/typed_mapping.rs) | Map query results into your own `serde` types | `--features serde --example typed_mapping` |
+| [`temporal`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/temporal.rs) | Decode temporal values and use the type-safe `DateTime`/`Duration` algebra | `--example temporal` |
+| [`vector_index`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/vector_index.rs) | Create vector indexes with the typed helpers and `VectorSimilarity` | `--example vector_index` |
 | [`batch`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/batch.rs) | Batch / pipelined execution: many queries in one round-trip | `--example batch` |
 | [`waiting_ops`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/waiting_ops.rs) | Wait for background index / constraint / copy operations to take effect | `--example waiting_ops` |
 | [`udf_usage`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/udf_usage.rs) | Load a user-defined-function (UDF) library | `--example udf_usage` |

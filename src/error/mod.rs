@@ -164,6 +164,15 @@ pub enum FalkorDBError {
         /// A human-readable description of why encoding failed.
         message: String,
     },
+    /// An index `OPTIONS` key was not a valid Cypher identifier, so it could not be safely
+    /// interpolated into the `OPTIONS` map.
+    #[error("invalid index option key '{key}': {message}")]
+    InvalidIndexOption {
+        /// The offending option key.
+        key: String,
+        /// A human-readable description of why the key is invalid.
+        message: String,
+    },
     /// A result row did not contain a column with the requested name.
     #[error("result row has no column named '{name}'")]
     MissingColumn {

@@ -5,7 +5,10 @@
 
 use crate::{
     client::asynchronous::FalkorAsyncClientInner,
-    graph::{generate_create_index_query, generate_drop_index_query},
+    graph::{
+        generate_create_index_query, generate_drop_index_query, vector_index_options,
+        VectorSimilarity,
+    },
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
     IndexType, ProcedureQueryBuilder, QueryBuilder, QueryResult, RowStream, SlowlogEntry,
 };
@@ -250,11 +253,75 @@ impl AsyncGraph {
     ) -> FalkorResult<QueryResult<RowStream>> {
         // Create index from these properties
         let query_str =
-            generate_create_index_query(index_field_type, entity_type, label, properties, options);
+            generate_create_index_query(index_field_type, entity_type, label, properties, options)?;
 
         QueryBuilder::<QueryResult<RowStream>, String, Self>::new(self, "GRAPH.QUERY", query_str)
             .execute()
             .await
+    }
+
+    /// Creates a vector index on a node label, for similarity search over the given properties.
+    ///
+    /// This is a typed convenience wrapper over [`create_index`](Self::create_index) that emits a
+    /// valid `OPTIONS { dimension: N, similarityFunction: '…' }` clause.
+    ///
+    /// # Arguments
+    /// * `label`: Nodes with this label will be indexed.
+    /// * `properties`: The vector properties to index.
+    /// * `dimension`: The dimensionality of the indexed vectors.
+    /// * `similarity_function`: The [`VectorSimilarity`] function to compare vectors with.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Graph Create Node Vector Index", skip_all, level = "info")
+    )]
+    pub async fn create_node_vector_index<P: Display>(
+        &mut self,
+        label: &str,
+        properties: &[P],
+        dimension: u32,
+        similarity_function: VectorSimilarity,
+    ) -> FalkorResult<QueryResult<RowStream>> {
+        let options = vector_index_options(dimension, similarity_function);
+        self.create_index(
+            IndexType::Vector,
+            EntityType::Node,
+            label,
+            properties,
+            Some(&options),
+        )
+        .await
+    }
+
+    /// Creates a vector index on a relationship type, for similarity search over the given properties.
+    ///
+    /// This is a typed convenience wrapper over [`create_index`](Self::create_index) that emits a
+    /// valid `OPTIONS { dimension: N, similarityFunction: '…' }` clause.
+    ///
+    /// # Arguments
+    /// * `relation`: Relationships of this type will be indexed.
+    /// * `properties`: The vector properties to index.
+    /// * `dimension`: The dimensionality of the indexed vectors.
+    /// * `similarity_function`: The [`VectorSimilarity`] function to compare vectors with.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Graph Create Edge Vector Index", skip_all, level = "info")
+    )]
+    pub async fn create_edge_vector_index<P: Display>(
+        &mut self,
+        relation: &str,
+        properties: &[P],
+        dimension: u32,
+        similarity_function: VectorSimilarity,
+    ) -> FalkorResult<QueryResult<RowStream>> {
+        let options = vector_index_options(dimension, similarity_function);
+        self.create_index(
+            IndexType::Vector,
+            EntityType::Edge,
+            relation,
+            properties,
+            Some(&options),
+        )
+        .await
     }
 
     /// Drop an existing index, by specifying its type, entity, label and specific properties
@@ -611,6 +678,119 @@ mod tests {
             .await
             .expect("Could not drop index");
         assert_eq!(res.get_indices_deleted(), Some(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_vector_index_node_and_edge() {
+        let mut graph = open_empty_async_test_graph("test_vector_index_helpers_async").await;
+
+        // With the OPTIONS-encoding fix the server accepts these; previously it rejected the
+        // quoted `'dimension'` key with a parse error.
+        graph
+            .inner
+            .create_node_vector_index("Item", &["embedding"], 4, VectorSimilarity::Euclidean)
+            .await
+            .expect("node vector index creation should succeed");
+        graph
+            .inner
+            .create_edge_vector_index("SIMILAR", &["v"], 8, VectorSimilarity::Cosine)
+            .await
+            .expect("edge vector index creation should succeed");
+
+        // Indices build asynchronously; wait until both vector indices are listed.
+        let indices = retry_until_async(
+            &mut graph.inner,
+            |graph| {
+                Box::pin(async move {
+                    graph
+                        .list_indices()
+                        .await
+                        .expect("Could not list indices")
+                        .data
+                })
+            },
+            |indices| {
+                indices.iter().any(|index| {
+                    index.entity_type == EntityType::Node
+                        && index
+                            .field_types
+                            .get("embedding")
+                            .is_some_and(|types| types.contains(&IndexType::Vector))
+                }) && indices.iter().any(|index| {
+                    index.entity_type == EntityType::Edge
+                        && index
+                            .field_types
+                            .get("v")
+                            .is_some_and(|types| types.contains(&IndexType::Vector))
+                })
+            },
+        )
+        .await;
+
+        assert!(
+            indices.iter().any(|index| {
+                index.entity_type == EntityType::Node
+                    && index
+                        .field_types
+                        .get("embedding")
+                        .is_some_and(|types| types.contains(&IndexType::Vector))
+            }),
+            "node vector index should be listed"
+        );
+        assert!(
+            indices.iter().any(|index| {
+                index.entity_type == EntityType::Edge
+                    && index
+                        .field_types
+                        .get("v")
+                        .is_some_and(|types| types.contains(&IndexType::Vector))
+            }),
+            "edge vector index should be listed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_vector_index_op_wait() {
+        let mut graph = open_empty_async_test_graph("test_vector_index_op_wait_async").await;
+
+        // The typed vector `_op` builders integrate with the wait ergonomics: `.wait()` awaits
+        // until the vector index is actually operational.
+        graph
+            .inner
+            .create_node_vector_index_op("Item", &["embedding"], 4, VectorSimilarity::Euclidean)
+            .wait()
+            .await
+            .expect("node vector index did not become operational");
+        graph
+            .inner
+            .create_edge_vector_index_op("SIMILAR", &["v"], 8, VectorSimilarity::Cosine)
+            .wait()
+            .await
+            .expect("edge vector index did not become operational");
+
+        // After `wait()` returns, both vector indices are listed and Active.
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices")
+            .data;
+        assert!(indices.iter().any(|index| {
+            index.entity_type == EntityType::Node
+                && index.status == IndexStatus::Active
+                && index
+                    .field_types
+                    .get("embedding")
+                    .is_some_and(|types| types.contains(&IndexType::Vector))
+        }));
+        assert!(indices.iter().any(|index| {
+            index.entity_type == EntityType::Edge
+                && index.status == IndexStatus::Active
+                && index
+                    .field_types
+                    .get("v")
+                    .is_some_and(|types| types.contains(&IndexType::Vector))
+        }));
     }
 
     #[tokio::test(flavor = "multi_thread")]

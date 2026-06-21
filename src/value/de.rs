@@ -31,6 +31,7 @@ use serde::forward_to_deserialize_any;
 /// | `Map`                      | a map / struct keyed by string                      |
 /// | `Node` / `Edge`            | a map / struct built from the entity's `properties` |
 /// | `Point`                    | a map / struct with `latitude` and `longitude`      |
+/// | `DateTime`/`Date`/`Time`/`Duration` | the raw temporal scalar as an [`i64`]      |
 /// | `Path` / `Unparseable`     | an error                                            |
 ///
 /// # Errors
@@ -162,6 +163,10 @@ impl<'de> Deserializer<'de> for FalkorValueDeserializer {
                 .into_iter(),
             )
             .deserialize_any(visitor),
+            FalkorValue::DateTime(datetime) => visitor.visit_i64(datetime.seconds().get()),
+            FalkorValue::Date(date) => visitor.visit_i64(date.seconds().get()),
+            FalkorValue::Time(time) => visitor.visit_i64(time.seconds().get()),
+            FalkorValue::Duration(duration) => visitor.visit_i64(duration.seconds().get()),
             FalkorValue::Path(_) => Err(FalkorDBError::SerdeError(
                 "deserializing a Path into a user type is not supported".to_string(),
             )),
@@ -510,6 +515,35 @@ mod tests {
         let value = FalkorValue::Unparseable("boom".to_string());
         let err = value.deserialize_into::<i64>().unwrap_err();
         assert!(matches!(err, FalkorDBError::SerdeError(_)));
+    }
+
+    #[test]
+    fn test_deserialize_temporal_as_i64() {
+        use crate::value::temporal::{Date, DateTime, Duration, Time};
+        assert_eq!(
+            FalkorValue::DateTime(DateTime::new(1_700_000_000))
+                .deserialize_into::<i64>()
+                .unwrap(),
+            1_700_000_000
+        );
+        assert_eq!(
+            FalkorValue::Date(Date::new(-697_161_600))
+                .deserialize_into::<i64>()
+                .unwrap(),
+            -697_161_600
+        );
+        assert_eq!(
+            FalkorValue::Time(Time::new(3600))
+                .deserialize_into::<i64>()
+                .unwrap(),
+            3600
+        );
+        assert_eq!(
+            FalkorValue::Duration(Duration::new(259_200))
+                .deserialize_into::<i64>()
+                .unwrap(),
+            259_200
+        );
     }
 
     #[test]

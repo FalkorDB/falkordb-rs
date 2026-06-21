@@ -8,6 +8,7 @@ use graph_entities::{Edge, Node};
 use path::Path;
 use point::Point;
 use std::{collections::HashMap, fmt::Debug};
+use temporal::{Date, DateTime, Duration, Time};
 use vec32::Vec32;
 
 pub(crate) mod config;
@@ -16,6 +17,7 @@ pub(crate) mod graph_entities;
 pub(crate) mod param;
 pub(crate) mod path;
 pub(crate) mod point;
+pub(crate) mod temporal;
 pub(crate) mod vec32;
 
 #[cfg(feature = "serde")]
@@ -36,6 +38,7 @@ pub use de::{from_falkor_row, from_falkor_value, FalkorValueDeserializer};
 
 /// An enum of all the supported Falkor types
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum FalkorValue {
     /// See [`Node`]
     Node(Node),
@@ -59,6 +62,14 @@ pub enum FalkorValue {
     Point(Point),
     /// See [`Path`]
     Path(Path),
+    /// A FalkorDB `datetime` value, see [`DateTime`]
+    DateTime(DateTime),
+    /// A FalkorDB `date` value, see [`Date`]
+    Date(Date),
+    /// A FalkorDB `time`/`localtime` value, see [`Time`]
+    Time(Time),
+    /// A FalkorDB `duration` value, see [`Duration`]
+    Duration(Duration),
     /// A NULL type
     None,
     /// Failed parsing this value
@@ -168,6 +179,50 @@ impl FalkorValue {
     pub fn as_point(&self) -> Option<&Point> {
         match self {
             FalkorValue::Point(val) => Some(val),
+            _ => None,
+        }
+    }
+
+    /// Returns a copy of the inner [`DateTime`] if this is a `DateTime` variant.
+    ///
+    /// # Returns
+    /// A copy of the inner [`DateTime`]
+    pub fn as_datetime(&self) -> Option<DateTime> {
+        match self {
+            FalkorValue::DateTime(val) => Some(*val),
+            _ => None,
+        }
+    }
+
+    /// Returns a copy of the inner [`Date`] if this is a `Date` variant.
+    ///
+    /// # Returns
+    /// A copy of the inner [`Date`]
+    pub fn as_date(&self) -> Option<Date> {
+        match self {
+            FalkorValue::Date(val) => Some(*val),
+            _ => None,
+        }
+    }
+
+    /// Returns a copy of the inner [`Time`] if this is a `Time` variant.
+    ///
+    /// # Returns
+    /// A copy of the inner [`Time`]
+    pub fn as_time(&self) -> Option<Time> {
+        match self {
+            FalkorValue::Time(val) => Some(*val),
+            _ => None,
+        }
+    }
+
+    /// Returns a copy of the inner [`Duration`] if this is a `Duration` variant.
+    ///
+    /// # Returns
+    /// A copy of the inner [`Duration`]
+    pub fn as_duration(&self) -> Option<Duration> {
+        match self {
+            FalkorValue::Duration(val) => Some(*val),
             _ => None,
         }
     }
@@ -315,6 +370,25 @@ mod tests {
 
         let non_point_val = FalkorValue::I64(42);
         assert!(non_point_val.as_point().is_none());
+    }
+
+    #[test]
+    fn test_temporal_accessors() {
+        let datetime = FalkorValue::DateTime(DateTime::new(1_700_000_000));
+        assert_eq!(datetime.as_datetime(), Some(DateTime::new(1_700_000_000)));
+        assert!(datetime.as_date().is_none());
+
+        let date = FalkorValue::Date(Date::new(-697_161_600));
+        assert_eq!(date.as_date(), Some(Date::new(-697_161_600)));
+        assert!(date.as_time().is_none());
+
+        let time = FalkorValue::Time(Time::new(3600));
+        assert_eq!(time.as_time(), Some(Time::new(3600)));
+        assert!(time.as_duration().is_none());
+
+        let duration = FalkorValue::Duration(Duration::new(259_200));
+        assert_eq!(duration.as_duration(), Some(Duration::new(259_200)));
+        assert!(duration.as_datetime().is_none());
     }
 
     #[test]

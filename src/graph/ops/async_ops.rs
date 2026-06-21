@@ -9,9 +9,10 @@ use super::{
     classify_copy_result, owned_properties, poll_async, property_refs, ConstraintOp, IndexOp, Step,
     Wait, WaitOperation, WaitOptions,
 };
+use crate::graph::vector_index_options;
 use crate::{
     AsyncGraph, ConstraintType, EntityType, FalkorAsyncClient, FalkorResult, IndexType,
-    QueryResult, RowStream,
+    QueryResult, RowStream, VectorSimilarity,
 };
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -284,6 +285,52 @@ impl AsyncGraph {
                 label: label.to_string(),
                 properties: owned_properties(properties),
                 options: options.cloned(),
+            },
+        )
+    }
+
+    /// Returns a builder for creating a **vector** index on a node label, supporting `.execute()`
+    /// (non-blocking) and `.wait()` (await until the index is operational). The typed counterpart of
+    /// [`create_index_op`](Self::create_index_op) for vectors; mirrors
+    /// [`AsyncGraph::create_node_vector_index`].
+    pub fn create_node_vector_index_op<P: Display>(
+        &mut self,
+        label: &str,
+        properties: &[P],
+        dimension: u32,
+        similarity_function: VectorSimilarity,
+    ) -> AsyncIndexOpBuilder<'_> {
+        AsyncIndexOpBuilder::new(
+            self,
+            IndexOp::Create {
+                index_type: IndexType::Vector,
+                entity_type: EntityType::Node,
+                label: label.to_string(),
+                properties: owned_properties(properties),
+                options: Some(vector_index_options(dimension, similarity_function)),
+            },
+        )
+    }
+
+    /// Returns a builder for creating a **vector** index on a relationship type, supporting
+    /// `.execute()` (non-blocking) and `.wait()` (await until operational). The typed counterpart of
+    /// [`create_index_op`](Self::create_index_op) for vectors; mirrors
+    /// [`AsyncGraph::create_edge_vector_index`].
+    pub fn create_edge_vector_index_op<P: Display>(
+        &mut self,
+        relation: &str,
+        properties: &[P],
+        dimension: u32,
+        similarity_function: VectorSimilarity,
+    ) -> AsyncIndexOpBuilder<'_> {
+        AsyncIndexOpBuilder::new(
+            self,
+            IndexOp::Create {
+                index_type: IndexType::Vector,
+                entity_type: EntityType::Edge,
+                label: relation.to_string(),
+                properties: owned_properties(properties),
+                options: Some(vector_index_options(dimension, similarity_function)),
             },
         )
     }

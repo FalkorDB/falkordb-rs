@@ -1564,3 +1564,73 @@ mod async_batch_pipelining {
         graph.delete().await.expect("delete");
     }
 }
+
+mod temporal_values {
+    use super::{get_test_connection_info, skip_if_no_server};
+    use falkordb::{Date, DateTime, Duration, FalkorClientBuilder, Time};
+
+    fn graph_for(name: &str) -> Option<falkordb::SyncGraph> {
+        if skip_if_no_server() {
+            return None;
+        }
+        let conn_info = get_test_connection_info().ok()?;
+        let client = FalkorClientBuilder::new()
+            .with_connection_info(conn_info)
+            .build()
+            .ok()?;
+        let mut graph = client.select_graph(name);
+        let _ = graph.delete();
+        Some(graph)
+    }
+
+    /// End-to-end: FalkorDB temporal scalars (markers 13/14/15/16) decode into the typed
+    /// `DateTime` / `Date` / `Time` / `Duration` values rather than surfacing as `Unparseable`.
+    #[test]
+    fn test_temporal_values_round_trip() {
+        let Some(mut graph) = graph_for("test_temporal_round_trip") else {
+            return;
+        };
+        let mut result = graph
+            .query(
+                "RETURN date('1947-11-29') AS d, localdatetime('1947-11-29T00:00:00') AS dt, \
+                 localtime() AS t, duration({days: 3}) AS dur",
+            )
+            .execute()
+            .expect("temporal query should succeed");
+        let row = result
+            .data
+            .next()
+            .expect("expected a row")
+            .expect("row should parse");
+
+        // `date('1947-11-29')` is seconds since the Unix epoch at UTC midnight (negative, pre-1970).
+        let d: Date = row.try_get("d").expect("date column");
+        assert_eq!(d.seconds().get(), -697_161_600);
+
+        // `localdatetime('1947-11-29T00:00:00')` is the same instant decoded as a `DateTime` (marker 13).
+        let dt: DateTime = row.try_get("dt").expect("datetime column");
+        assert_eq!(dt.seconds().get(), -697_161_600);
+
+        // `localtime()` is a `Time`; its exact value is dynamic, so just assert it decoded into the
+        // typed value (rather than `Unparseable`). A `localtime`/`time` scalar is non-negative —
+        // unlike `date`/`datetime`, which are negative before 1970 (see `d` above).
+        let t: Time = row.try_get("t").expect("time column");
+        assert!(t.seconds().get() >= 0);
+
+        // `duration({days: 3})` is 3 * 86400 seconds.
+        let dur: Duration = row.try_get("dur").expect("duration column");
+        assert_eq!(dur.seconds().get(), 259_200);
+        assert_eq!(
+            dur.as_std_duration(),
+            Some(std::time::Duration::from_secs(259_200))
+        );
+
+        // The typed instant/span algebra composes as expected: shifting an instant by a duration
+        // and back is a no-op.
+        let instant = DateTime::new(d.seconds().get());
+        assert_eq!(instant + dur - dur, instant);
+        assert_eq!((instant - instant), Duration::new(0));
+
+        let _ = graph.delete();
+    }
+}

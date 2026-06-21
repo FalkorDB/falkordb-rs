@@ -1583,15 +1583,18 @@ mod temporal_values {
         Some(graph)
     }
 
-    /// End-to-end: FalkorDB temporal scalars (markers 14/15/16) decode into the typed
-    /// `Date` / `Time` / `Duration` values rather than surfacing as `Unparseable`.
+    /// End-to-end: FalkorDB temporal scalars (markers 13/14/15/16) decode into the typed
+    /// `DateTime` / `Date` / `Time` / `Duration` values rather than surfacing as `Unparseable`.
     #[test]
     fn test_temporal_values_round_trip() {
         let Some(mut graph) = graph_for("test_temporal_round_trip") else {
             return;
         };
         let mut result = graph
-            .query("RETURN date('1947-11-29') AS d, localtime() AS t, duration({days: 3}) AS dur")
+            .query(
+                "RETURN date('1947-11-29') AS d, localdatetime('1947-11-29T00:00:00') AS dt, \
+                 localtime() AS t, duration({days: 3}) AS dur",
+            )
             .execute()
             .expect("temporal query should succeed");
         let row = result
@@ -1603,6 +1606,10 @@ mod temporal_values {
         // `date('1947-11-29')` is seconds since the Unix epoch at UTC midnight (negative, pre-1970).
         let d: Date = row.try_get("d").expect("date column");
         assert_eq!(d.seconds().get(), -697_161_600);
+
+        // `localdatetime('1947-11-29T00:00:00')` is the same instant decoded as a `DateTime` (marker 13).
+        let dt: DateTime = row.try_get("dt").expect("datetime column");
+        assert_eq!(dt.seconds().get(), -697_161_600);
 
         // `localtime()` is a `Time`; its exact value is dynamic, so just assert it decoded into the
         // typed value (rather than `Unparseable`). A `localtime`/`time` scalar is non-negative —

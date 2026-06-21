@@ -241,7 +241,7 @@ impl SyncGraph {
         // Create index from these properties
 
         let query_str =
-            generate_create_index_query(index_field_type, entity_type, label, properties, options);
+            generate_create_index_query(index_field_type, entity_type, label, properties, options)?;
 
         QueryBuilder::<QueryResult<LazyResultSet>, String, Self>::new(
             self,

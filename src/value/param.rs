@@ -123,7 +123,7 @@ pub(crate) fn validate_param_name(name: &str) -> FalkorResult<()> {
 /// Verified against FalkorDB: only `\\ \' \n \r \t \b \f` are interpreted as escapes, `\uXXXX`
 /// is *not*, and a NUL byte is rejected. Every other code point (including non-ASCII) is emitted
 /// raw as UTF-8.
-fn encode_str(
+pub(crate) fn encode_str(
     s: &str,
     out: &mut String,
 ) -> FalkorResult<()> {

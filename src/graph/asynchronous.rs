@@ -253,7 +253,7 @@ impl AsyncGraph {
     ) -> FalkorResult<QueryResult<RowStream>> {
         // Create index from these properties
         let query_str =
-            generate_create_index_query(index_field_type, entity_type, label, properties, options);
+            generate_create_index_query(index_field_type, entity_type, label, properties, options)?;
 
         QueryBuilder::<QueryResult<RowStream>, String, Self>::new(self, "GRAPH.QUERY", query_str)
             .execute()

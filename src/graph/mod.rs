@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 
-use crate::{EntityType, GraphSchema, IndexType};
+use crate::{EntityType, FalkorResult, GraphSchema, IndexType};
 use std::{collections::HashMap, fmt::Display};
 
 pub(crate) mod blocking;
@@ -41,7 +41,7 @@ pub(crate) fn generate_create_index_query<P: Display>(
     label: &str,
     properties: &[P],
     options: Option<&HashMap<String, String>>,
-) -> String {
+) -> FalkorResult<String> {
     let properties_string = properties
         .iter()
         .map(|element| format!("l.{}", element))
@@ -59,39 +59,41 @@ pub(crate) fn generate_create_index_query<P: Display>(
         IndexType::Fulltext => "FULLTEXT ",
     };
 
-    let options_string = options
-        .map(|hashmap| {
+    let options_string = match options {
+        Some(hashmap) => {
             let mut entries = hashmap
                 .iter()
-                .map(|(key, val)| format!("{key}: {}", format_index_option_value(val)))
-                .collect::<Vec<_>>();
+                .map(|(key, val)| Ok(format!("{key}: {}", format_index_option_value(val)?)))
+                .collect::<FalkorResult<Vec<_>>>()?;
             // Sort for deterministic output regardless of HashMap iteration order.
             entries.sort();
-            entries.join(", ")
-        })
-        .map(|options_string| format!(" OPTIONS {{ {} }}", options_string))
-        .unwrap_or_default();
+            format!(" OPTIONS {{ {} }}", entries.join(", "))
+        }
+        None => String::new(),
+    };
 
-    format!(
+    Ok(format!(
         "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
         properties_string, options_string
-    )
+    ))
 }
 
 /// Formats a single index `OPTIONS` value as a Cypher map value.
 ///
 /// FalkorDB's `OPTIONS` map uses unquoted identifier keys and rejects quoted ones, and it expects
 /// numeric options (e.g. a vector index `dimension`) to be bare numbers rather than quoted strings.
-/// Integer-looking values are therefore emitted verbatim, while everything else is single-quoted
-/// with embedded backslashes and single quotes escaped (e.g. `'euclidean'`). The only options
-/// FalkorDB accepts today are an integer `dimension` and a string `similarityFunction`, both handled
-/// correctly here.
-fn format_index_option_value(value: &str) -> String {
+/// Integer-looking values are therefore emitted verbatim, while everything else is encoded as a
+/// single-quoted Cypher string literal via the same escaping as query parameters (see
+/// [`encode_str`](crate::value::param::encode_str)), so option values stay consistent with
+/// `to_cypher_param`. The only options FalkorDB accepts today are an integer `dimension` and a
+/// string `similarityFunction`, both handled correctly here.
+fn format_index_option_value(value: &str) -> FalkorResult<String> {
     if value.parse::<i64>().is_ok() {
-        value.to_string()
+        Ok(value.to_string())
     } else {
-        let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
-        format!("'{escaped}'")
+        let mut out = String::new();
+        crate::value::param::encode_str(value, &mut out)?;
+        Ok(out)
     }
 }
 
@@ -151,7 +153,8 @@ mod tests {
             "Person",
             &["name"],
             None,
-        );
+        )
+        .unwrap();
         assert!(query.contains("CREATE INDEX"));
         assert!(query.contains("(l:Person)"));
         assert!(query.contains("l.name"));
@@ -165,7 +168,8 @@ mod tests {
             "KNOWS",
             &["since"],
             None,
-        );
+        )
+        .unwrap();
         assert!(query.contains("CREATE INDEX"));
         assert!(query.contains("()-[l:KNOWS]->()"));
         assert!(query.contains("l.since"));
@@ -179,7 +183,8 @@ mod tests {
             "Item",
             &["embedding"],
             None,
-        );
+        )
+        .unwrap();
         assert!(query.contains("CREATE VECTOR INDEX"));
         assert!(query.contains("(l:Item)"));
         assert!(query.contains("l.embedding"));
@@ -193,7 +198,8 @@ mod tests {
             "Document",
             &["content"],
             None,
-        );
+        )
+        .unwrap();
         assert!(query.contains("CREATE FULLTEXT INDEX"));
         assert!(query.contains("(l:Document)"));
         assert!(query.contains("l.content"));
@@ -210,7 +216,8 @@ mod tests {
             "Test",
             &["field"],
             Some(&options),
-        );
+        )
+        .unwrap();
         assert!(query.contains("OPTIONS"));
         assert!(query.contains("option1"));
         assert!(query.contains("value1"));
@@ -225,7 +232,8 @@ mod tests {
             "Item",
             &["embedding"],
             Some(&options),
-        );
+        )
+        .unwrap();
         assert!(query.contains("CREATE VECTOR INDEX"));
         // Keys are unquoted, the numeric dimension is bare, and the function name is single-quoted —
         // the form FalkorDB accepts. Sorting makes the option order deterministic.
@@ -239,13 +247,20 @@ mod tests {
 
     #[test]
     fn test_format_index_option_value() {
-        assert_eq!(format_index_option_value("128"), "128");
-        assert_eq!(format_index_option_value("-3"), "-3");
-        assert_eq!(format_index_option_value("euclidean"), "'euclidean'");
+        assert_eq!(format_index_option_value("128").unwrap(), "128");
+        assert_eq!(format_index_option_value("-3").unwrap(), "-3");
+        assert_eq!(
+            format_index_option_value("euclidean").unwrap(),
+            "'euclidean'"
+        );
         // Non-integer numerics are treated as strings (quoted), keeping the emitter simple and safe.
-        assert_eq!(format_index_option_value("1.5"), "'1.5'");
-        // Embedded single quotes and backslashes are escaped.
-        assert_eq!(format_index_option_value("a'b\\c"), "'a\\'b\\\\c'");
+        assert_eq!(format_index_option_value("1.5").unwrap(), "'1.5'");
+        // String values use the same Cypher escaping as query parameters — quotes, backslashes, and
+        // control characters such as newlines.
+        assert_eq!(format_index_option_value("a'b\\c").unwrap(), "'a\\'b\\\\c'");
+        assert_eq!(format_index_option_value("a\nb").unwrap(), "'a\\nb'");
+        // A NUL byte cannot be encoded, mirroring `to_cypher_param`.
+        assert!(format_index_option_value("a\0b").is_err());
     }
 
     #[test]
@@ -263,7 +278,8 @@ mod tests {
             "Person",
             &["firstName", "lastName"],
             None,
-        );
+        )
+        .unwrap();
         assert!(query.contains("l.firstName"));
         assert!(query.contains("l.lastName"));
     }

@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.as_std_duration()` ([#265](https://github.com/FalkorDB/falkordb-rs/pull/265))
 - Typed vector-index helpers `create_node_vector_index` / `create_edge_vector_index` (sync and
   async) plus a `VectorSimilarity` enum, so a correct `OPTIONS { dimension: N, similarityFunction:
-  '…' }` clause is generated for you ([#265](https://github.com/FalkorDB/falkordb-rs/pull/265))
+  '…' }` clause is generated for you. Matching `create_node_vector_index_op` /
+  `create_edge_vector_index_op` builders integrate with the wait ergonomics (`.wait()` blocks until
+  the vector index is operational) ([#265](https://github.com/FalkorDB/falkordb-rs/pull/265))
 
 ### Fixed
 

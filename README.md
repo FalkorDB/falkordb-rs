@@ -531,7 +531,11 @@ The same builders exist on the async client — just `await` the terminals. See
 
 For vector indexes, the typed helpers `create_node_vector_index` / `create_edge_vector_index` take a
 `dimension` and a `VectorSimilarity` (`Euclidean` or `Cosine`) and generate the correct
-`OPTIONS { dimension: N, similarityFunction: '…' }` clause for you. A runnable version lives in
+`OPTIONS { dimension: N, similarityFunction: '…' }` clause for you. Like the other index operations
+they are fire-and-forget, and they have matching `create_node_vector_index_op` /
+`create_edge_vector_index_op` builders that integrate with the waiting ergonomics above —
+`.wait()` blocks until the vector index is operational (and `.execute()` is the non-blocking
+equivalent). A runnable version lives in
 [`examples/vector_index.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/vector_index.rs).
 
 [`FalkorDBError::Timeout`]: https://docs.rs/falkordb/latest/falkordb/enum.FalkorDBError.html

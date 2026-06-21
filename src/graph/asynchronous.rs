@@ -750,6 +750,50 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_vector_index_op_wait() {
+        let mut graph = open_empty_async_test_graph("test_vector_index_op_wait_async").await;
+
+        // The typed vector `_op` builders integrate with the wait ergonomics: `.wait()` awaits
+        // until the vector index is actually operational.
+        graph
+            .inner
+            .create_node_vector_index_op("Item", &["embedding"], 4, VectorSimilarity::Euclidean)
+            .wait()
+            .await
+            .expect("node vector index did not become operational");
+        graph
+            .inner
+            .create_edge_vector_index_op("SIMILAR", &["v"], 8, VectorSimilarity::Cosine)
+            .wait()
+            .await
+            .expect("edge vector index did not become operational");
+
+        // After `wait()` returns, both vector indices are listed and Active.
+        let indices = graph
+            .inner
+            .list_indices()
+            .await
+            .expect("Could not list indices")
+            .data;
+        assert!(indices.iter().any(|index| {
+            index.entity_type == EntityType::Node
+                && index.status == IndexStatus::Active
+                && index
+                    .field_types
+                    .get("embedding")
+                    .is_some_and(|types| types.contains(&IndexType::Vector))
+        }));
+        assert!(indices.iter().any(|index| {
+            index.entity_type == EntityType::Edge
+                && index.status == IndexStatus::Active
+                && index
+                    .field_types
+                    .get("v")
+                    .is_some_and(|types| types.contains(&IndexType::Vector))
+        }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_create_drop_index_op_wait() {
         let mut graph = open_empty_async_test_graph("test_create_index_op_wait_async").await;
 

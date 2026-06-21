@@ -1567,7 +1567,7 @@ mod async_batch_pipelining {
 
 mod temporal_values {
     use super::{get_test_connection_info, skip_if_no_server};
-    use falkordb::{Date, Duration, FalkorClientBuilder, Time};
+    use falkordb::{Date, DateTime, Duration, FalkorClientBuilder, Time};
 
     fn graph_for(name: &str) -> Option<falkordb::SyncGraph> {
         if skip_if_no_server() {
@@ -1602,20 +1602,26 @@ mod temporal_values {
 
         // `date('1947-11-29')` is seconds since the Unix epoch at UTC midnight (negative, pre-1970).
         let d: Date = row.try_get("d").expect("date column");
-        assert_eq!(d.raw(), -697_161_600);
+        assert_eq!(d.seconds().get(), -697_161_600);
 
         // `localtime()` is a `Time`; its exact value is dynamic, so just assert it decoded into the
         // typed value (rather than `Unparseable`). Temporal scalars are non-negative.
         let t: Time = row.try_get("t").expect("time column");
-        assert!(t.raw() >= 0);
+        assert!(t.seconds().get() >= 0);
 
         // `duration({days: 3})` is 3 * 86400 seconds.
         let dur: Duration = row.try_get("dur").expect("duration column");
-        assert_eq!(dur.as_seconds(), 259_200);
+        assert_eq!(dur.seconds().get(), 259_200);
         assert_eq!(
             dur.as_std_duration(),
             Some(std::time::Duration::from_secs(259_200))
         );
+
+        // The typed instant/span algebra composes as expected: shifting an instant by a duration
+        // and back is a no-op.
+        let instant = DateTime::new(d.seconds().get());
+        assert_eq!(instant + dur - dur, instant);
+        assert_eq!((instant - instant), Duration::new(0));
 
         let _ = graph.delete();
     }

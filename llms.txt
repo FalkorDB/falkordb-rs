@@ -109,6 +109,7 @@ hand; if you change the public API, run `just llms` and commit the updated `llms
 - `Row`
 - `RowStream` — requires `tokio`
 - `SchemaType`
+- `Seconds`
 - `SlowlogEntry`
 - `SyncGraph`
 - `Time`

@@ -55,7 +55,7 @@ pub use value::{
     graph_entities::{Edge, EntityType, Node},
     path::Path,
     point::Point,
-    temporal::{Date, DateTime, Duration, Time},
+    temporal::{Date, DateTime, Duration, Seconds, Time},
     to_cypher_param, FalkorParams, FalkorValue, FromFalkorValue, IntoFalkorParam, IntoFalkorParams,
     RawParam,
 };

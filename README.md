@@ -200,10 +200,12 @@ If you really need a raw Cypher expression, `with_raw_param("key", "…")` is th
 hatch — no escaping is applied to the value (the parameter name is still validated).
 
 Temporal values returned by queries — `datetime`, `date`, `time`/`localtime` and `duration` —
-decode into the typed `DateTime`, `Date`, `Time` and `Duration` values (each preserving the raw
-FalkorDB scalar via `.raw()`; `Duration` also offers `.as_seconds()` / `.as_std_duration()`). They
-are read from results but cannot be bound back as parameters — build them in the query with the
-matching Cypher function (e.g. `date($s)`).
+decode into the typed `DateTime`, `Date`, `Time` and `Duration` values. Each exposes its scalar as a
+typed `Seconds` (`value.seconds()`), and `DateTime`/`Duration` support a small type-safe algebra
+(`DateTime - DateTime` → `Duration`, `DateTime ± Duration` → `DateTime`, plus `Duration`
+add/subtract/negate) with overflow-checked `checked_*` variants. They are read from results but
+cannot be bound back as parameters — build them in the query with the matching Cypher function (e.g.
+`date($s)`).
 
 #### Typed result mapping with serde
 

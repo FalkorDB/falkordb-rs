@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Decode FalkorDB temporal values (`datetime`, `date`, `time`/`localtime`, `duration`) into the new
   typed `DateTime`, `Date`, `Time` and `Duration` values instead of surfacing them as `Unparseable`.
-  Each preserves the raw FalkorDB scalar (`.raw()`), and `Duration` adds `.as_seconds()` /
+  Each exposes its scalar as a typed `Seconds` (`.seconds()`), and `DateTime`/`Duration` support a
+  type-safe algebra (`DateTime - DateTime → Duration`, `DateTime ± Duration → DateTime`, and
+  `Duration` add/subtract/negate) with overflow-checked `checked_*` variants; `Duration` also offers
   `.as_std_duration()` ([#265](https://github.com/FalkorDB/falkordb-rs/pull/265))
 - Typed vector-index helpers `create_node_vector_index` / `create_edge_vector_index` (sync and
   async) plus a `VectorSimilarity` enum, so a correct `OPTIONS { dimension: N, similarityFunction:

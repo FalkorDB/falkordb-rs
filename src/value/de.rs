@@ -163,10 +163,10 @@ impl<'de> Deserializer<'de> for FalkorValueDeserializer {
                 .into_iter(),
             )
             .deserialize_any(visitor),
-            FalkorValue::DateTime(datetime) => visitor.visit_i64(datetime.raw()),
-            FalkorValue::Date(date) => visitor.visit_i64(date.raw()),
-            FalkorValue::Time(time) => visitor.visit_i64(time.raw()),
-            FalkorValue::Duration(duration) => visitor.visit_i64(duration.raw()),
+            FalkorValue::DateTime(datetime) => visitor.visit_i64(datetime.seconds().get()),
+            FalkorValue::Date(date) => visitor.visit_i64(date.seconds().get()),
+            FalkorValue::Time(time) => visitor.visit_i64(time.seconds().get()),
+            FalkorValue::Duration(duration) => visitor.visit_i64(duration.seconds().get()),
             FalkorValue::Path(_) => Err(FalkorDBError::SerdeError(
                 "deserializing a Path into a user type is not supported".to_string(),
             )),

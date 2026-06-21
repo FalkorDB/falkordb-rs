@@ -3,7 +3,7 @@
  * Licensed under the MIT License.
  */
 
-use crate::{EntityType, FalkorResult, GraphSchema, IndexType};
+use crate::{EntityType, FalkorDBError, FalkorResult, GraphSchema, IndexType};
 use std::{collections::HashMap, fmt::Display};
 
 pub(crate) mod blocking;
@@ -63,7 +63,18 @@ pub(crate) fn generate_create_index_query<P: Display>(
         Some(hashmap) => {
             let mut entries = hashmap
                 .iter()
-                .map(|(key, val)| Ok(format!("{key}: {}", format_index_option_value(val)?)))
+                .map(|(key, val)| {
+                    // Keys are interpolated unquoted, so they must be Cypher identifiers; reject
+                    // anything else rather than emit invalid (or injectable) Cypher.
+                    if !crate::value::param::is_bare_identifier(key) {
+                        return Err(FalkorDBError::InvalidIndexOption {
+                            key: key.clone(),
+                            message: "must be a Cypher identifier ([A-Za-z_][A-Za-z0-9_]*)"
+                                .to_string(),
+                        });
+                    }
+                    Ok(format!("{key}: {}", format_index_option_value(val)?))
+                })
                 .collect::<FalkorResult<Vec<_>>>()?;
             // Sort for deterministic output regardless of HashMap iteration order.
             entries.sort();
@@ -80,13 +91,12 @@ pub(crate) fn generate_create_index_query<P: Display>(
 
 /// Formats a single index `OPTIONS` value as a Cypher map value.
 ///
-/// FalkorDB's `OPTIONS` map uses unquoted identifier keys and rejects quoted ones, and it expects
-/// numeric options (e.g. a vector index `dimension`) to be bare numbers rather than quoted strings.
-/// Integer-looking values are therefore emitted verbatim, while everything else is encoded as a
-/// single-quoted Cypher string literal via the same escaping as query parameters (see
-/// [`encode_str`](crate::value::param::encode_str)), so option values stay consistent with
-/// `to_cypher_param`. The only options FalkorDB accepts today are an integer `dimension` and a
-/// string `similarityFunction`, both handled correctly here.
+/// FalkorDB's `OPTIONS` map expects numeric options (e.g. a vector index `dimension`) to be bare
+/// numbers rather than quoted strings. Integer-looking values are therefore emitted verbatim, while
+/// everything else is encoded as a single-quoted Cypher string literal using the same escaping as
+/// query parameters (see [`encode_str`](crate::value::param::encode_str)), so option values stay
+/// consistent with `to_cypher_param` and a NUL byte is rejected. The only options FalkorDB accepts
+/// today are an integer `dimension` and a string `similarityFunction`, both handled correctly here.
 fn format_index_option_value(value: &str) -> FalkorResult<String> {
     if value.parse::<i64>().is_ok() {
         Ok(value.to_string())
@@ -268,14 +278,36 @@ mod tests {
         // A NUL byte in an option value cannot be encoded, so query generation fails rather than
         // emitting invalid Cypher — mirroring `to_cypher_param`.
         let options = HashMap::from([("similarityFunction".to_string(), "a\0b".to_string())]);
-        assert!(generate_create_index_query(
+        let err = generate_create_index_query(
             IndexType::Vector,
             EntityType::Node,
             "Item",
             &["embedding"],
             Some(&options),
         )
-        .is_err());
+        .unwrap_err();
+        assert!(matches!(err, FalkorDBError::ParamEncoding { .. }));
+        assert!(err.to_string().contains("NUL byte"));
+    }
+
+    #[test]
+    fn test_generate_create_index_query_rejects_non_identifier_key() {
+        // An option key that is not a Cypher identifier is rejected rather than interpolated raw.
+        let options = HashMap::from([("bad-key".to_string(), "4".to_string())]);
+        let err = generate_create_index_query(
+            IndexType::Vector,
+            EntityType::Node,
+            "Item",
+            &["embedding"],
+            Some(&options),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            FalkorDBError::InvalidIndexOption { ref key, .. } if key == "bad-key"
+        ));
+        // The key is surfaced in the error message.
+        assert!(err.to_string().contains("'bad-key'"));
     }
 
     #[test]

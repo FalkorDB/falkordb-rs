@@ -264,6 +264,21 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_create_index_query_rejects_unencodable_option() {
+        // A NUL byte in an option value cannot be encoded, so query generation fails rather than
+        // emitting invalid Cypher — mirroring `to_cypher_param`.
+        let options = HashMap::from([("similarityFunction".to_string(), "a\0b".to_string())]);
+        assert!(generate_create_index_query(
+            IndexType::Vector,
+            EntityType::Node,
+            "Item",
+            &["embedding"],
+            Some(&options),
+        )
+        .is_err());
+    }
+
+    #[test]
     fn test_vector_similarity_display() {
         assert_eq!(VectorSimilarity::Euclidean.to_string(), "euclidean");
         assert_eq!(VectorSimilarity::Cosine.to_string(), "cosine");

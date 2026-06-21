@@ -33,15 +33,23 @@ fn main() -> FalkorResult<()> {
     // Edge vectors and cosine similarity work the same way.
     graph.create_edge_vector_index("SIMILAR_TO", &["weight"], 4, VectorSimilarity::Cosine)?;
 
-    // Indexes build asynchronously; once ready, `Product.embedding` is listed as a VECTOR index.
-    let indices = graph.list_indices()?;
-    let has_vector_index = indices.data.iter().any(|index| {
-        index.entity_type == EntityType::Node
-            && index
-                .field_types
-                .get("embedding")
-                .is_some_and(|types| types.contains(&IndexType::Vector))
-    });
+    // Indexes build asynchronously, so poll (up to ~5s) until the node vector index is listed
+    // rather than reading once and risking a false negative right after creation.
+    let mut has_vector_index = false;
+    for _ in 0..50 {
+        let indices = graph.list_indices()?;
+        has_vector_index = indices.data.iter().any(|index| {
+            index.entity_type == EntityType::Node
+                && index
+                    .field_types
+                    .get("embedding")
+                    .is_some_and(|types| types.contains(&IndexType::Vector))
+        });
+        if has_vector_index {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     println!("Product.embedding vector index present: {has_vector_index}");
 
     // You then run vector similarity searches in Cypher (e.g. `CALL db.idx.vector.queryNodes(...)`

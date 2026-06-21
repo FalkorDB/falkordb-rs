@@ -27,7 +27,7 @@ fn main() -> FalkorResult<()> {
         )
         .execute()?;
 
-    // The typed helper builds a correct `OPTIONS { dimension: 4, similarityFunction: 'euclidean' }`
+    // The typed helper builds a correct `OPTIONS { dimension: 4, similarityFunction: 'cosine' }`
     // clause for you — no hand-built options map, and no risk of the quoted-key Cypher the server
     // rejects. This eager form is fire-and-forget (it returns as soon as the server accepts it).
     graph.create_edge_vector_index("SIMILAR_TO", &["weight"], 4, VectorSimilarity::Cosine)?;

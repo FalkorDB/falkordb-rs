@@ -1605,7 +1605,8 @@ mod temporal_values {
         assert_eq!(d.seconds().get(), -697_161_600);
 
         // `localtime()` is a `Time`; its exact value is dynamic, so just assert it decoded into the
-        // typed value (rather than `Unparseable`). Temporal scalars are non-negative.
+        // typed value (rather than `Unparseable`). A `localtime`/`time` scalar is non-negative —
+        // unlike `date`/`datetime`, which are negative before 1970 (see `d` above).
         let t: Time = row.try_get("t").expect("time column");
         assert!(t.seconds().get() >= 0);
 

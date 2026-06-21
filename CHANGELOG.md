@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.9...v0.9.0) - 2026-06-21
+
 ### Added
 
 - Decode FalkorDB temporal values (`datetime`, `date`, `time`/`localtime`, `duration`) into the new

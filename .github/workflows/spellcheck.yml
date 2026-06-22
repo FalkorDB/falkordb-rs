@@ -10,11 +10,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - name: Spellcheck
-        uses: rojopolis/spellcheck-github-actions@ca94733232ec8328061aea8018dfcb4959857eea # 0.61.0
+        uses: rojopolis/spellcheck-github-actions@390a08ee9c46943112f21d2ff671649a2bacd33f # 0.62.0
         with:
           config_path: .github/spellcheck-settings.yml
           task_name: Markdown
@@ -29,7 +29,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - name: Write PR title to a Markdown file
@@ -37,7 +37,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: printf '# %s\n' "$PR_TITLE" > .pr-title.md
       - name: Spellcheck PR title
-        uses: rojopolis/spellcheck-github-actions@ca94733232ec8328061aea8018dfcb4959857eea # 0.61.0
+        uses: rojopolis/spellcheck-github-actions@390a08ee9c46943112f21d2ff671649a2bacd33f # 0.62.0
         with:
           config_path: .github/spellcheck-settings.yml
           task_name: PRTitle

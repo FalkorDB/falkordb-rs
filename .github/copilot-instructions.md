@@ -56,16 +56,16 @@ treat "the docs match the code" as part of the definition of done, not a follow-
 - **`README.md`** is **generated** from the crate-level `//!` docs in `src/lib.rs` via cargo-rdme —
   do **not** edit it by hand. Edit the `//!` docs (the body, from the intro down), then run
   **`just readme`** and commit the result. The hand-written header (badges, title, "Try Free" badge)
-  above the `<!-- cargo-rdme -->` marker is the only part edited directly. CI enforces sync with
+  above the `<!-- cargo-rdme start -->` marker is the only part edited directly. CI enforces sync with
   **`just check-readme`**, a drift gate that fails if the README is stale. Keep `docs/*.md` prose,
   code snippets, feature lists, and migration notes aligned too.
 - **`llms.txt`** (the AI-readable API surface) — regenerate with **`just llms`** whenever the
   public API changes, and commit the result. The narrative lives in `docs/llms.template.md`; the
   `## Public API` block is auto-generated from `src/lib.rs`. CI enforces this with
   **`just check-llms`**, a drift gate that fails if `llms.txt` is stale.
-- **doc-comments, doctests and `examples/`** — keep them accurate and compiling. Because the README
-  is the crate doc, its code blocks are compiled by **`just doctest`**; use `no_run`/`ignore` (with
-  hidden `# ` lines) exactly as in any rustdoc example.
+- **doc-comments, doctests and `examples/`** — keep them accurate and compiling. The crate docs in
+  `src/lib.rs` (which the README is generated from) are what **`just doctest`** compiles; use
+  `no_run`/`ignore` (with hidden `# ` lines) exactly as in any rustdoc example.
 
 ## Flaky tests are a hard no
 

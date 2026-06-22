@@ -74,9 +74,9 @@ example `just port=6380 test` or `just image=falkordb/falkordb:latest db-up`.
 ### Editing the README
 
 `README.md` is **generated** from the crate-level `//!` documentation in
-[`src/lib.rs`](src/lib.rs) with [cargo-rdme](https://github.com/orium/cargo-rdme) — so its code
-blocks double as compiled doctests (`just doctest`). **Do not edit `README.md` by hand** below the
-`<!-- cargo-rdme -->` marker; edit the `//!` docs instead, then regenerate and commit the result:
+[`src/lib.rs`](src/lib.rs) with [cargo-rdme](https://github.com/orium/cargo-rdme) — those docs'
+code blocks are what `just doctest` compiles. **Do not edit `README.md` by hand** below the
+`<!-- cargo-rdme start -->` marker; edit the `//!` docs instead, then regenerate and commit the result:
 
 ```bash
 cargo install cargo-rdme --version 2.0.0  # one-time; pinned to match CI (scripts/install-cargo-rdme.sh)

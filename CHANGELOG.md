@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- The `README.md` is now generated from the crate-level `//!` documentation in `src/lib.rs` with
+  [`cargo-rdme`](https://github.com/orium/cargo-rdme) (run `just readme`; a `check-readme` CI drift
+  gate keeps it in sync). GitHub now syntax-highlights the Rust code blocks in the README and no
+  longer shows the hidden `#` doctest lines, while those blocks still compile as doctests from the
+  crate docs ([#275](https://github.com/FalkorDB/falkordb-rs/pull/275))
 - Bump dependencies: `sha2` 0.10 → 0.11 and `which` 8.0.3 → 8.0.4 (runtime, `embedded` feature),
   `criterion` 0.5 → 0.8, `libc` 0.2.183 → 0.2.186 and `serde_json` 1.0.149 → 1.0.150
   (`dev-dependencies`), plus the `actions/checkout` (v6 → v7) and

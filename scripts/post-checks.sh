@@ -26,6 +26,7 @@ run just doctest
 run just build-examples
 run just deny
 run just check-llms
+run just check-readme
 
 echo
 echo "All post-checks passed. Safe to declare the task done."

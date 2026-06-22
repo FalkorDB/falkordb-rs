@@ -163,3 +163,7 @@ Prometheus
 prometheus
 PrometheusBuilder
 Quickstart
+rdme
+rustdoc
+doctest
+intra

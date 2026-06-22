@@ -72,8 +72,9 @@ doc:
 doc-open:
     cargo doc --all --no-deps --open
 
-# Run documentation tests — the README (it's the crate-level doc via `include_str!`) and every
-# doc-comment code block — with the dev feature set. No server needed (blocks are `no_run`/pure).
+# Run documentation tests — the crate-level `//!` docs in src/lib.rs (the source the README is
+# generated from) and every doc-comment code block — with the dev feature set. No server needed
+# (blocks are `no_run`/pure).
 doctest:
     cargo test --doc --features {{features}}
 
@@ -192,6 +193,20 @@ check-llms: test-llms llms
     git ls-files --error-unmatch llms.txt > /dev/null
     git diff --exit-code -- llms.txt
 
+# === README (generated from the crate docs) ==================================
+
+# Regenerate README.md from the crate-level `//!` docs in src/lib.rs via cargo-rdme: it strips
+# hidden `#` doctest lines and intra-doc links and annotates code blocks as `rust` so GitHub
+# highlights them. Edit the docs in src/lib.rs (not README.md), then run this and commit the result.
+# Install the tool with `cargo install cargo-rdme`.
+readme:
+    cargo rdme --force
+
+# CI drift gate: regenerate README.md and fail if the committed copy is stale. If this fails you
+# edited the crate docs — run `just readme` and commit README.md.
+check-readme:
+    cargo rdme --check
+
 # === Docker / FalkorDB lifecycle =============================================
 
 # Start a FalkorDB server in Docker on the configured port.
@@ -219,7 +234,7 @@ db-populate:
 check: fmt clippy build
 
 # Run every required CI gate locally (no server required).
-ci: fmt-check clippy build doc doctest build-examples deny check-llms
+ci: fmt-check clippy build doc doctest build-examples deny check-llms check-readme
 
 # Full post-task gate (no server required): strict clippy-all plus every CI gate.
 # Must be green before a task is declared done.

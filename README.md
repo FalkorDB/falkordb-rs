@@ -12,6 +12,8 @@
 
 [![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 
+<!-- cargo-rdme start -->
+
 The official Rust client for [FalkorDB](https://www.falkordb.com/) — a fast, low-latency
 graph database. One ergonomic API across a blocking client and an async (`tokio`) client, with
 typed results, parameter binding, batching, an embedded server, TLS, automatic retries, and
@@ -67,7 +69,7 @@ docker run --rm -p 6379:6379 falkordb/falkordb
 
 ### Your first query
 
-```no_run
+```rust
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 // Connect to FalkorDB
@@ -126,7 +128,7 @@ runnable example. The async client mirrors the sync API — `await` the terminal
 header (the column aliases) with that row's values, so you read columns by **name or index** and a
 row that fails to parse surfaces as an `Err` instead of being silently swallowed:
 
-```no_run
+```rust
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 
 let connection_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into()
@@ -153,7 +155,7 @@ for row in result.data.by_ref() {
 
 `Row` offers borrowing accessors (`get`, `get_at`, `get_all`), typed accessors
 (`try_get::<T>`, `try_get_at::<T>`), and consuming conversions (`into_values`, `into_map`). Typed
-access is **strict** — no silent lossy casts — via the [`FromFalkorValue`] conversion trait. Because
+access is **strict** — no silent lossy casts — via the `FromFalkorValue` conversion trait. Because
 `collect` short-circuits on the first `Err`, a whole result set can be gathered with
 `result.data.collect::<falkordb::FalkorResult<Vec<_>>>()`.
 
@@ -170,7 +172,7 @@ To opt back into the pre-0.7 behavior (bare `Vec<FalkorValue>` rows, parse error
 Pass Rust values straight into a query — the client encodes them as Cypher literals and escapes
 them for you, so you never hand-quote strings or risk Cypher injection:
 
-```ignore
+```rust
 let res = graph
     .query("MATCH (m:Movie {title: $title}) WHERE m.year IN $years RETURN m")
     .with_param("title", "The Matrix")
@@ -181,7 +183,7 @@ let res = graph
 Add several at once from an array, `Vec`, or map with `with_params` (the values share a single
 type; use chained `with_param` calls, as above, for a mix of types):
 
-```ignore
+```rust
 .with_params([("min_year", 1990), ("max_year", 2000)])
 ```
 
@@ -190,7 +192,7 @@ Supported value types include integers, floats, boolean values, strings, `Option
 cannot be bound directly (a FalkorDB limitation) — pass the components and construct them in the
 query:
 
-```ignore
+```rust
 use std::collections::BTreeMap;
 let coords = BTreeMap::from([("latitude", 32.07), ("longitude", 34.79)]);
 graph.query("RETURN point($p)").with_param("p", coords).execute()?;
@@ -220,7 +222,7 @@ Derive `serde::Deserialize` on your type and call `FalkorValue::deserialize_into
 `falkordb::from_falkor_value`) on a returned value. A node is deserialized from its properties, and scalars, `Option`,
 sequences and maps map onto the matching Rust types:
 
-```ignore
+```rust
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 use serde::Deserialize;
 #[derive(Debug, Deserialize)]
@@ -253,7 +255,7 @@ To map a whole result set in one shot, call `query_as::<T>()` before `execute()`
 deserialized into a `T`, and the result's `data` becomes an iterator of `FalkorResult<T>`, so it
 collects directly into a `Vec`:
 
-```ignore
+```rust
 let movies: Vec<Movie> = graph
     .query("MATCH (m:Movie) RETURN m")
     .query_as::<Movie>()
@@ -287,7 +289,7 @@ does not support the `current_thread` one, but this will probably be supported i
 
 The API uses an almost identical API, but the various functions need to be awaited:
 
-```ignore
+```rust
 use falkordb::{FalkorClientBuilder, FalkorConnectionInfo};
 use futures::StreamExt; // brings `.next().await` onto the result stream
 
@@ -328,7 +330,7 @@ from several concurrent tasks you just clone it — no `Arc<Mutex<_>>` wrapping 
 Because results are a `Stream`, the standard combinators just work. Import the extension traits
 (`use futures::{StreamExt, TryStreamExt};`) and:
 
-```ignore
+```rust
 use futures::{StreamExt, TryStreamExt};
 // Collect a typed stream in one line (errors short-circuit):
 let years: Vec<i64> = graph
@@ -388,11 +390,10 @@ The asynchronous client chooses how it manages its underlying Redis connections 
 
 Select or tune the strategy on the builder:
 
-```no_run
+```rust
 use falkordb::{ConnectionStrategy, FalkorClientBuilder};
 use std::num::NonZeroU8;
 
-# async fn doc() {
 // Spread commands across 4 shared multiplexed sockets (the default uses 8).
 let client = FalkorClientBuilder::new_async()
     .with_connection_strategy(ConnectionStrategy::Multiplexed {
@@ -405,7 +406,6 @@ let client = FalkorClientBuilder::new_async()
     .expect("Failed to build client");
 
 assert_eq!(client.connection_pool_size(), 4);
-# }
 ```
 
 Notes and caveats:
@@ -433,7 +433,7 @@ over a single Redis pipeline in **one round-trip**, returning one result per que
 order**. Queue queries with `query` (a `GRAPH.QUERY`) / `ro_query` (a `GRAPH.RO_QUERY`) and set
 per-query parameters on the returned handle:
 
-```ignore
+```rust
 let mut batch = graph.batch();
 for movie in &movies {
     batch.query("CREATE (:Movie {title: $t})").with_param("t", movie);
@@ -451,7 +451,7 @@ for (i, item) in results.into_iter().enumerate() {
 
 On the async client it is identical but for the `await`:
 
-```ignore
+```rust
 let mut batch = graph.batch();
 // … queue queries …
 let results = batch.execute().await?;
@@ -485,11 +485,11 @@ full backward compatibility.
 Each builder offers `.execute()` (non-blocking, identical to the eager method) and `.wait()` /
 `.wait_with(WaitOptions)` terminals. For index and constraint builders, `.wait()` blocks until the
 operation has actually taken effect (the index/constraint becomes operational or is dropped),
-returning [`FalkorDBError::Timeout`] if it does not happen in time. For the copy builder, `GRAPH.COPY`
+returning `FalkorDBError::Timeout` if it does not happen in time. For the copy builder, `GRAPH.COPY`
 is already blocking on the server, so `.wait()` simply retries transient `could not fork` failures
 with backoff; it does **not** verify the copied contents (that remains the caller's responsibility).
 
-```no_run
+```rust
 use falkordb::{EntityType, FalkorClientBuilder, FalkorConnectionInfo, IndexType, WaitOptions};
 use std::time::Duration;
 
@@ -538,8 +538,6 @@ they are fire-and-forget, and they have matching `create_node_vector_index_op` /
 equivalent). A runnable version lives in
 [`examples/vector_index.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/vector_index.rs).
 
-[`FalkorDBError::Timeout`]: https://docs.rs/falkordb/latest/falkordb/enum.FalkorDBError.html
-
 ### Connections and networking
 
 #### TLS support
@@ -579,7 +577,7 @@ Long-lived clients behind NATs, stateful firewalls, or idle-timeout-enforcing
 proxies can silently lose their TCP sessions. The builder exposes TCP-level
 socket settings to prevent this:
 
-```no_run
+```rust
 use falkordb::FalkorClientBuilder;
 use std::time::Duration;
 
@@ -619,7 +617,7 @@ replica. Writes always go to the primary.
 > alongside the primary pool. Size your pool limits and file-descriptor limits
 > accordingly.
 
-```no_run
+```rust
 use falkordb::FalkorClientBuilder;
 
 let client = FalkorClientBuilder::new()
@@ -656,11 +654,10 @@ A client can opt in to a `RetryPolicy` that automatically re-issues *eligible* o
 *transient* connection failures, with bounded backoff. It is **disabled by default**, so a client
 built without one behaves exactly as before (every operation is attempted once):
 
-```no_run
+```rust
 use falkordb::{Backoff, FalkorClientBuilder, RetryPolicy};
 use std::time::Duration;
 
-# fn doc() -> Result<(), Box<dyn std::error::Error>> {
 let client = FalkorClientBuilder::new()
     .with_retry_policy(
         RetryPolicy::read_only()                         // retry read-only ops only
@@ -669,9 +666,6 @@ let client = FalkorClientBuilder::new()
                 .max_delay(Duration::from_secs(1))),     // 50ms, 100ms, 200ms, … capped at 1s
     )
     .build()?;
-# let _ = client;
-# Ok(())
-# }
 ```
 
 The same `with_retry_policy(..)` is available on the async builder
@@ -733,16 +727,12 @@ only the `db.query.fingerprint`, which is a hash of the query with all literals 
 and no value ever enters a span. If you need the raw Cypher for debugging in a trusted environment,
 opt in explicitly:
 
-```no_run
+```rust
 use falkordb::FalkorClientBuilder;
 
-# fn doc() -> Result<(), Box<dyn std::error::Error>> {
 let client = FalkorClientBuilder::new()
     .with_query_logging(true) // records `db.query.text`; off by default
     .build()?;
-# let _ = client;
-# Ok(())
-# }
 ```
 
 Parameter values supplied via `with_param` are never recorded even when query logging is enabled
@@ -782,7 +772,7 @@ text, and query fingerprint are **never** used as labels (they are unbounded and
 cardinality) — those belong on `tracing` spans, not metrics. Like `tracing`, recording is a no-op
 until you install a recorder; for example, with `metrics-exporter-prometheus`:
 
-```ignore
+```rust
 let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
 builder.install().expect("failed to install Prometheus recorder");
 // ... use the client; metrics are now exported on the configured endpoint.
@@ -795,7 +785,7 @@ remediation tip — handy for logs and AI tooling. It is purely additive: the ra
 `Display`/`Debug` output are unchanged, hints are fixed `&'static str`s (so they never echo text from
 the underlying message), and unrecognized errors return `None`.
 
-```no_run
+```rust
 use falkordb::FalkorDBError;
 
 let err = FalkorDBError::ConnectionDown;
@@ -834,7 +824,7 @@ RHEL 8/9 and Amazon Linux 2023 on x86_64) and macOS aarch64 (Apple Silicon).
 
 #### Self-contained vs. already-installed
 
-```no_run
+```rust
 use falkordb::EmbeddedConfig;
 use std::path::PathBuf;
 
@@ -855,7 +845,7 @@ The cache directory defaults to `~/.cache/falkordb-rs` (Linux) or
 
 #### Usage Example
 
-```no_run
+```rust
 use falkordb::{EmbeddedConfig, FalkorClientBuilder, FalkorConnectionInfo};
 
 // Create an embedded configuration with defaults
@@ -936,3 +926,5 @@ Development setup, the full `just` recipe reference, and how to run the tests an
 - [FalkorDB Cloud](https://app.falkordb.cloud)
 
 Licensed under the [MIT License](https://github.com/FalkorDB/falkordb-rs/blob/main/LICENSE).
+
+<!-- cargo-rdme end -->

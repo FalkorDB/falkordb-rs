@@ -7,12 +7,13 @@
 //! in one round-trip, with per-query results in submission order.
 
 use crate::graph::query_builder::{
-    build_vec_rows, construct_query, dispatch_query_response, unwrap_query_response,
+    build_vec_rows, construct_query, dispatch_query_response, resolve_use_replica,
+    unwrap_query_response,
 };
 use crate::graph::HasGraphSchema;
 use crate::{
     FalkorDBError, FalkorParams, FalkorResult, GraphSchema, IntoFalkorParam, IntoFalkorParams,
-    QueryResult, Row, SyncGraph,
+    QueryResult, ReadPreference, Row, SyncGraph,
 };
 
 /// The result of one query in a batch: `Ok` with its [`QueryResult`] (rows eagerly parsed into a
@@ -152,6 +153,7 @@ impl BatchQuery {
 pub struct BatchBuilder<'a, G> {
     graph: &'a mut G,
     queries: Vec<BatchQuery>,
+    read_preference: Option<ReadPreference>,
 }
 
 impl<'a, G> BatchBuilder<'a, G> {
@@ -159,6 +161,7 @@ impl<'a, G> BatchBuilder<'a, G> {
         Self {
             graph,
             queries: Vec::new(),
+            read_preference: None,
         }
     }
 
@@ -197,6 +200,37 @@ impl<'a, G> BatchBuilder<'a, G> {
     /// Whether no queries have been queued.
     pub fn is_empty(&self) -> bool {
         self.queries.is_empty()
+    }
+
+    /// Override the [`ReadPreference`] for this batch, ignoring the client-wide default.
+    ///
+    /// Routing applies to the **whole** batch (one pipelined round-trip on one connection). A batch
+    /// is eligible for a replica only when **every** queued query is read-only; setting
+    /// [`ReadPreference::PreferReplica`] on a batch that contains a write makes `execute()` fail with
+    /// [`FalkorDBError::ReadPreferenceNotReadOnly`](crate::FalkorDBError::ReadPreferenceNotReadOnly).
+    ///
+    /// # Arguments
+    /// * `read_preference`: the [`ReadPreference`] to apply to this batch.
+    pub fn with_read_preference(
+        mut self,
+        read_preference: ReadPreference,
+    ) -> Self {
+        self.read_preference = Some(read_preference);
+        self
+    }
+
+    /// Route this all-read batch to a replica when available, else the primary. Shortcut for
+    /// [`with_read_preference(ReadPreference::PreferReplica)`](Self::with_read_preference). Replicas
+    /// can be slightly stale; fails at `execute()` if the batch contains a write.
+    pub fn prefer_replica(self) -> Self {
+        self.with_read_preference(ReadPreference::PreferReplica)
+    }
+
+    /// Serve this batch from the primary, overriding a client default of
+    /// [`ReadPreference::PreferReplica`]. Shortcut for
+    /// [`with_read_preference(ReadPreference::Primary)`](Self::with_read_preference).
+    pub fn primary_only(self) -> Self {
+        self.with_read_preference(ReadPreference::Primary)
     }
 }
 
@@ -272,6 +306,14 @@ impl BatchBuilder<'_, SyncGraph> {
         tracing::instrument(name = "Execute Batch", skip_all, level = "info")
     )]
     pub fn execute(self) -> BatchResult {
+        let client = self.graph.get_client().clone();
+        let use_replica = resolve_use_replica(
+            !has_write(&self.queries),
+            self.read_preference,
+            client.read_preference(),
+            "batch",
+        )?;
+
         let (pipe, submitted, slots) = prepare(self.graph.graph_name(), &self.queries);
         if submitted.is_empty() {
             return Ok(slots
@@ -280,11 +322,10 @@ impl BatchBuilder<'_, SyncGraph> {
                 .collect());
         }
 
-        let client = self.graph.get_client().clone();
-        let conn = if has_write(&self.queries) {
-            client.borrow_connection(client.clone())
-        } else {
+        let conn = if use_replica {
             client.borrow_readonly_connection(client.clone())
+        } else {
+            client.borrow_connection(client.clone())
         };
         let replies = conn?.execute_pipeline(&pipe)?;
 
@@ -303,6 +344,14 @@ impl BatchBuilder<'_, crate::AsyncGraph> {
         tracing::instrument(name = "Execute Batch", skip_all, level = "info")
     )]
     pub async fn execute(self) -> BatchResult {
+        let client = self.graph.get_client().clone();
+        let use_replica = resolve_use_replica(
+            !has_write(&self.queries),
+            self.read_preference,
+            client.read_preference(),
+            "batch",
+        )?;
+
         let (pipe, submitted, slots) = prepare(self.graph.graph_name(), &self.queries);
         if submitted.is_empty() {
             return Ok(slots
@@ -311,11 +360,10 @@ impl BatchBuilder<'_, crate::AsyncGraph> {
                 .collect());
         }
 
-        let client = self.graph.get_client().clone();
-        let conn = if has_write(&self.queries) {
-            client.borrow_connection(client.clone()).await
-        } else {
+        let conn = if use_replica {
             client.borrow_readonly_connection(client.clone()).await
+        } else {
+            client.borrow_connection(client.clone()).await
         };
         let replies = conn?.execute_pipeline(&pipe).await?;
 

@@ -22,7 +22,8 @@
 - Iterate the fallible result rows by column alias:
   `for row in result.data { let n: Node = row?.try_get("n")?; }`
   (`data` is the result set; `Row::try_get::<T>("alias")` / `try_get_at::<T>(index)`).
-- Read-only queries route to replicas: `graph.ro_query("MATCH …")`.
+- Read-only queries (`graph.ro_query("MATCH …")`) run on the primary by default; opt into replicas
+  per client (`with_read_preference(ReadPreference::PreferReplica)`) or per query (`.prefer_replica()`).
 - Map a result straight into your own type with `serde`:
   `graph.query("…").query_as::<MyRow>().execute()?` (or `FalkorValue::deserialize_into::<T>()`).
 - Async (`tokio` feature): build with `FalkorClientBuilder::new_async().build().await?` →
@@ -104,6 +105,7 @@ hand; if you change the public API, run `just llms` and commit the updated `llms
 - `QueryBuilder`
 - `QueryResult`
 - `RawParam`
+- `ReadPreference`
 - `RetryPolicy`
 - `RetryScope`
 - `Row`

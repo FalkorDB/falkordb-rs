@@ -203,6 +203,15 @@ pub enum FalkorDBError {
         /// The [`crate::FalkorValue`] variant that was found.
         got: &'static str,
     },
+    /// A replica read preference ([`ReadPreference::PreferReplica`](crate::ReadPreference::PreferReplica))
+    /// was set on a query or batch that can write. Writes must go to the primary, so they cannot be
+    /// routed to a replica; use `query`/`call_procedure` without a replica preference, or make the
+    /// request read-only.
+    #[error("replica read preference cannot be applied to a writable {context}; only read-only queries may be routed to a replica")]
+    ReadPreferenceNotReadOnly {
+        /// What the preference was set on — `"query"` or `"batch"`.
+        context: &'static str,
+    },
 }
 
 impl FalkorDBError {

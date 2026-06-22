@@ -8,7 +8,7 @@ use crate::{
     parser::{parse_header, redis_value_as_vec, SchemaParsable},
     retry::{op_kind_for_command, run_with_retry_blocking, OpKind},
     Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParams, FalkorResult, GraphSchema,
-    IntoFalkorParam, IntoFalkorParams, LazyResultSet, QueryResult, SyncGraph,
+    IntoFalkorParam, IntoFalkorParams, LazyResultSet, QueryResult, ReadPreference, SyncGraph,
 };
 use std::sync::Arc;
 use std::{
@@ -136,6 +136,30 @@ pub(crate) fn construct_query<Q: Display>(
     Ok(query)
 }
 
+/// Resolve whether a read-only-capable command should be served from a replica connection.
+///
+/// `requested` is the per-request override (`None` means "inherit the client default"). The three
+/// concepts are kept separate: `is_ro_command` is the command's read-only semantics, the resolved
+/// [`ReadPreference`] is the requested policy, and the returned `bool` is the actual route. A
+/// replica route is only taken for a read-only command whose effective preference is
+/// [`ReadPreference::PreferReplica`]; the borrow path still falls back to the primary when no
+/// replica connection exists.
+///
+/// Returns [`FalkorDBError::ReadPreferenceNotReadOnly`] when a replica preference was explicitly
+/// requested for a command that can write — a write can never be routed to a replica.
+pub(crate) fn resolve_use_replica(
+    is_ro_command: bool,
+    requested: Option<ReadPreference>,
+    client_default: ReadPreference,
+    context: &'static str,
+) -> FalkorResult<bool> {
+    if requested == Some(ReadPreference::PreferReplica) && !is_ro_command {
+        return Err(FalkorDBError::ReadPreferenceNotReadOnly { context });
+    }
+    let effective = requested.unwrap_or(client_default);
+    Ok(is_ro_command && effective == ReadPreference::PreferReplica)
+}
+
 /// A Builder-pattern struct that allows creating and executing queries on a graph
 pub struct QueryBuilder<'a, Output, T: Display, G> {
     _unused: PhantomData<Output>,
@@ -144,6 +168,7 @@ pub struct QueryBuilder<'a, Output, T: Display, G> {
     query_string: T,
     params: FalkorParams,
     timeout: Option<i64>,
+    read_preference: Option<ReadPreference>,
 }
 
 impl<'a, Output, T: Display, G> QueryBuilder<'a, Output, T, G> {
@@ -159,6 +184,7 @@ impl<'a, Output, T: Display, G> QueryBuilder<'a, Output, T, G> {
             query_string,
             params: FalkorParams::new(),
             timeout: None,
+            read_preference: None,
         }
     }
 
@@ -235,6 +261,43 @@ impl<'a, Output, T: Display, G> QueryBuilder<'a, Output, T, G> {
             ..self
         }
     }
+
+    /// Override the [`ReadPreference`] for this single query, ignoring the client-wide default.
+    ///
+    /// Only read-only queries (`ro_query`) can be routed to a replica. Setting
+    /// [`ReadPreference::PreferReplica`] on a writable `query` makes `execute()` fail with
+    /// [`FalkorDBError::ReadPreferenceNotReadOnly`](crate::FalkorDBError::ReadPreferenceNotReadOnly),
+    /// since a write can never run on a replica. See [`prefer_replica`](Self::prefer_replica) and
+    /// [`primary_only`](Self::primary_only) for the common shortcuts.
+    ///
+    /// # Arguments
+    /// * `read_preference`: the [`ReadPreference`] to apply to this query.
+    pub fn with_read_preference(
+        self,
+        read_preference: ReadPreference,
+    ) -> Self {
+        Self {
+            read_preference: Some(read_preference),
+            ..self
+        }
+    }
+
+    /// Route this read-only query to a replica when one is available, falling back to the primary
+    /// otherwise. Shortcut for [`with_read_preference(ReadPreference::PreferReplica)`](Self::with_read_preference).
+    ///
+    /// Replicas can be slightly stale, so only use this when a marginally out-of-date read is
+    /// acceptable. Has effect only on `ro_query`; on a writable `query` it makes `execute()` fail.
+    pub fn prefer_replica(self) -> Self {
+        self.with_read_preference(ReadPreference::PreferReplica)
+    }
+
+    /// Serve this query from the primary, overriding a client default of
+    /// [`ReadPreference::PreferReplica`]. Shortcut for
+    /// [`with_read_preference(ReadPreference::Primary)`](Self::with_read_preference). Use this for
+    /// read-your-writes paths that must not observe replication lag.
+    pub fn primary_only(self) -> Self {
+        self.with_read_preference(ReadPreference::Primary)
+    }
 }
 
 impl<'a, Output, T: Display, G: HasGraphSchema> QueryBuilder<'a, Output, T, G> {
@@ -294,14 +357,19 @@ impl<Out, T: Display> QueryBuilder<'_, Out, T, SyncGraph> {
         );
 
         let graph_name = self.graph.graph_name();
-        let readonly_conn = command == "GRAPH.RO_QUERY";
+        let use_replica = resolve_use_replica(
+            command == "GRAPH.RO_QUERY",
+            self.read_preference,
+            client.read_preference(),
+            "query",
+        )?;
         let params_ref = params.as_slice();
         let policy = client.retry_policy();
 
         #[cfg(feature = "metrics")]
         let metrics_start = std::time::Instant::now();
         let result = run_with_retry_blocking(&policy, op_kind, || {
-            let conn = if readonly_conn {
+            let conn = if use_replica {
                 client.borrow_readonly_connection(client.clone())
             } else {
                 client.borrow_connection(client.clone())
@@ -372,14 +440,19 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         );
 
         let graph_name = self.graph.graph_name();
-        let readonly_conn = command == "GRAPH.RO_QUERY";
+        let use_replica = resolve_use_replica(
+            command == "GRAPH.RO_QUERY",
+            self.read_preference,
+            client.read_preference(),
+            "query",
+        )?;
         let params_ref = params.as_slice();
         let policy = client.retry_policy();
 
         #[cfg(feature = "metrics")]
         let metrics_start = std::time::Instant::now();
         let result = run_with_retry_async(&policy, op_kind, || async move {
-            let conn = if readonly_conn {
+            let conn = if use_replica {
                 client.borrow_readonly_connection(client.clone()).await
             } else {
                 client.borrow_connection(client.clone()).await
@@ -510,6 +583,7 @@ impl<'a, T: Display, G: HasGraphSchema> QueryBuilder<'a, QueryResult<LazyResultS
             query_string: self.query_string,
             params: self.params,
             timeout: self.timeout,
+            read_preference: self.read_preference,
         }
     }
 }
@@ -563,6 +637,7 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<RowStream>, T, AsyncGraph> {
             query_string: self.query_string,
             params: self.params,
             timeout: self.timeout,
+            read_preference: self.read_preference,
         }
     }
 }
@@ -657,6 +732,7 @@ pub struct ProcedureQueryBuilder<'a, Output, G> {
     procedure_name: &'a str,
     args: Option<&'a [&'a str]>,
     yields: Option<&'a [&'a str]>,
+    read_preference: Option<ReadPreference>,
 }
 
 impl<'a, Out, G> ProcedureQueryBuilder<'a, Out, G> {
@@ -673,6 +749,7 @@ impl<'a, Out, G> ProcedureQueryBuilder<'a, Out, G> {
             procedure_name,
             args: None,
             yields: None,
+            read_preference: None,
         }
     }
 
@@ -688,6 +765,7 @@ impl<'a, Out, G> ProcedureQueryBuilder<'a, Out, G> {
             procedure_name,
             args: None,
             yields: None,
+            read_preference: None,
         }
     }
 
@@ -725,6 +803,38 @@ impl<'a, Out, G> ProcedureQueryBuilder<'a, Out, G> {
             yields: Some(yields),
             ..self
         }
+    }
+
+    /// Override the [`ReadPreference`] for this single procedure call, ignoring the client default.
+    ///
+    /// Only read-only procedure calls (`call_procedure_ro`) can be routed to a replica. Setting
+    /// [`ReadPreference::PreferReplica`] on a writable `call_procedure` makes `execute()` fail with
+    /// [`FalkorDBError::ReadPreferenceNotReadOnly`](crate::FalkorDBError::ReadPreferenceNotReadOnly).
+    ///
+    /// # Arguments
+    /// * `read_preference`: the [`ReadPreference`] to apply to this call.
+    pub fn with_read_preference(
+        self,
+        read_preference: ReadPreference,
+    ) -> Self {
+        Self {
+            read_preference: Some(read_preference),
+            ..self
+        }
+    }
+
+    /// Route this read-only procedure call to a replica when available, else the primary. Shortcut
+    /// for [`with_read_preference(ReadPreference::PreferReplica)`](Self::with_read_preference).
+    /// Replicas can be slightly stale. Has effect only on `call_procedure_ro`.
+    pub fn prefer_replica(self) -> Self {
+        self.with_read_preference(ReadPreference::PreferReplica)
+    }
+
+    /// Serve this procedure call from the primary, overriding a client default of
+    /// [`ReadPreference::PreferReplica`]. Shortcut for
+    /// [`with_read_preference(ReadPreference::Primary)`](Self::with_read_preference).
+    pub fn primary_only(self) -> Self {
+        self.with_read_preference(ReadPreference::Primary)
     }
 }
 
@@ -802,7 +912,12 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
 
         let client = self.graph.get_client();
         let graph_name = self.graph.graph_name();
-        let readonly_conn = self.readonly;
+        let use_replica = resolve_use_replica(
+            self.readonly,
+            self.read_preference,
+            client.read_preference(),
+            "query",
+        )?;
         let op_kind = self.op_kind;
         let exec_params = [query.as_str(), "--compact"];
         let policy = client.retry_policy();
@@ -810,7 +925,7 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
         #[cfg(feature = "metrics")]
         let metrics_start = std::time::Instant::now();
         let result = run_with_retry_blocking(&policy, op_kind, || {
-            let conn = if readonly_conn {
+            let conn = if use_replica {
                 client.borrow_readonly_connection(client.clone())
             } else {
                 client.borrow_connection(client.clone())
@@ -880,7 +995,12 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
         let query = construct_query(query_string, &params)?;
 
         let graph_name = self.graph.graph_name();
-        let readonly_conn = self.readonly;
+        let use_replica = resolve_use_replica(
+            self.readonly,
+            self.read_preference,
+            client.read_preference(),
+            "query",
+        )?;
         let op_kind = self.op_kind;
         let exec_params = [query.as_str(), "--compact"];
         let policy = client.retry_policy();
@@ -888,7 +1008,7 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
         #[cfg(feature = "metrics")]
         let metrics_start = std::time::Instant::now();
         let result = run_with_retry_async(&policy, op_kind, || async move {
-            let conn = if readonly_conn {
+            let conn = if use_replica {
                 client.borrow_readonly_connection(client.clone()).await
             } else {
                 client.borrow_connection(client.clone()).await
@@ -1039,6 +1159,74 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, AsyncGraph> {
 mod tests {
     use super::*;
     use crate::client::blocking::create_empty_inner_sync_client;
+
+    #[test]
+    fn resolve_use_replica_defaults_to_primary() {
+        // A read-only command with no per-request override and a Primary client default stays on
+        // the primary.
+        assert!(!resolve_use_replica(true, None, ReadPreference::Primary, "query").unwrap());
+    }
+
+    #[test]
+    fn resolve_use_replica_inherits_client_prefer_replica() {
+        // A read-only command inherits a PreferReplica client default.
+        assert!(resolve_use_replica(true, None, ReadPreference::PreferReplica, "query").unwrap());
+    }
+
+    #[test]
+    fn resolve_use_replica_request_override_wins() {
+        // A per-request PreferReplica overrides a Primary client default…
+        assert!(resolve_use_replica(
+            true,
+            Some(ReadPreference::PreferReplica),
+            ReadPreference::Primary,
+            "query"
+        )
+        .unwrap());
+        // …and a per-request Primary overrides a PreferReplica client default.
+        assert!(!resolve_use_replica(
+            true,
+            Some(ReadPreference::Primary),
+            ReadPreference::PreferReplica,
+            "query"
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn resolve_use_replica_write_never_uses_replica_by_default() {
+        // A writable command never routes to a replica, even under a PreferReplica client default,
+        // and does not error as long as no replica was explicitly requested.
+        assert!(!resolve_use_replica(false, None, ReadPreference::PreferReplica, "query").unwrap());
+    }
+
+    #[test]
+    fn resolve_use_replica_explicit_replica_on_write_errors() {
+        // Explicitly requesting a replica for a writable command is rejected.
+        let err = resolve_use_replica(
+            false,
+            Some(ReadPreference::PreferReplica),
+            ReadPreference::Primary,
+            "query",
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            FalkorDBError::ReadPreferenceNotReadOnly { context: "query" }
+        ));
+    }
+
+    #[test]
+    fn resolve_use_replica_explicit_primary_on_write_is_ok() {
+        // Explicitly forcing the primary on a write is fine (it is a no-op).
+        assert!(!resolve_use_replica(
+            false,
+            Some(ReadPreference::Primary),
+            ReadPreference::PreferReplica,
+            "batch"
+        )
+        .unwrap());
+    }
 
     /// A header `redis::Value` describing a single column named `name`.
     fn header_with_one_column(name: &str) -> redis::Value {

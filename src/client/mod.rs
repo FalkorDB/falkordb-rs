@@ -86,6 +86,42 @@ impl ConnectionStrategy {
     }
 }
 
+/// Controls which node a read-only query may be served from.
+///
+/// A FalkorDB replica applies writes only **after** the primary has committed them, so a read
+/// served from a replica can return slightly **stale** data. Routing reads to replicas is therefore
+/// opt-in: the default ([`ReadPreference::Primary`]) keeps every read on the primary, so you never
+/// observe replication lag unless you ask for it.
+///
+/// This is orthogonal to the read-only *command* (`GRAPH.RO_QUERY`, issued by
+/// [`ro_query`](crate::SyncGraph::ro_query) / [`call_procedure_ro`](crate::SyncGraph::call_procedure_ro)):
+/// the command decides whether the server allows writes, while `ReadPreference` decides which node
+/// answers. A read preference only takes effect for read-only commands.
+///
+/// Set a client-wide default with
+/// [`FalkorClientBuilder::with_read_preference`](crate::FalkorClientBuilder::with_read_preference),
+/// and override it per query with
+/// [`QueryBuilder::with_read_preference`](crate::QueryBuilder::with_read_preference) (or the
+/// [`prefer_replica`](crate::QueryBuilder::prefer_replica) /
+/// [`primary_only`](crate::QueryBuilder::primary_only) shortcuts).
+///
+/// # Example
+/// ```no_run
+/// use falkordb::ReadPreference;
+///
+/// assert_eq!(ReadPreference::default(), ReadPreference::Primary);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReadPreference {
+    /// Serve reads from the primary only — never subject to replica lag. **Default.**
+    #[default]
+    Primary,
+    /// Prefer a replica when one is available, falling back to the primary otherwise. Accepts that
+    /// reads may be slightly stale in exchange for offloading the primary.
+    PreferReplica,
+}
+
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum FalkorClientProvider {
     #[cfg(test)]

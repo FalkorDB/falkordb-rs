@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   method (and `prefer_replica()` / `primary_only()` shortcuts) on `QueryBuilder`,
   `ProcedureQueryBuilder` and `BatchBuilder`. Adds `FalkorSyncClient`/`FalkorAsyncClient` accessors
   `replica_reads_available()` (whether replica connections exist) and `read_preference()` (the
-  client default) ([#PRNUM](https://github.com/FalkorDB/falkordb-rs/pull/PRNUM))
+  client default) ([#277](https://github.com/FalkorDB/falkordb-rs/pull/277))
 
 ### Changed
 
@@ -26,11 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prefer_replica()`). Requesting a replica for a writable query, procedure or batch now fails with
   the new `FalkorDBError::ReadPreferenceNotReadOnly`. See the
   [0.10 migration guide](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.10.md)
-  ([#PRNUM](https://github.com/FalkorDB/falkordb-rs/pull/PRNUM))
+  ([#277](https://github.com/FalkorDB/falkordb-rs/pull/277))
 - **Deprecated:** `FalkorSyncClient::reads_from_replicas` and `FalkorAsyncClient::reads_from_replicas`
   in favor of `replica_reads_available()` (replica capability) plus `read_preference()` (the routing
   policy), since a replica pool can now exist without reads being routed to it
-  ([#PRNUM](https://github.com/FalkorDB/falkordb-rs/pull/PRNUM))
+  ([#277](https://github.com/FalkorDB/falkordb-rs/pull/277))
 
 ### Other
 

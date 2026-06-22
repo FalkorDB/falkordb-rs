@@ -1,0 +1,5 @@
+line-terminator = "lf"
+heading-base-level = 0
+
+[intralinks]
+strip-links = true

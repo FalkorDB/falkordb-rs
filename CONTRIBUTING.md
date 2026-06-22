@@ -30,7 +30,7 @@ just            # or: just --list
 just check
 
 # Run every required CI gate locally (no server needed):
-# fmt-check, clippy, build, doc, doctest, build-examples, deny, check-llms.
+# fmt-check, clippy, build, doc, doctest, build-examples, deny, check-llms, check-readme.
 just ci
 
 # Post-task gate: every CI gate PLUS strict clippy over all targets/features
@@ -71,6 +71,24 @@ Targeted recipes are available too, e.g. `just test-parity`, `just test-embedded
 The host, port, Docker image and feature set can be overridden on the command line, for
 example `just port=6380 test` or `just image=falkordb/falkordb:latest db-up`.
 
+### Editing the README
+
+`README.md` is **generated** from the crate-level `//!` documentation in
+[`src/lib.rs`](src/lib.rs) with [cargo-rdme](https://github.com/orium/cargo-rdme) — those docs'
+code blocks are what `just doctest` compiles. **Do not edit `README.md` by hand** below the
+`<!-- cargo-rdme start -->` marker; edit the `//!` docs instead, then regenerate and commit the result:
+
+```bash
+cargo install cargo-rdme --version 2.0.0  # one-time; pinned to match CI (scripts/install-cargo-rdme.sh)
+just readme               # regenerate README.md from the crate docs
+just check-readme         # drift gate: fails if the committed README.md is stale
+```
+
+cargo-rdme strips the hidden `# ` doctest lines and intra-doc links and tags code blocks as
+`rust` so GitHub highlights them. Only the hand-written header above the marker (badges, title,
+"Try Free" badge) is edited directly. A `check-readme` CI job runs `just check-readme` on every pull
+request (and before a release), so a stale `README.md` fails the build.
+
 ### Regenerating `llms.txt`
 
 The repository ships an [`llms.txt`](llms.txt) — a curated, machine-readable summary of the public
@@ -106,6 +124,7 @@ reproduced with a single command:
 | `integration-tests-tokio` | `just integration --features tokio` |
 | `coverage` | `just coverage` |
 | `check-llms` | `just check-llms` |
+| `check-readme` | `just check-readme` |
 
 Run `just ci` to execute every required no-server gate at once, or `just verify` to also
 run the server-backed suite. The integration and coverage recipes need a reachable

@@ -198,7 +198,8 @@ check-llms: test-llms llms
 # Regenerate README.md from the crate-level `//!` docs in src/lib.rs via cargo-rdme: it strips
 # hidden `#` doctest lines and intra-doc links and annotates code blocks as `rust` so GitHub
 # highlights them. Edit the docs in src/lib.rs (not README.md), then run this and commit the result.
-# Install the tool with `cargo install cargo-rdme`.
+# Install the pinned tool with `cargo install cargo-rdme --version 2.0.0` (must match CI; see
+# scripts/install-cargo-rdme.sh).
 readme:
     cargo rdme --force
 

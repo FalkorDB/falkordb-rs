@@ -79,7 +79,7 @@ blocks double as compiled doctests (`just doctest`). **Do not edit `README.md` b
 `<!-- cargo-rdme -->` marker; edit the `//!` docs instead, then regenerate and commit the result:
 
 ```bash
-cargo install cargo-rdme  # one-time
+cargo install cargo-rdme --version 2.0.0  # one-time; pinned to match CI (scripts/install-cargo-rdme.sh)
 just readme               # regenerate README.md from the crate docs
 just check-readme         # drift gate: fails if the committed README.md is stale
 ```

@@ -502,6 +502,7 @@ mod tests {
         #[allow(deprecated)]
         let legacy = client.reads_from_replicas();
         assert_eq!(legacy, client.replica_reads_available());
+        assert_eq!(client.read_preference(), crate::ReadPreference::Primary);
 
         let mut graph = client.select_graph("imdb");
         assert!(graph

@@ -300,6 +300,11 @@ fn test_read_preference_replica_on_write_batch_errors() {
     read_batch.ro_query("MATCH (n:Data) RETURN count(n)");
     assert!(read_batch.execute().is_ok());
 
+    // `primary_only()` forces the batch onto the primary, overriding any client default.
+    let mut primary_batch = graph.batch().primary_only();
+    primary_batch.ro_query("MATCH (n:Data) RETURN count(n)");
+    assert!(primary_batch.execute().is_ok());
+
     let _ = graph.delete();
 }
 

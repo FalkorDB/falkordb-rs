@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Other
+
+- Bump dependencies: `sha2` 0.10 → 0.11 and `which` 8.0.3 → 8.0.4 (runtime, `embedded` feature),
+  `criterion` 0.5 → 0.8, `libc` 0.2.183 → 0.2.186 and `serde_json` 1.0.149 → 1.0.150
+  (`dev-dependencies`), plus the `actions/checkout` (v6 → v7) and
+  `rojopolis/spellcheck-github-actions` (0.61.0 → 0.62.0)
+  GitHub Actions ([#274](https://github.com/FalkorDB/falkordb-rs/pull/274))
+
 ## [0.9.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.8.9...v0.9.0) - 2026-06-21
 
 ### Added

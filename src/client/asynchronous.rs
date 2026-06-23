@@ -914,7 +914,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             embedded_server: None,
         };
         assert!(FalkorAsyncClient::build_executor(
@@ -949,7 +949,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: Some(replica),
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             embedded_server: None,
         };
         assert!(provider.has_sentinel_replica());
@@ -975,7 +975,7 @@ mod tests {
             client: redis::Client::open("redis://127.0.0.1:6379").unwrap(),
             sentinel: None,
             sentinel_replica: None,
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             embedded_server: None,
         };
         let readonly_conn = provider

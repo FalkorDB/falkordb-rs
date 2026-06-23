@@ -24,7 +24,8 @@
 //! - **Resilient** — opt-in `RetryPolicy` with bounded backoff for transient failures; writes are never retried.
 //! - **Observable** — OpenTelemetry-aligned `tracing` spans and `metrics` counters/histograms, privacy-safe by default.
 //! - **Replica-aware** — opt in to routing read-only queries to replicas behind Redis Sentinel.
-//! - **Embedded server** — spin up a self-contained FalkorDB for tests and prototyping.
+//! - **Embedded server** — spin up a self-contained FalkorDB for tests and prototyping, with an
+//!   optional build-time bundle mode that runs fully offline.
 //!
 //! ## Table of contents
 //!
@@ -102,7 +103,8 @@
 //! | `serde` | Map query results into your own `serde::Deserialize` types. |
 //! | `tracing` | OpenTelemetry-aligned `tracing` spans with a privacy-safe query fingerprint. |
 //! | `metrics` | Counters and histograms via the `metrics` facade (install any exporter). |
-//! | `embedded` | Run a self-contained embedded FalkorDB server. |
+//! | `embedded` | Run a self-contained embedded FalkorDB server (module downloaded at runtime). |
+//! | `embedded-bundle` | Embed the module at build time so the embedded server runs fully offline. |
 //! | `rustls` / `native-tls` | TLS for the sync client, via `rustls` or `native-tls`. |
 //! | `tokio-rustls` / `tokio-native-tls` | TLS for the async client. |
 //!
@@ -831,19 +833,48 @@
 //! cargo add falkordb --features embedded
 //! ```
 //!
+//! #### Choosing a module-provisioning mode
+//!
+//! The `redis-server` binary is **never** downloaded — it must be installed on the host (see
+//! Requirements). Only the FalkorDB `falkordb.so` **module** is provisioned, and there are two
+//! features for that:
+//!
+//! - **`embedded`** — *runtime download*. The module is downloaded on first start (and cached), so
+//!   the running process **needs network access** the first time. Best for development.
+//! - **`embedded-bundle`** — *build-time embed, offline at runtime*. A `build.rs` fetches the module
+//!   for the build target at **compile time** and embeds it in your binary, so the running process
+//!   needs **no network at all**. Best for network-isolated deployments. Enable it instead of
+//!   `embedded`:
+//!
+//!   ```bash
+//!   cargo add falkordb --features embedded-bundle
+//!   ```
+//!
+//!   Control the bundled module at build time with environment variables:
+//!   `FALKORDB_EMBEDDED_MODULE_VERSION` (release tag; defaults to the pinned version),
+//!   `FALKORDB_EMBEDDED_MODULE_PLATFORM` (override the asset for distro-specific Linux targets such
+//!   as `rhel9-x64`), and `FALKORDB_EMBEDDED_MODULE_PATH` to embed a **local** `.so` instead of
+//!   downloading (fully offline builds, or unsupported platforms). A non-default version must be
+//!   accompanied by `FALKORDB_EMBEDDED_MODULE_SHA256` — unchecked downloaded native code is never
+//!   embedded. The downloading build uses the host `curl` (set `FALKORDB_EMBEDDED_MODULE_PATH` on
+//!   build hosts without `curl` or network access); the `embedded-bundle` runtime itself carries no
+//!   HTTP/hashing dependencies.
+//!
+//!   > **License:** `embedded-bundle` embeds the SSPL-licensed FalkorDB module into your binary, so
+//!   > you are responsible for complying with its license when you distribute that binary.
+//!
 //! #### Requirements
 //!
-//! - `redis-server` must be installed and available in PATH (or you can specify a custom path).
-//!   It is **not** downloaded automatically — install it from your package manager
-//!   (e.g. `brew install redis`, `apt-get install redis-server`).
-//! - The `falkordb.so` module is provisioned automatically when `auto_download` is enabled
-//!   (the default): it is downloaded from the official [FalkorDB](https://github.com/falkordb/falkordb)
-//!   releases, verified against a pinned SHA-256 checksum and cached locally. You can also point
-//!   `falkordb_module_path` at an existing module, or disable `auto_download` to use only
-//!   explicit/system-installed binaries.
+//! - `redis-server` (**version 8.0 or newer**) must be installed and available in PATH (or you can
+//!   specify a custom path). It is **not** downloaded automatically — install it from your package
+//!   manager (e.g. `brew install redis`, `apt-get install redis-server`).
+//! - The `falkordb.so` module is provisioned automatically: downloaded at runtime with `embedded`
+//!   (when `auto_download` is enabled, the default) or embedded at build time with
+//!   `embedded-bundle`. You can also point `falkordb_module_path` at an existing module, or disable
+//!   `auto_download` to use only explicit/system-installed binaries.
 //! - On macOS the module requires OpenMP: `brew install libomp`.
 //!
-//! Supported auto-download platforms: Linux x86_64/aarch64 (glibc and musl/Alpine, plus
+//! Supported platforms: Linux x86_64/aarch64 (glibc and musl/Alpine, plus
 //! RHEL 8/9 and Amazon Linux 2023 on x86_64) and macOS aarch64 (Apple Silicon).
 //!
 //! #### Self-contained vs. already-installed
@@ -955,7 +986,7 @@
 mod client;
 mod connection;
 mod connection_info;
-#[cfg(feature = "embedded")]
+#[cfg(feature = "embedded-core")]
 mod embedded;
 mod error;
 mod graph;
@@ -1019,7 +1050,7 @@ pub use graph::asynchronous::AsyncGraph;
 #[cfg(feature = "tokio")]
 pub use graph::ops::{AsyncConstraintOpBuilder, AsyncCopyGraphBuilder, AsyncIndexOpBuilder};
 
-#[cfg(feature = "embedded")]
+#[cfg(feature = "embedded-core")]
 pub use embedded::{EmbeddedConfig, EmbeddedServer};
 
 #[cfg(test)]

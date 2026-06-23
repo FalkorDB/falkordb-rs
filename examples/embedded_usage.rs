@@ -29,6 +29,17 @@
 //! `falkordb_module_path` explicitly or disable `auto_download` (common system
 //! locations are still searched). See `already_installed_config()` below.
 //!
+//! # Build-time bundle (offline at runtime)
+//!
+//! For network-isolated deployments, enable the `embedded-bundle` feature instead
+//! of `embedded`. A `build.rs` fetches the module for the build target at compile
+//! time and embeds it in the binary, so the running process needs **no network**.
+//! The same `EmbeddedConfig` / API shown here works unchanged; only the module
+//! source differs. Run it with:
+//! ```bash
+//! cargo run --example embedded_usage --features embedded-bundle
+//! ```
+//!
 //! # Platform-Specific Requirements
 //!
 //! ## macOS
@@ -37,8 +48,9 @@
 //!
 //! # License Note
 //!
-//! The downloaded FalkorDB module binary is licensed under the Server Side Public
-//! License (SSPL) v1. See https://www.falkordb.com/ for licensing details.
+//! The FalkorDB module binary (downloaded at runtime, or embedded at build time
+//! with `embedded-bundle`) is licensed under the Server Side Public License
+//! (SSPL) v1. See https://www.falkordb.com/ for licensing details.
 //!
 //! # Running this example
 //! ```bash

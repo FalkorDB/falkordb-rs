@@ -120,6 +120,7 @@ reproduced with a single command:
 | `check-examples` | `just build-examples` |
 | `check-deny` | `just deny` |
 | `check-proptest` | `just proptest` |
+| `check-embedded-bundle` | `just check-embedded-bundle` |
 | `integration-tests` | `just integration` and `just integration --all-features` |
 | `integration-tests-tokio` | `just integration --features tokio` |
 | `coverage` | `just coverage` |

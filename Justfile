@@ -96,6 +96,23 @@ test-embedded:
     FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
         cargo nextest run --features {{features}} --test embedded_integration
 
+# Validate the `embedded-bundle` feature (build-time module embed) hermetically:
+# build the lib, example and tests with a fixture `.so` via FALKORDB_EMBEDDED_MODULE_PATH
+# (no network, no live server) and run the bundle unit tests. This exercises build.rs,
+# the feature wiring, `include_bytes!` and runtime extraction. CI runs this same recipe.
+check-embedded-bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fixture_dir="$(mktemp -d)"
+    trap 'rm -rf "$fixture_dir"' EXIT
+    fixture="$fixture_dir/falkordb-fixture.so"
+    # Deterministic placeholder bytes; the bundle path never loads it into redis.
+    printf 'falkordb-embedded-bundle-fixture-module\n' > "$fixture"
+    export FALKORDB_EMBEDDED_MODULE_PATH="$fixture"
+    cargo build --features embedded-bundle
+    cargo build --features embedded-bundle --example embedded_usage
+    cargo test --features embedded-bundle --lib embedded::bundle
+
 # Run the integration_tests binary with the given cargo args, exactly as the
 # integration CI jobs do. Examples: `just integration`,
 # `just integration --features tokio`, `just integration --all-features`.
@@ -120,10 +137,25 @@ test-local: db-up db-populate
 # === Coverage ================================================================
 
 # Generate Codecov JSON coverage (matches the `coverage` CI job).
+#
+# Two merged passes so every feature's lines are measured: (1) the full suite
+# against a live server with the dev features, and (2) the build-time
+# `embedded-bundle` path, hermetically (a fixture `.so` via
+# FALKORDB_EMBEDDED_MODULE_PATH — no server, no network). `embedded-bundle`
+# bundles `bundle.rs` and the bundle-mode resolution branch that the dev feature
+# set compiles out.
 coverage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fixture_dir="$(mktemp -d)"
+    trap 'rm -rf "$fixture_dir"' EXIT
+    printf 'falkordb-embedded-bundle-fixture-module\n' > "$fixture_dir/falkordb-fixture.so"
+    cargo llvm-cov clean --workspace
     FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
-        cargo llvm-cov nextest --all --features {{features}} \
-        --codecov --output-path codecov.json
+        cargo llvm-cov nextest --no-report --all --features {{features}}
+    FALKORDB_EMBEDDED_MODULE_PATH="$fixture_dir/falkordb-fixture.so" \
+        cargo llvm-cov nextest --no-report --lib --features embedded-bundle
+    cargo llvm-cov report --codecov --output-path codecov.json
 
 # Generate an HTML coverage report and open it.
 coverage-html:

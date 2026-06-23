@@ -76,8 +76,8 @@ hand; if you change the public API, run `just llms` and commit the updated `llms
 - `DateTime`
 - `Duration`
 - `Edge`
-- `EmbeddedConfig` — requires `embedded`
-- `EmbeddedServer` — requires `embedded`
+- `EmbeddedConfig` — requires `embedded-core`
+- `EmbeddedServer` — requires `embedded-core`
 - `EntityType`
 - `ExecutionPlan`
 - `FalkorAsyncClient` — requires `tokio`

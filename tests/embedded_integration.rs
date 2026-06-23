@@ -29,7 +29,7 @@
 //! When the module cannot be resolved the tests no-op (return early) so they stay green on
 //! machines that lack a compatible build (e.g. macOS hosts with a Linux-only module).
 
-#![cfg(feature = "embedded")]
+#![cfg(feature = "embedded-core")]
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -38,6 +38,7 @@ use falkordb::{
     EmbeddedConfig, EmbeddedServer, EntityType, FalkorClientBuilder, FalkorConnectionInfo,
     IndexType,
 };
+#[cfg(feature = "tokio")]
 use futures::StreamExt;
 
 /// Common locations the module may live in, mirroring the client's own search list.

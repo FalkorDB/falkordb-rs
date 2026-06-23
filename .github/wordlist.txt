@@ -167,3 +167,5 @@ rdme
 rustdoc
 doctest
 intra
+distro
+SSPL

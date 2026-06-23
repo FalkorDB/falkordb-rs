@@ -17,6 +17,11 @@ env:
   CARGO_NET_RETRY: "10"
   CARGO_HTTP_MULTIPLEXING: "false"
 
+# Least privilege: every job only checks out code and runs a build/test recipe,
+# so read-only access to the repository contents is all any of them needs.
+permissions:
+  contents: read
+
 # Every job runs a single `just` recipe so the exact command can be reproduced
 # locally (see the Justfile / CONTRIBUTING.md).
 jobs:
@@ -143,6 +148,24 @@ jobs:
           cache-bin: "false"
       - name: Build
         run: just build
+
+  check-embedded-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
+          # prevents the crates.io refetch that flaked, with no stale-artifact risk.
+          cache-targets: "false"
+          cache-bin: "false"
+      - name: Check embedded-bundle (build-time module embed, hermetic)
+        run: just check-embedded-bundle
 
   check-proptest:
     runs-on: ubuntu-latest

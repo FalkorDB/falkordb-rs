@@ -28,7 +28,7 @@ OpenTelemetry-aligned tracing and metrics.
 - **Async streaming** — result sets are `Stream`s that compose with the full `futures` toolbox.
 - **Resilient** — opt-in `RetryPolicy` with bounded backoff for transient failures; writes are never retried.
 - **Observable** — OpenTelemetry-aligned `tracing` spans and `metrics` counters/histograms, privacy-safe by default.
-- **Replica-aware** — routes read-only queries to replicas behind Redis Sentinel.
+- **Replica-aware** — opt in to routing read-only queries to replicas behind Redis Sentinel.
 - **Embedded server** — spin up a self-contained FalkorDB for tests and prototyping.
 
 ## Table of contents
@@ -606,44 +606,63 @@ let client = FalkorClientBuilder::new()
 
 #### Read-only queries and replica routing
 
-Read-only queries (`ro_query` and `call_procedure_ro`) can be served from
-replica nodes, taking read load off the primary. When the client connects to a
-Redis Sentinel deployment that exposes readable replicas, it automatically
-builds a dedicated read-only connection pool that routes those queries to a
-replica. Writes always go to the primary.
+Read-only queries (`ro_query` and `call_procedure_ro`) send `GRAPH.RO_QUERY`, which the server
+refuses to let write. *Where* such a query runs is a separate, **opt-in** choice expressed with
+`ReadPreference`. Because a FalkorDB replica applies writes only **after** the primary, a read
+served from a replica can be slightly **stale**, so the default (`ReadPreference::Primary`)
+keeps every read on the primary — you never observe replication lag unless you ask for it.
+
+Opt into replicas either per client or per query:
+
+- **Per client** — `with_read_preference` sets the
+  default for every read-only query.
+- **Per query** — `prefer_replica` opts a single query in, and
+  `primary_only` forces one back onto the primary (read-your-writes).
+  The per-query choice overrides the client default.
+
+Replica routing requires a Redis Sentinel deployment that exposes readable replicas; when none is
+available (for example a single node), `ReadPreference::PreferReplica` transparently falls back
+to the primary, so the same code runs everywhere. Writes always go to the primary — asking for a
+replica on a writable `query`/`call_procedure`/batch fails with
+`FalkorDBError::ReadPreferenceNotReadOnly`.
 
 > **Connection pool sizing:** When readable replicas are present the client opens
 > a second pool of up to `num_connections` additional connections (one per slot)
-> alongside the primary pool. Size your pool limits and file-descriptor limits
-> accordingly.
+> alongside the primary pool, regardless of the read preference. Size your pool limits and
+> file-descriptor limits accordingly.
 
 ```rust
-use falkordb::FalkorClientBuilder;
+use falkordb::{FalkorClientBuilder, ReadPreference};
 
 let client = FalkorClientBuilder::new()
     // A Sentinel endpoint, e.g. falkor://127.0.0.1:26379
     .with_connection_info("falkor://127.0.0.1:26379".try_into().expect("Invalid connection info"))
+    // Prefer replicas for this client's read-only queries (accepts slightly stale reads).
+    .with_read_preference(ReadPreference::PreferReplica)
     .build()
     .expect("Failed to build client");
 
-// `true` only when readable replicas are available.
-if client.reads_from_replicas() {
-    println!("Read-only queries are routed to replicas");
+// Capability (a replica pool exists) vs policy (the default routing).
+if client.replica_reads_available() {
+    println!("Replica connections are available");
 }
+println!("Default read preference: {:?}", client.read_preference());
 
 let mut graph = client.select_graph("imdb");
 
 // Writes go to the primary.
 graph.query("CREATE (:Actor {name: 'Tom Hanks'})").execute().expect("Failed to write");
 
-// Read-only queries are served from a replica when one is available.
+// Follows the client default (a replica when available, else the primary).
 let mut nodes = graph.ro_query("MATCH (a:Actor) RETURN a.name").execute().expect("Failed to read");
+
+// Force the freshest data from the primary for a single read, overriding the default.
+let mut fresh = graph.ro_query("MATCH (a:Actor) RETURN a.name").primary_only().execute().expect("Failed to read");
 ```
 
-This behavior is fully backward compatible: against a single node (or any
-deployment without readable replicas), `ro_query` / `call_procedure_ro`
-transparently fall back to the primary connection, and `reads_from_replicas()`
-returns `false`. See [`examples/readonly_replica.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/readonly_replica.rs)
+Against a single node (or any deployment without readable replicas),
+`replica_reads_available` returns `false` and reads
+use the primary. See [`examples/readonly_replica.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/readonly_replica.rs)
 for a complete working example.
 
 ### Resilience and observability
@@ -913,6 +932,7 @@ The complete API reference is published on [docs.rs](https://docs.rs/falkordb/la
 
 - [Migrating to 0.7](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.7.md)
 - [Migrating to 0.8](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.8.md)
+- [Migrating to 0.10](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.10.md)
 
 ## Contributing
 

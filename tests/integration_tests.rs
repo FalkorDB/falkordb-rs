@@ -10,7 +10,9 @@
 //! Set FALKORDB_HOST and FALKORDB_PORT environment variables to configure.
 //! Default: localhost:6379
 
-use falkordb::{FalkorClientBuilder, FalkorConnectionInfo, FalkorResult};
+use falkordb::{
+    FalkorClientBuilder, FalkorConnectionInfo, FalkorDBError, FalkorResult, ReadPreference,
+};
 
 fn get_test_connection_info() -> FalkorResult<FalkorConnectionInfo> {
     let host = std::env::var("FALKORDB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -174,7 +176,7 @@ fn test_read_only_query() {
 }
 
 #[test]
-fn test_reads_from_replicas_single_node() {
+fn test_replica_reads_available_single_node() {
     if skip_if_no_server() {
         return;
     }
@@ -192,24 +194,161 @@ fn test_reads_from_replicas_single_node() {
         Err(_) => return,
     };
 
+    // The default read preference keeps reads on the primary.
+    assert_eq!(client.read_preference(), ReadPreference::Primary);
+
     // The test endpoint can be pointed at a Sentinel deployment via env vars, in
-    // which case `reads_from_replicas()` may legitimately be true. Only assert the
-    // single-node expectation (no replica routing) when the endpoint is known to be
+    // which case `replica_reads_available()` may legitimately be true. Only assert the
+    // single-node expectation (no replica connections) when the endpoint is known to be
     // non-Sentinel; set FALKORDB_SENTINEL to skip that strict assertion.
     let is_sentinel = std::env::var("FALKORDB_SENTINEL")
         .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
         .unwrap_or(false);
     if !is_sentinel {
-        assert!(!client.reads_from_replicas());
+        assert!(!client.replica_reads_available());
     }
 
-    let mut graph = client.select_graph("test_reads_from_replicas_single_node");
+    let mut graph = client.select_graph("test_replica_reads_available_single_node");
     let _ = graph.query("CREATE (n:Data {value: 7})").execute();
 
     // Read-only queries must succeed regardless of whether reads are routed to a
-    // replica (Sentinel) or served by the primary (single-node).
-    let result = graph.ro_query("MATCH (n:Data) RETURN n.value").execute();
-    assert!(result.is_ok());
+    // replica (Sentinel) or served by the primary (single-node). Opting into a replica
+    // transparently falls back to the primary when no replica exists.
+    assert!(graph
+        .ro_query("MATCH (n:Data) RETURN n.value")
+        .execute()
+        .is_ok());
+    assert!(graph
+        .ro_query("MATCH (n:Data) RETURN n.value")
+        .prefer_replica()
+        .execute()
+        .is_ok());
+
+    let _ = graph.delete();
+}
+
+#[test]
+fn test_read_preference_replica_on_write_query_errors() {
+    if skip_if_no_server() {
+        return;
+    }
+
+    let conn_info = match get_test_connection_info() {
+        Ok(info) => info,
+        Err(_) => return,
+    };
+
+    let client = match FalkorClientBuilder::new()
+        .with_connection_info(conn_info)
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let mut graph = client.select_graph("test_read_preference_write_errors");
+
+    // A replica preference on a writable query is rejected before any round-trip — a write can
+    // never be routed to a replica.
+    assert!(matches!(
+        graph
+            .query("CREATE (n:Data {value: 1})")
+            .prefer_replica()
+            .execute(),
+        Err(FalkorDBError::ReadPreferenceNotReadOnly { context: "query" })
+    ));
+
+    // The same query without the replica preference still works.
+    assert!(graph.query("CREATE (n:Data {value: 1})").execute().is_ok());
+
+    let _ = graph.delete();
+}
+
+#[test]
+fn test_read_preference_replica_on_write_batch_errors() {
+    if skip_if_no_server() {
+        return;
+    }
+
+    let conn_info = match get_test_connection_info() {
+        Ok(info) => info,
+        Err(_) => return,
+    };
+
+    let client = match FalkorClientBuilder::new()
+        .with_connection_info(conn_info)
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let mut graph = client.select_graph("test_read_preference_batch_errors");
+
+    // A batch that mixes a write with a replica preference is rejected: the whole pipeline runs on
+    // one connection, and a write cannot run on a replica.
+    let mut batch = graph.batch().prefer_replica();
+    batch.query("CREATE (n:Data {value: 1})");
+    batch.ro_query("MATCH (n:Data) RETURN count(n)");
+    assert!(matches!(
+        batch.execute(),
+        Err(FalkorDBError::ReadPreferenceNotReadOnly { context: "batch" })
+    ));
+
+    // An all-read batch may opt into a replica (and falls back to the primary on single-node).
+    let mut read_batch = graph.batch().prefer_replica();
+    read_batch.ro_query("MATCH (n:Data) RETURN count(n)");
+    assert!(read_batch.execute().is_ok());
+
+    // `primary_only()` forces the batch onto the primary, overriding any client default.
+    let mut primary_batch = graph.batch().primary_only();
+    primary_batch.ro_query("MATCH (n:Data) RETURN count(n)");
+    assert!(primary_batch.execute().is_ok());
+
+    let _ = graph.delete();
+}
+
+#[test]
+fn test_client_default_read_preference_prefer_replica() {
+    if skip_if_no_server() {
+        return;
+    }
+
+    let conn_info = match get_test_connection_info() {
+        Ok(info) => info,
+        Err(_) => return,
+    };
+
+    let client = match FalkorClientBuilder::new()
+        .with_connection_info(conn_info)
+        .with_read_preference(ReadPreference::PreferReplica)
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    assert_eq!(client.read_preference(), ReadPreference::PreferReplica);
+
+    let mut graph = client.select_graph("test_client_default_prefer_replica");
+    let _ = graph.query("CREATE (n:Data {value: 9})").execute();
+
+    // With a client-wide PreferReplica default, a read-only query is served from a replica when
+    // available and otherwise transparently from the primary — either way it succeeds.
+    assert!(graph
+        .ro_query("MATCH (n:Data) RETURN n.value")
+        .execute()
+        .is_ok());
+
+    // A read-your-writes path can still force the primary for this client.
+    assert!(graph
+        .ro_query("MATCH (n:Data) RETURN n.value")
+        .primary_only()
+        .execute()
+        .is_ok());
+
+    // Writes are unaffected by the client read preference (they always use the primary).
+    assert!(graph.query("CREATE (n:Data {value: 10})").execute().is_ok());
 
     let _ = graph.delete();
 }

@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    client::{ConnectionStrategy, FalkorClientProvider},
+    client::{ConnectionStrategy, FalkorClientProvider, ReadPreference},
     FalkorConnectionInfo, FalkorDBError, FalkorResult, FalkorSyncClient, RetryPolicy,
 };
 use std::num::{NonZeroU8, NonZeroUsize};
@@ -22,6 +22,7 @@ pub struct FalkorClientBuilder<const R: char> {
     tcp_settings: Option<redis::io::tcp::TcpSettings>,
     retry_policy: RetryPolicy,
     query_logging: bool,
+    read_preference: ReadPreference,
 }
 
 impl<const R: char> FalkorClientBuilder<R> {
@@ -108,6 +109,33 @@ impl<const R: char> FalkorClientBuilder<R> {
     ) -> Self {
         Self {
             query_logging: enabled,
+            ..self
+        }
+    }
+
+    /// Set the default [`ReadPreference`] for read-only queries from this client.
+    ///
+    /// Defaults to [`ReadPreference::Primary`], so reads are served from the primary and never see
+    /// replication lag. Set [`ReadPreference::PreferReplica`] to offload reads to a replica when one
+    /// is available (Redis Sentinel deployments), accepting that those reads may be slightly stale.
+    ///
+    /// This is the client-wide default; individual read-only queries can override it with
+    /// [`QueryBuilder::with_read_preference`](crate::QueryBuilder::with_read_preference) (or the
+    /// [`prefer_replica`](crate::QueryBuilder::prefer_replica) /
+    /// [`primary_only`](crate::QueryBuilder::primary_only) shortcuts). It only affects read-only
+    /// commands (`ro_query` / `call_procedure_ro`); writes always go to the primary.
+    ///
+    /// # Arguments
+    /// * `read_preference`: the default [`ReadPreference`] to apply.
+    ///
+    /// # Returns
+    /// The consumed and modified self.
+    pub fn with_read_preference(
+        self,
+        read_preference: ReadPreference,
+    ) -> Self {
+        Self {
+            read_preference,
             ..self
         }
     }
@@ -248,6 +276,7 @@ impl FalkorClientBuilder<'S'> {
             tcp_settings: None,
             retry_policy: RetryPolicy::disabled(),
             query_logging: false,
+            read_preference: ReadPreference::Primary,
         }
     }
 
@@ -278,6 +307,7 @@ impl FalkorClientBuilder<'S'> {
             self.strategy.connection_count().get(),
             self.retry_policy,
             self.query_logging,
+            self.read_preference,
         )
     }
 }
@@ -298,6 +328,7 @@ impl FalkorClientBuilder<'A'> {
             tcp_settings: None,
             retry_policy: RetryPolicy::disabled(),
             query_logging: false,
+            read_preference: ReadPreference::Primary,
         }
     }
 
@@ -395,6 +426,7 @@ impl FalkorClientBuilder<'A'> {
             self.max_inflight,
             self.retry_policy,
             self.query_logging,
+            self.read_preference,
         )
         .await
     }

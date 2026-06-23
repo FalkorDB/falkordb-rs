@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    client::{ConnectionStrategy, FalkorClientProvider, ProvidesSyncConnections},
+    client::{ConnectionStrategy, FalkorClientProvider, ProvidesSyncConnections, ReadPreference},
     connection::{
         asynchronous::{BorrowedAsyncConnection, FalkorAsyncConnection},
         blocking::FalkorSyncConnection,
@@ -74,6 +74,8 @@ pub struct FalkorAsyncClientInner {
     /// When set, the raw query text is recorded as a span field (opt-in via `with_query_logging`).
     #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
     query_logging: bool,
+    /// Client-wide default read preference for read-only queries (overridable per query).
+    read_preference: ReadPreference,
 }
 
 impl FalkorAsyncClientInner {
@@ -81,6 +83,11 @@ impl FalkorAsyncClientInner {
     /// [`disabled`](RetryPolicy::disabled)).
     pub(crate) fn retry_policy(&self) -> RetryPolicy {
         self.retry_policy
+    }
+
+    /// The client-wide default [`ReadPreference`] for read-only queries.
+    pub(crate) fn read_preference(&self) -> ReadPreference {
+        self.read_preference
     }
 
     /// The active connection strategy (used for observability span fields and metric labels).
@@ -258,6 +265,7 @@ impl FalkorAsyncClient {
         max_inflight: Option<NonZeroUsize>,
         retry_policy: RetryPolicy,
         query_logging: bool,
+        read_preference: ReadPreference,
     ) -> FalkorResult<Self> {
         // A multiplexed ConnectionManager built from a Sentinel-resolved client pins to a
         // single node and reconnects to the same address rather than re-resolving the
@@ -300,6 +308,7 @@ impl FalkorAsyncClient {
                 readonly,
                 retry_policy,
                 query_logging,
+                read_preference,
             }),
             _connection_info: connection_info,
         })
@@ -381,9 +390,32 @@ impl FalkorAsyncClient {
         self.inner.strategy
     }
 
+    /// Whether replica connections are available for routing read-only queries — `true` only for
+    /// Redis Sentinel deployments that expose readable replicas.
+    ///
+    /// This reports **capability**, not policy: a query is served from a replica only when this is
+    /// `true` **and** the effective [`ReadPreference`] is
+    /// [`PreferReplica`](ReadPreference::PreferReplica). Use [`read_preference`](Self::read_preference)
+    /// to inspect the client's default policy.
+    pub fn replica_reads_available(&self) -> bool {
+        self.inner.has_readonly_pool()
+    }
+
+    /// The client-wide default [`ReadPreference`] applied to read-only queries (set via
+    /// [`FalkorClientBuilder::with_read_preference`](crate::FalkorClientBuilder::with_read_preference);
+    /// defaults to [`ReadPreference::Primary`]). Individual queries can override it.
+    pub fn read_preference(&self) -> ReadPreference {
+        self.inner.read_preference()
+    }
+
     /// Whether read-only queries (`ro_query` / `call_procedure_ro`) are routed to
     /// replica nodes. This is `true` only for Redis Sentinel deployments that expose
     /// readable replicas; otherwise read-only queries are served by the primary.
+    #[deprecated(
+        since = "0.10.0",
+        note = "renamed to `replica_reads_available` (reports replica capability). Since replica \
+                routing is now opt-in, use `read_preference` to inspect the routing policy."
+    )]
     pub fn reads_from_replicas(&self) -> bool {
         self.inner.has_readonly_pool()
     }
@@ -841,17 +873,17 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_reads_from_replicas_single_node() {
+    async fn test_replica_reads_available_single_node() {
         // On a single-node (non-Sentinel) deployment there are no readable
         // replicas, so read-only queries transparently fall back to the primary
-        // pool and `reads_from_replicas` reports false.
+        // pool and `replica_reads_available` reports false.
         let client = create_async_test_client().await;
         assert!(
-            !client.reads_from_replicas(),
-            "A single-node deployment must not route reads to replicas"
+            !client.replica_reads_available(),
+            "A single-node deployment must not have replica connections available"
         );
 
-        let mut graph = client.select_graph("test_reads_from_replicas_single_node_async");
+        let mut graph = client.select_graph("test_replica_reads_available_single_node_async");
         graph
             .query("CREATE (n:Person {name: 'Jane Doe', age: 25})")
             .execute()
@@ -973,6 +1005,7 @@ mod tests {
             readonly: Some(readonly),
             retry_policy: RetryPolicy::disabled(),
             query_logging: false,
+            read_preference: ReadPreference::Primary,
         });
 
         assert!(inner.has_readonly_pool());

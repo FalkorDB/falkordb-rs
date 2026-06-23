@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in replica routing for read-only queries via a new `ReadPreference` enum (`Primary`, the
+  default, and `PreferReplica`). Set a client-wide default with
+  `FalkorClientBuilder::with_read_preference`, or override per request with the `with_read_preference`
+  method (and `prefer_replica()` / `primary_only()` shortcuts) on `QueryBuilder`,
+  `ProcedureQueryBuilder` and `BatchBuilder`. Adds `FalkorSyncClient`/`FalkorAsyncClient` accessors
+  `replica_reads_available()` (whether replica connections exist) and `read_preference()` (the
+  client default) ([#277](https://github.com/FalkorDB/falkordb-rs/pull/277))
+
+### Changed
+
+- **Breaking (behavior):** read-only queries (`ro_query` / `call_procedure_ro`) and all-read batches
+  now run on the **primary by default** instead of being routed to a replica automatically. Replicas
+  apply writes only after the primary, so replica reads can be stale; routing them is now opt-in for
+  accuracy. **To restore the previous replica offload, build the client with
+  `.with_read_preference(ReadPreference::PreferReplica)`** (or opt in per request with
+  `prefer_replica()`). Requesting a replica for a writable query, procedure or batch now fails with
+  the new `FalkorDBError::ReadPreferenceNotReadOnly`. See the
+  [0.10 migration guide](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.10.md)
+  ([#277](https://github.com/FalkorDB/falkordb-rs/pull/277))
+- **Deprecated:** `FalkorSyncClient::reads_from_replicas` and `FalkorAsyncClient::reads_from_replicas`
+  in favor of `replica_reads_available()` (replica capability) plus `read_preference()` (the routing
+  policy), since a replica pool can now exist without reads being routed to it
+  ([#277](https://github.com/FalkorDB/falkordb-rs/pull/277))
+
 ### Other
 
 - The `README.md` is now generated from the crate-level `//!` documentation in `src/lib.rs` with

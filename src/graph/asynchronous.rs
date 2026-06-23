@@ -495,6 +495,41 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_call_procedure_ro_read_preference() {
+        // A read-only procedure call may opt into a replica (transparently falling back to the
+        // primary on single-node) or be forced onto the primary.
+        let client = create_async_test_client().await;
+        #[allow(deprecated)]
+        let legacy = client.reads_from_replicas();
+        assert_eq!(legacy, client.replica_reads_available());
+        assert_eq!(client.read_preference(), crate::ReadPreference::Primary);
+
+        let mut graph = client.select_graph("imdb");
+        assert!(graph
+            .call_procedure_ro::<QueryResult<Vec<FalkorIndex>>>("DB.INDEXES")
+            .prefer_replica()
+            .execute()
+            .await
+            .is_ok());
+        assert!(graph
+            .call_procedure_ro::<QueryResult<Vec<FalkorIndex>>>("DB.INDEXES")
+            .primary_only()
+            .execute()
+            .await
+            .is_ok());
+
+        // A replica preference on a writable procedure call is rejected before any round-trip.
+        assert!(matches!(
+            graph
+                .call_procedure::<QueryResult<Vec<FalkorIndex>>>("DB.INDEXES")
+                .prefer_replica()
+                .execute()
+                .await,
+            Err(FalkorDBError::ReadPreferenceNotReadOnly { context: "query" })
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_create_drop_index() {
         let mut graph = open_empty_async_test_graph("test_create_drop_index_async").await;
 

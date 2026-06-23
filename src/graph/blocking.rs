@@ -481,6 +481,38 @@ mod tests {
     }
 
     #[test]
+    fn test_call_procedure_ro_read_preference() {
+        // A read-only procedure call may opt into a replica (transparently falling back to the
+        // primary on single-node) or be forced onto the primary.
+        let client = create_test_client();
+        // The deprecated alias still reports replica capability (kept for one release).
+        #[allow(deprecated)]
+        let legacy = client.reads_from_replicas();
+        assert_eq!(legacy, client.replica_reads_available());
+
+        let mut graph = client.select_graph("imdb");
+        assert!(graph
+            .call_procedure_ro::<QueryResult<Vec<FalkorIndex>>>("DB.INDEXES")
+            .prefer_replica()
+            .execute()
+            .is_ok());
+        assert!(graph
+            .call_procedure_ro::<QueryResult<Vec<FalkorIndex>>>("DB.INDEXES")
+            .primary_only()
+            .execute()
+            .is_ok());
+
+        // A replica preference on a writable procedure call is rejected before any round-trip.
+        assert!(matches!(
+            graph
+                .call_procedure::<QueryResult<Vec<FalkorIndex>>>("DB.INDEXES")
+                .prefer_replica()
+                .execute(),
+            Err(FalkorDBError::ReadPreferenceNotReadOnly { context: "query" })
+        ));
+    }
+
+    #[test]
     fn test_create_drop_index() {
         let mut graph = open_empty_test_graph("test_create_drop_index");
 

@@ -609,7 +609,7 @@ mod tests {
             "A single-node deployment must not have replica connections available"
         );
 
-        let mut graph = client.select_graph("test_reads_from_replicas_single_node");
+        let mut graph = client.select_graph("test_replica_reads_available_single_node");
         graph
             .query("CREATE (n:Person {name: 'Jane Doe', age: 25})")
             .execute()

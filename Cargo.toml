@@ -11,7 +11,9 @@ categories = ["database"]
 keywords = ["database", "graph-database", "database-driver", "falkordb"]
 
 [package.metadata.docs.rs]
-all-features = true
+# `embedded-bundle` is intentionally excluded: it runs a build-time download in
+# build.rs, which must not happen on docs.rs. Enable every other feature.
+features = ["tokio", "tokio-native-tls", "tokio-rustls", "native-tls", "rustls", "tracing", "metrics", "embedded", "serde"]
 
 [lib]
 
@@ -70,7 +72,18 @@ tracing = ["dep:tracing"]
 # bounded labels via the `metrics` facade, so the application can install any exporter.
 metrics = ["dep:metrics"]
 
-embedded = ["dep:which", "dep:ureq", "dep:sha2"]
+embedded-core = ["dep:which"]
+
+# Runtime self-contained mode: download the FalkorDB module on first start
+# (needs network at runtime). `embedded` is kept for backward compatibility.
+embedded = ["embedded-core", "dep:ureq", "dep:sha2"]
+
+# Build-time bundle mode (offline at runtime): a `build.rs` fetches the FalkorDB
+# module for the build target and embeds it in the binary, so the running
+# process never touches the network. The build-time download uses `curl` and a
+# small bundled SHA-256 (see `build.rs` / `provision_shared.rs`), so the runtime
+# carries no HTTP/hashing dependencies (`ureq`/`sha2` are not pulled in).
+embedded-bundle = ["embedded-core"]
 
 # Optional `serde` integration: derive `serde::Deserialize` on your own types and
 # map query results straight into them via [`FalkorValue::deserialize_into`].
@@ -96,7 +109,7 @@ required-features = ["tokio"]
 
 [[example]]
 name = "embedded_usage"
-required-features = ["embedded"]
+required-features = ["embedded-core"]
 
 [[example]]
 name = "typed_mapping"

@@ -5,7 +5,7 @@
 
 use crate::{FalkorDBError, FalkorResult};
 
-#[cfg(feature = "embedded")]
+#[cfg(feature = "embedded-core")]
 use crate::embedded::EmbeddedConfig;
 
 /// An agnostic container which allows maintaining of various connection details.
@@ -14,8 +14,9 @@ use crate::embedded::EmbeddedConfig;
 pub enum FalkorConnectionInfo {
     /// A Redis database connection
     Redis(redis::ConnectionInfo),
-    /// An embedded FalkorDB server (requires the "embedded" feature)
-    #[cfg(feature = "embedded")]
+    /// An embedded FalkorDB server (requires the "embedded-core" feature, enabled
+    /// by both "embedded" and "embedded-bundle")
+    #[cfg(feature = "embedded-core")]
     Embedded(EmbeddedConfig),
 }
 
@@ -39,7 +40,7 @@ impl FalkorConnectionInfo {
     pub fn address(&self) -> String {
         match self {
             FalkorConnectionInfo::Redis(redis_info) => redis_info.addr().to_string(),
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             FalkorConnectionInfo::Embedded(_) => "embedded".to_string(),
         }
     }
@@ -97,7 +98,7 @@ mod tests {
             FalkorConnectionInfo::Redis(redis) => {
                 assert_eq!(redis.addr().to_string(), "127.0.0.1:6379".to_string());
             }
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             _ => panic!("Expected Redis connection info"),
         }
     }
@@ -119,7 +120,7 @@ mod tests {
             FalkorConnectionInfo::Redis(conn) => {
                 assert_eq!(conn.addr(), raw_redis_conn.addr());
             }
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             _ => panic!("Expected Redis connection info"),
         }
     }
@@ -162,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "embedded")]
+    #[cfg(feature = "embedded-core")]
     fn test_embedded_connection_info_address() {
         use crate::EmbeddedConfig;
         let config = EmbeddedConfig::default();
@@ -171,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "embedded")]
+    #[cfg(feature = "embedded-core")]
     fn test_embedded_connection_info_clone() {
         use crate::EmbeddedConfig;
         use std::path::PathBuf;
@@ -196,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "embedded")]
+    #[cfg(feature = "embedded-core")]
     fn test_embedded_connection_info_debug() {
         use crate::EmbeddedConfig;
         let config = EmbeddedConfig::default();

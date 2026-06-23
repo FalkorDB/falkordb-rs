@@ -139,7 +139,7 @@ pub(crate) enum FalkorClientProvider {
         /// uses replica-only connection getters (no primary fallback) so the pool is
         /// only built when a replica connection actually succeeds.
         sentinel_replica: Option<redis::sentinel::SentinelClient>,
-        #[cfg(feature = "embedded")]
+        #[cfg(feature = "embedded-core")]
         #[allow(dead_code)]
         embedded_server: Option<std::sync::Arc<crate::embedded::EmbeddedServer>>,
     },
@@ -507,7 +507,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             embedded_server: None,
         };
         assert!(!provider.has_sentinel_replica());
@@ -653,7 +653,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             embedded_server: None,
         };
         assert!(!provider.has_sentinel_replica());
@@ -670,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "embedded")]
+    #[cfg(feature = "embedded-core")]
     fn test_falkor_client_provider_with_embedded_server() {
         // Test that FalkorClientProvider::Redis can hold an embedded server
         let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
@@ -691,7 +691,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             embedded_server: None,
         };
         // Just verify the structure can be created
@@ -716,7 +716,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: Some(replica),
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             embedded_server: None,
         };
         // The replica connection fails and the error must surface as a replica-path
@@ -747,7 +747,7 @@ mod tests {
                 client,
                 sentinel: None,
                 sentinel_replica: Some(replica),
-                #[cfg(feature = "embedded")]
+                #[cfg(feature = "embedded-core")]
                 embedded_server: None,
             };
             let result = provider.get_async_replica_connection().await;
@@ -768,7 +768,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
-            #[cfg(feature = "embedded")]
+            #[cfg(feature = "embedded-core")]
             embedded_server: None,
         };
         let result = provider.get_replica_connection();
@@ -786,7 +786,7 @@ mod tests {
                 client,
                 sentinel: None,
                 sentinel_replica: None,
-                #[cfg(feature = "embedded")]
+                #[cfg(feature = "embedded-core")]
                 embedded_server: None,
             };
             let result = provider.get_async_replica_connection().await;
@@ -825,7 +825,7 @@ mod tests {
                 client,
                 sentinel: Some(sentinel),
                 sentinel_replica: None,
-                #[cfg(feature = "embedded")]
+                #[cfg(feature = "embedded-core")]
                 embedded_server: None,
             };
             // The sentinel arm resolves the master through an unreachable sentinel, which
@@ -857,7 +857,7 @@ mod tests {
                 client,
                 sentinel: None,
                 sentinel_replica: Some(replica),
-                #[cfg(feature = "embedded")]
+                #[cfg(feature = "embedded-core")]
                 embedded_server: None,
             };
             let result = provider.get_async_replica_connection_manager(None).await;
@@ -879,7 +879,7 @@ mod tests {
                 client,
                 sentinel: None,
                 sentinel_replica: None,
-                #[cfg(feature = "embedded")]
+                #[cfg(feature = "embedded-core")]
                 embedded_server: None,
             };
             let result = provider.get_async_replica_connection_manager(None).await;

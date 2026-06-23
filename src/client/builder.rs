@@ -205,7 +205,7 @@ impl<const R: char> FalkorClientBuilder<R> {
             .try_into()
             .map_err(|err| FalkorDBError::InvalidConnectionInfo(err.to_string()))?;
 
-        #[cfg(feature = "embedded")]
+        #[cfg(feature = "embedded-core")]
         if let FalkorConnectionInfo::Embedded(ref config) = connection_info {
             // Start the embedded server
             let embedded_server =
@@ -248,11 +248,11 @@ impl<const R: char> FalkorClientBuilder<R> {
                         client,
                         sentinel: None,
                         sentinel_replica: None,
-                        #[cfg(feature = "embedded")]
+                        #[cfg(feature = "embedded-core")]
                         embedded_server: None,
                     }
                 }
-                #[cfg(feature = "embedded")]
+                #[cfg(feature = "embedded-core")]
                 FalkorConnectionInfo::Embedded(_) => unreachable!("Handled above"),
             },
             connection_info,
@@ -485,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "embedded")]
+    #[cfg(feature = "embedded-core")]
     fn test_embedded_config_creation() {
         // Test that we can create an embedded config
         let config = crate::EmbeddedConfig::default();
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "embedded")]
+    #[cfg(feature = "embedded-core")]
     fn test_embedded_builder_fails_without_binaries() {
         // Test that building with embedded config fails gracefully when binaries are not found
         use std::path::PathBuf;
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "embedded")]
+    #[cfg(feature = "embedded-core")]
     fn test_embedded_builder_with_custom_config() {
         use std::path::PathBuf;
 
@@ -581,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(feature = "embedded", feature = "tokio"))]
+    #[cfg(all(feature = "embedded-core", feature = "tokio"))]
     fn test_async_builder_with_embedded() {
         use std::path::PathBuf;
 

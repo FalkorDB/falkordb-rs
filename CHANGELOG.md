@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Build-time embedded-module bundling via a new `embedded-bundle` feature. A `build.rs` fetches the
+  FalkorDB `falkordb.so` module for the build target at **compile time** and embeds it in the binary
+  (`include_bytes!`), so the embedded server starts with **no runtime network access** — for
+  network-isolated deployments. Build-time environment variables control the bundle:
+  `FALKORDB_EMBEDDED_MODULE_VERSION` (release tag; defaults to a pinned version),
+  `FALKORDB_EMBEDDED_MODULE_PLATFORM` (asset override for distro-specific Linux targets),
+  `FALKORDB_EMBEDDED_MODULE_PATH` (embed a local `.so` for fully offline builds) and
+  `FALKORDB_EMBEDDED_MODULE_SHA256` (required to embed a non-default downloaded version). Adds
+  `EmbeddedServer::bundled_module_version()` / `bundled_module_platform()` accessors and a new
+  `embedded-core` feature for the shared embedded logic. The embedded server now also pre-flights
+  `redis-server --version` and fails early when it is older than the required 8.0
+  ([#278](https://github.com/FalkorDB/falkordb-rs/pull/278))
 - Opt-in replica routing for read-only queries via a new `ReadPreference` enum (`Primary`, the
   default, and `PreferReplica`). Set a client-wide default with
   `FalkorClientBuilder::with_read_preference`, or override per request with the `with_read_preference`

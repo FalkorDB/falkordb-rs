@@ -38,18 +38,25 @@ def fmt_time(ns: float) -> str:
     return f"{us:.1f} \u00b5s"  # microseconds
 
 
-def sh(cmd: str, default: str = "") -> str:
+def sh(cmd: list[str], default: str = "") -> str:
+    """Run a command (no shell) and return its stripped stdout, or `default` on any failure."""
     try:
-        return subprocess.check_output(cmd, shell=True, text=True).strip() or default
-    except subprocess.SubprocessError:
+        return subprocess.check_output(cmd, text=True).strip() or default
+    except (OSError, subprocess.SubprocessError):
         return default
 
 
 def cpu_model() -> str:
     if platform.system() == "Darwin":
-        return sh("sysctl -n machdep.cpu.brand_string", "Apple silicon")
-    return sh("sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1",
-              platform.processor() or "unknown CPU")
+        return sh(["sysctl", "-n", "machdep.cpu.brand_string"], "Apple silicon")
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return platform.processor() or "unknown CPU"
 
 
 def toml_escape(value: str) -> str:
@@ -72,11 +79,11 @@ def main() -> None:
             "async_read_throughput/ — did the benchmark run against a server?"
         )
 
-    image = sh("docker inspect --format '{{index .RepoDigests 0}}' falkordb/falkordb:edge",
+    image = sh(["docker", "inspect", "--format", "{{index .RepoDigests 0}}", "falkordb/falkordb:edge"],
                "falkordb/falkordb:edge")
     meta = {
         "date": datetime.date.today().isoformat(),
-        "commit": sh("git rev-parse --short HEAD", "unknown"),
+        "commit": sh(["git", "rev-parse", "--short", "HEAD"], "unknown"),
         "falkordb_image": image,
         "cpu": cpu_model(),
         "os": f"{platform.system()} {platform.machine()}",

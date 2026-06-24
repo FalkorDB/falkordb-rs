@@ -6,7 +6,7 @@
     {%- if page %}
     <title>{{ page.title }} · {{ config.title }}</title>
     <meta name="description" content="{{ page.description | default(value=config.description) }}">
-    {%- elif section and section.title %}
+    {%- elif section and section.title and section.title != config.title %}
     <title>{{ section.title }} · {{ config.title }}</title>
     <meta name="description" content="{{ section.description | default(value=config.description) }}">
     {%- else %}
@@ -53,6 +53,83 @@
         if (!window.mermaid) return;
         var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
         window.mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral", securityLevel: "strict" });
+
+        // Click-to-zoom lightbox: diagrams render small inline, so let readers open one large and
+        // scroll/pinch to zoom, drag to pan. The diagram SVG is cloned into a full-screen overlay.
+        var modal = document.createElement("div");
+        modal.className = "diagram-modal";
+        modal.setAttribute("role", "dialog");
+        modal.setAttribute("aria-modal", "true");
+        modal.innerHTML =
+            '<button class="diagram-modal-close" type="button" aria-label="Close diagram">\u00d7</button>' +
+            '<div class="diagram-stage"></div>' +
+            '<p class="diagram-modal-hint">scroll or pinch to zoom \u00b7 drag to pan \u00b7 double-click to reset \u00b7 Esc to close</p>';
+        document.body.appendChild(modal);
+
+        var stage = modal.querySelector(".diagram-stage");
+        var svg = null, scale = 1, x = 0, y = 0, dragging = false, lx = 0, ly = 0;
+        var pointers = new Map(), startDist = 0, startScale = 1;
+
+        function apply() { if (svg) svg.style.transform = "translate(" + x + "px," + y + "px) scale(" + scale + ")"; }
+        function reset() { scale = 1; x = 0; y = 0; apply(); }
+        function spread() {
+            var p = Array.from(pointers.values());
+            return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
+        }
+        function openDiagram(src) {
+            stage.innerHTML = "";
+            svg = src.cloneNode(true);
+            svg.removeAttribute("style");
+            svg.style.transformOrigin = "center center";
+            stage.appendChild(svg);
+            reset();
+            modal.classList.add("open");
+            document.body.style.overflow = "hidden";
+        }
+        function close() { modal.classList.remove("open"); document.body.style.overflow = ""; svg = null; pointers.clear(); }
+
+        modal.querySelector(".diagram-modal-close").addEventListener("click", close);
+        modal.addEventListener("click", function (e) { if (e.target === modal) close(); });
+        document.addEventListener("keydown", function (e) { if (e.key === "Escape" && modal.classList.contains("open")) close(); });
+
+        stage.addEventListener("wheel", function (e) {
+            e.preventDefault();
+            scale = Math.min(8, Math.max(0.4, scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+            apply();
+        }, { passive: false });
+
+        stage.addEventListener("pointerdown", function (e) {
+            stage.setPointerCapture(e.pointerId);
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (pointers.size === 1) { dragging = true; lx = e.clientX; ly = e.clientY; stage.classList.add("grabbing"); }
+            else if (pointers.size === 2) { dragging = false; startDist = spread(); startScale = scale; }
+        });
+        stage.addEventListener("pointermove", function (e) {
+            if (!pointers.has(e.pointerId)) return;
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (pointers.size >= 2) {
+                var d = spread();
+                if (startDist > 0) { scale = Math.min(8, Math.max(0.4, startScale * d / startDist)); apply(); }
+                return;
+            }
+            if (dragging) { x += e.clientX - lx; y += e.clientY - ly; lx = e.clientX; ly = e.clientY; apply(); }
+        });
+        function liftPointer(e) {
+            pointers.delete(e.pointerId);
+            if (pointers.size < 2) startDist = 0;
+            if (pointers.size === 0) { dragging = false; stage.classList.remove("grabbing"); }
+            else { var p = Array.from(pointers.values())[0]; lx = p.x; ly = p.y; dragging = true; }
+        }
+        stage.addEventListener("pointerup", liftPointer);
+        stage.addEventListener("pointercancel", liftPointer);
+        stage.addEventListener("dblclick", reset);
+
+        document.querySelectorAll("figure.diagram").forEach(function (fig) {
+            fig.addEventListener("click", function () {
+                var s = fig.querySelector("svg");
+                if (s) openDiagram(s);
+            });
+        });
     })();
 </script>
 {% endblock scripts %}

@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant App
+    participant E as EmbeddedServer
+    participant Cache as module cache / build-time bundle
+    participant R as redis-server (child process)
+    participant DB as FalkorDB module
+    App->>E: build() with FalkorConnectionInfo::Embedded
+    E->>R: check `redis-server --version` (must be >= 8.0)
+    E->>Cache: resolve falkordb.so (cached / downloaded / embedded bytes)
+    Cache-->>E: module path
+    E->>R: spawn redis-server --loadmodule falkordb.so
+    E->>R: poll PING until ready
+    R-->>E: PONG
+    E-->>App: connected client
+    Note over App,DB: on drop, the child server is shut down for you

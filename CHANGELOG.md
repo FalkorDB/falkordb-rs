@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Other
+
+- Added a "Dev Log" technical blog under `blog/`, built with [Zola](https://www.getzola.org/) and
+  deployed to GitHub Pages. Every Rust snippet in a post is a real `examples/*.rs` / `benches/*.rs`
+  file that CI already compiles, copied in verbatim at build time by `just blog-sync`, so the
+  published code cannot drift from the crate; the async connection-strategy benchmark figures are a
+  dated, reproducible sample run (`just bench-export`). Adds `just blog-build` / `blog-serve` /
+  `blog-check` recipes, a `check-blog` pull-request gate, a Pages deploy workflow, and a `Blog`
+  spellcheck task. The release workflow skips blog-only pushes (`paths-ignore`), so blog edits
+  don't cut a crate release ([#279](https://github.com/FalkorDB/falkordb-rs/pull/279))
+
 ## [0.10.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.9.0...v0.10.0) - 2026-06-23
 
 ### Added

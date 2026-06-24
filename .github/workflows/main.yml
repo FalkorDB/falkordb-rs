@@ -8,6 +8,13 @@ on:
   push:
     branches:
       - main
+    # Blog-only changes must not cut a crate release. release-plz has no path-based release
+    # gating (and `changed_paths` is not a valid key — it would be a fatal config error), so we
+    # skip this whole release workflow when a push to main touches only the blog. The blog is
+    # published separately by pages.yml. A mixed push that also changes crate sources still runs
+    # and releases as before.
+    paths-ignore:
+      - 'blog/**'
   workflow_dispatch:
 
 concurrency:

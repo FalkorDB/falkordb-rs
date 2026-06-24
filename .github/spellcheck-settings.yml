@@ -56,3 +56,37 @@ matrix:
       - table
   sources:
   - '.pr-title.md'
+# Blog: spellcheck the Zola "Dev Log" posts under blog/content. A context filter strips the TOML
+# front matter (+++ ... +++) and Zola/Tera shortcodes ({{ ... }} / {% ... %}) before the Markdown
+# filter, and the html filter ignores code/pre. Embedded code samples are injected at Zola build
+# time (not present in these sources), so only the prose is checked.
+- name: Blog
+  expect_match: false
+  aspell:
+    lang: en
+    d: en_US
+  dictionary:
+    wordlists:
+    - .github/wordlist.txt
+    output: wordlist.dic
+  pipeline:
+  - pyspelling.filters.context:
+      context_visible_first: true
+      delimiters:
+      - open: '(?s)^\+\+\+\s*$'
+        close: '^\+\+\+\s*$'
+      - open: '\{[{%]'
+        close: '[}%]\}'
+  - pyspelling.filters.markdown:
+      markdown_extensions:
+      - markdown.extensions.extra:
+  - pyspelling.filters.html:
+      comments: false
+      attributes:
+      - alt
+      ignores:
+      - ':matches(code, pre)'
+      - code
+      - pre
+  sources:
+  - 'blog/content/**/*.md'

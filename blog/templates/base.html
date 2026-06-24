@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {%- if page %}
+    <title>{{ page.title }} · {{ config.title }}</title>
+    <meta name="description" content="{{ page.description | default(value=config.description) }}">
+    {%- elif section and section.title %}
+    <title>{{ section.title }} · {{ config.title }}</title>
+    <meta name="description" content="{{ section.description | default(value=config.description) }}">
+    {%- else %}
+    <title>{{ config.title }}</title>
+    <meta name="description" content="{{ config.description }}">
+    {%- endif %}
+    <link rel="stylesheet" href="{{ get_url(path='css/style.css', cachebust=true) }}">
+    {%- if config.generate_feeds %}
+    <link rel="alternate" type="application/rss+xml" title="{{ config.title }}" href="{{ get_url(path='rss.xml') }}">
+    {%- endif %}
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+    <div class="wrap">
+        <a class="brand" href="{{ get_url(path='@/_index.md') }}">
+            <span class="brand-mark">&gt;_</span> FalkorDB-rs Dev Log
+        </a>
+        <nav class="site-nav">
+            <a href="{{ get_url(path='@/_index.md') }}">Posts</a>
+            <a href="{{ config.extra.repo_url }}">GitHub</a>
+            <a href="https://www.falkordb.com/">FalkorDB</a>
+            <a href="{{ get_url(path='rss.xml') }}">RSS</a>
+        </nav>
+    </div>
+</header>
+<main id="main" class="wrap">
+    {% block content %}{% endblock content %}
+</main>
+<footer class="site-footer">
+    <div class="wrap">
+        <p>
+            Written by {{ config.extra.author }} · The
+            <a href="{{ config.extra.repo_url }}">FalkorDB Rust client</a>.
+            Every code snippet and benchmark here is a real file compiled in CI —
+            <a href="{{ get_url(path='@/posts/_index.md') }}#colophon">how this works</a>.
+        </p>
+    </div>
+</footer>
+{% block scripts %}
+<script src="{{ config.extra.mermaid_js | safe }}" integrity="{{ config.extra.mermaid_integrity | safe }}" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+    (function () {
+        if (!window.mermaid) return;
+        var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        window.mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral", securityLevel: "strict" });
+    })();
+</script>
+{% endblock scripts %}
+</body>
+</html>

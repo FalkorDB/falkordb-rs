@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<article class="post">
+    <header class="post-header">
+        {%- if page.extra.part %}<p class="eyebrow">{{ page.extra.part }}</p>{% endif %}
+        <h1>{{ page.title }}</h1>
+        <p class="byline">
+            By {{ page.extra.author | default(value=config.extra.author) }}
+            {%- if page.date %} · <time datetime="{{ page.date }}">{{ page.date | date(format="%B %-d, %Y") }}</time>{% endif %}
+            {%- if page.reading_time %} · {{ page.reading_time }} min read{% endif %}
+        </p>
+        {%- if page.taxonomies.tags %}
+        <ul class="tags">
+            {%- for tag in page.taxonomies.tags %}
+            <li><a href="{{ get_taxonomy_url(kind='tags', name=tag) }}">#{{ tag }}</a></li>
+            {%- endfor %}
+        </ul>
+        {%- endif %}
+    </header>
+
+    <div class="post-body">
+        {{ page.content | safe }}
+    </div>
+
+    <footer class="post-footer">
+        <nav class="post-nav">
+            {%- if page.earlier %}<a class="prev" href="{{ page.earlier.permalink }}">← {{ page.earlier.title }}</a>{% endif %}
+            {%- if page.later %}<a class="next" href="{{ page.later.permalink }}">{{ page.later.title }} →</a>{% endif %}
+        </nav>
+        <p class="back"><a href="{{ get_url(path='@/_index.md') }}">← All posts</a></p>
+    </footer>
+</article>
+{% endblock content %}

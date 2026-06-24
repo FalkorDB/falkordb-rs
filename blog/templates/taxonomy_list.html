@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="intro">
+    <h1>{{ taxonomy.name | capitalize }}</h1>
+</section>
+<section class="post-list">
+    <ul class="tag-cloud">
+        {%- for term in terms %}
+        <li><a href="{{ term.permalink }}">#{{ term.name }}</a> <span class="count">{{ term.pages | length }}</span></li>
+        {%- endfor %}
+    </ul>
+</section>
+{% endblock content %}

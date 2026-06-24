@@ -1,0 +1,12 @@
+sequenceDiagram
+    autonumber
+    participant App
+    participant S as Stream&lt;Item = FalkorResult&lt;Row&gt;&gt;
+    participant DB as FalkorDB
+    App->>DB: GRAPH.RO_QUERY
+    DB-->>S: header + result set
+    loop for each row, lazily
+        App->>S: .next().await
+        S-->>App: Ok(Row) — or Err you can `?`
+    end
+    Note over App,S: compose with the futures toolbox:<br/>map / try_collect / buffer_unordered(8)

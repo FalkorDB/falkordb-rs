@@ -1,0 +1,39 @@
+# Zola configuration for the FalkorDB-rs Dev Log.
+# Built and deployed to GitHub Pages by .github/workflows/pages.yml.
+# Pinned Zola version lives in the Justfile (`zola_version`) and the CI install step.
+
+base_url = "https://falkordb.github.io/falkordb-rs"
+title = "FalkorDB-rs Dev Log"
+description = "Field notes from building the FalkorDB Rust client — type-safe graphs, async, and why we bet on Rust."
+
+default_language = "en"
+compile_sass = false
+build_search_index = false
+generate_feeds = true
+feed_filenames = ["rss.xml"]
+author = "Barak"
+
+taxonomies = [
+    { name = "tags", feed = true },
+]
+
+[markdown]
+smart_punctuation = false
+render_emoji = true
+
+[markdown.highlighting]
+style = "inline"
+light_theme = "github-light"
+dark_theme = "github-dark"
+error_on_missing_language = false
+
+[extra]
+author = "Barak"
+repo_url = "https://github.com/FalkorDB/falkordb-rs"
+# Branch the "Source: …" links in embedded snippets point at.
+source_ref = "main"
+# Mermaid bundle, pinned and loaded with Subresource Integrity (reproducible, no repo bloat).
+# To bump: change both the version in the URL and the SRI hash
+# (curl the file | openssl dgst -sha384 -binary | openssl base64 -A).
+mermaid_js = "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.min.js"
+mermaid_integrity = "sha384-yQ4mmBBT+vhTAwjFH0toJXNYJ6O4usWnt6EPIdWwrRvx2V/n5lXuDZQwQFeSFydF"

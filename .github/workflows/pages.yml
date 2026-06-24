@@ -1,0 +1,64 @@
+name: Deploy blog to GitHub Pages
+
+# Builds the "Dev Log" (blog/) with Zola and publishes it to GitHub Pages. Every Rust snippet in a
+# post is a real examples/*.rs / benches/*.rs file copied in by `just blog-sync`, so the published
+# code is exactly what CI compiles elsewhere. Requires the repository Pages source to be set to
+# "GitHub Actions" (Settings -> Pages).
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'blog/**'
+      - 'examples/**'
+      - 'benches/**'
+      - 'scripts/blog-sync.sh'
+      - 'scripts/install-zola.sh'
+      - 'Justfile'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Least privilege: build needs only read; deploy needs pages + id-token to publish.
+permissions:
+  contents: read
+
+# Allow one concurrent deployment; don't cancel an in-progress publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
+      - name: Install Zola (pinned, checksum-verified)
+        run: ./scripts/install-zola.sh
+      - name: Build the blog (sync snippets + zola build)
+        run: just blog-build
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: blog/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

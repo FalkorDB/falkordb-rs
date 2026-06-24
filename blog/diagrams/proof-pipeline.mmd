@@ -1,0 +1,4 @@
+flowchart LR
+    A["examples/*.rs<br/>benches/*.rs"] -->|"just build-examples (CI)"| B["compiled, green check"]
+    A -->|"blog-sync: byte-for-byte copy"| C["this blog post"]
+    B -. guarantees .-> C

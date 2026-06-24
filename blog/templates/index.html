@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="intro">
+    <h1>{{ section.title | default(value=config.title) }}</h1>
+    {{ section.content | safe }}
+</section>
+
+<section class="post-list">
+    <h2>All posts</h2>
+    <ol class="posts" reversed>
+        {%- set posts_section = get_section(path="posts/_index.md") %}
+        {%- for page in posts_section.pages %}
+        <li class="post-row">
+            <a class="post-row-title" href="{{ page.permalink }}">{{ page.title }}</a>
+            <div class="post-row-meta">
+                {%- if page.date %}<time datetime="{{ page.date }}">{{ page.date | date(format="%b %-d, %Y") }}</time>{% endif %}
+                {%- if page.extra.part %}<span class="part">{{ page.extra.part }}</span>{% endif %}
+            </div>
+            {%- if page.description %}<p class="post-row-desc">{{ page.description }}</p>{% endif %}
+        </li>
+        {%- endfor %}
+    </ol>
+</section>
+{% endblock content %}

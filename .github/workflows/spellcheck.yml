@@ -19,6 +19,22 @@ jobs:
           config_path: .github/spellcheck-settings.yml
           task_name: Markdown
 
+  # Spellcheck the blog ("Dev Log") posts with the same wordlist/dictionary.
+  spellcheck-blog:
+    name: Blog spelling
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Spellcheck blog posts
+        uses: rojopolis/spellcheck-github-actions@390a08ee9c46943112f21d2ff671649a2bacd33f # 0.62.0
+        with:
+          config_path: .github/spellcheck-settings.yml
+          task_name: Blog
+
   # Spellcheck the pull-request title with the same wordlist/dictionary. The title becomes
   # the squashed-merge commit subject (git history) and its Conventional-Commit prefix drives
   # the release, so catch unknown words here at the source.

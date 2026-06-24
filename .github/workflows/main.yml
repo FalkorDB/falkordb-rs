@@ -8,6 +8,20 @@ on:
   push:
     branches:
       - main
+    # Blog-only changes must not cut a crate release. release-plz has no path-based release
+    # gating (and `changed_paths` is not a valid key — it would be a fatal config error), so we
+    # skip this whole release workflow when a push to main touches only the blog and its dedicated
+    # build/deploy tooling. The blog is published separately by pages.yml. Shared tooling (e.g. the
+    # Justfile) is intentionally not listed: a push touching it still runs this workflow, but such
+    # changes are normally `ci:`/`chore:`-typed and so don't release anyway. A mixed push that also
+    # changes crate sources runs and releases as before.
+    paths-ignore:
+      - 'blog/**'
+      - 'scripts/blog-sync.sh'
+      - 'scripts/install-zola.sh'
+      - 'scripts/bench-export.sh'
+      - 'scripts/bench_export.py'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 concurrency:

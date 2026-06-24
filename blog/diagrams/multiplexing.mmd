@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant T1 as task #1
+    participant T2 as task #2
+    participant T3 as task #64
+    participant M as multiplexer (4 sockets)
+    participant DB as FalkorDB
+    T1->>M: ro_query("RETURN 1")
+    T2->>M: ro_query("RETURN 1")
+    T3->>M: ro_query("RETURN 1")
+    Note over M,DB: requests are pipelined over the shared sockets,<br/>not blocked on an exclusive connection each
+    M->>DB: GRAPH.RO_QUERY (pipelined)
+    DB-->>M: replies, correlated back to each task
+    M-->>T1: typed Row
+    M-->>T2: typed Row
+    M-->>T3: typed Row

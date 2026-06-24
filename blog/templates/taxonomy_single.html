@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="intro">
+    <h1>#{{ term.name }}</h1>
+    <p class="byline">{{ term.pages | length }} post{{ term.pages | length | pluralize }}</p>
+</section>
+<section class="post-list">
+    <ol class="posts" reversed>
+        {%- for page in term.pages %}
+        <li class="post-row">
+            <a class="post-row-title" href="{{ page.permalink }}">{{ page.title }}</a>
+            <div class="post-row-meta">
+                {%- if page.date %}<time datetime="{{ page.date }}">{{ page.date | date(format="%b %-d, %Y") }}</time>{% endif %}
+            </div>
+            {%- if page.description %}<p class="post-row-desc">{{ page.description }}</p>{% endif %}
+        </li>
+        {%- endfor %}
+    </ol>
+</section>
+{% endblock content %}

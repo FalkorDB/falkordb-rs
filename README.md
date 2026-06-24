@@ -7,6 +7,7 @@
 [![Docs](https://img.shields.io/docsrs/falkordb)](https://docs.rs/falkordb/latest/falkordb/)\
 [![Forum](https://img.shields.io/badge/Forum-falkordb-blue)](https://github.com/orgs/FalkorDB/discussions)
 [![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.com/invite/6M4QwDXn2w)
+[![Dev Log](https://img.shields.io/badge/Dev%20Log-blog-8A2BE2)](https://falkordb.github.io/falkordb-rs/)
 
 # falkordb-rs
 

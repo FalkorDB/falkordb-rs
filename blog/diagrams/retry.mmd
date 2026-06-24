@@ -1,0 +1,14 @@
+sequenceDiagram
+    autonumber
+    participant App
+    participant C as falkordb client
+    participant DB as FalkorDB
+    App->>C: ro_query(...).execute()
+    C->>DB: attempt 1
+    DB--xC: ConnectionDown (transient)
+    Note over C: read-only + transient? eligible.<br/>backoff: 50ms, 100ms, 200ms ... capped at 1s
+    C->>C: sleep(backoff), re-borrow a healed connection
+    C->>DB: attempt 2
+    DB-->>C: result set
+    C-->>App: Ok(rows)
+    Note over App,DB: a write (query()) in the same spot is NEVER retried —<br/>it fails fast so it can't be applied twice

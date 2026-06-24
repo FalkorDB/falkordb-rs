@@ -1,0 +1,27 @@
+{#-
+  bench_table — render a named results table from blog/data/benchmarks.toml.
+  Numbers are a committed "sample run" (see `just bench-export`) with provenance metadata,
+  not an exact-match CI gate (criterion numbers vary by machine/run). Readers reproduce with
+  `just bench`.
+
+  Params:
+    name – key of the [<name>] table in benchmarks.toml, e.g. "async_strategies" (required)
+-#}
+{%- set d = load_data(path="data/benchmarks.toml") -%}
+{%- set t = d | get(key=name) -%}
+<figure class="bench">
+{%- if t.title %}
+<div class="bench-title">{{ t.title }}</div>
+{%- endif %}
+<table>
+<thead><tr>{% for h in t.headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+<tbody>
+{%- for r in t.rows %}
+<tr>{% for c in r %}<td>{{ c }}</td>{% endfor %}</tr>
+{%- endfor %}
+</tbody>
+</table>
+<figcaption class="bench-meta">
+Measured {{ d.meta.date }} · {{ d.meta.os }}, {{ d.meta.cpu }} · FalkorDB <code>{{ d.meta.falkordb_image }}</code> · criterion {{ d.meta.criterion }} · commit <code>{{ d.meta.commit }}</code>. Reproduce with <code>just bench</code>.
+</figcaption>
+</figure>

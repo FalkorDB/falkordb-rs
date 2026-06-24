@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant App
+    participant C as falkordb client
+    participant Sentinel
+    participant P as primary
+    participant Rep as replica
+    C->>Sentinel: discover topology
+    Sentinel-->>C: primary + replica addresses
+    App->>C: query("CREATE ...")  (write)
+    C->>P: always routed to the primary
+    App->>C: ro_query(...).prefer_replica()
+    C->>Rep: read served from a replica (may be slightly stale)
+    App->>C: ro_query(...).primary_only()
+    C->>P: read-your-writes — forced onto the primary
+    Note over C,Rep: PreferReplica falls back to the primary<br/>when no replica is available

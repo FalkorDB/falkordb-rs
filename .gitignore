@@ -9,3 +9,5 @@ venv/
 /wordlist.dic
 /.pr-title.md
 /tools/llms-gen/target/
+/blog/public/
+/blog/snippets/

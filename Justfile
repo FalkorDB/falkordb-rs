@@ -189,6 +189,17 @@ bench-resource:
 # Run both benchmark harnesses.
 bench-all: bench bench-resource
 
+# Regenerate blog/data/benchmarks.toml from a focused async_strategies run (a dated SAMPLE RUN
+# with provenance metadata rendered by the blog). Needs a reachable server. Not a CI gate —
+# criterion numbers vary by machine/run. Use `just bench-export-local` to manage Docker.
+bench-export:
+    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} ./scripts/bench-export.sh
+
+# Spin up a server, regenerate the blog benchmark numbers, then tear it down.
+bench-export-local: db-up
+    @just bench-export || (just db-down && exit 1)
+    @just db-down
+
 # Spin up a server, run all benchmarks, then tear it down.
 bench-local: db-up
     @just bench-all || (just db-down && exit 1)
@@ -199,6 +210,11 @@ bench-local: db-up
 # Spellcheck the Markdown docs (CI gate). Requires `pyspelling` and `aspell` locally.
 spellcheck:
     pyspelling -c .github/spellcheck-settings.yml -n Markdown
+
+# Spellcheck the blog posts (CI gate). Same wordlist; a context filter strips TOML front matter
+# and Zola shortcodes so only prose is checked. Requires `pyspelling` and `aspell` locally.
+spellcheck-blog:
+    pyspelling -c .github/spellcheck-settings.yml -n Blog
 
 # Spellcheck a pull-request title exactly as the Spellcheck CI gate does. Catches
 # technical words (e.g. type names) that release-plz would later copy verbatim into
@@ -239,6 +255,31 @@ readme:
 # edited the crate docs — run `just readme` and commit README.md.
 check-readme:
     cargo rdme --check
+
+# === Blog (Zola "Dev Log" -> GitHub Pages) ===================================
+# A static site under blog/, deployed by .github/workflows/pages.yml. Every Rust snippet in a
+# post is a real examples/*.rs / benches/*.rs file (compiled by `just build-examples` / the
+# benches build); `blog-sync` copies those byte-for-byte into blog/snippets/ so what the reader
+# sees is exactly what CI compiled. Keep `zola_version` in sync with the CI install step in
+# pr-checks.yml and pages.yml. Install locally from https://github.com/getzola/zola/releases.
+zola_version := "0.22.1"
+
+# Copy the canonical, CI-compiled example & bench sources into blog/snippets/ (gitignored).
+blog-sync:
+    ./scripts/blog-sync.sh
+
+# Build the static site into blog/public (syncs snippets first).
+blog-build: blog-sync
+    cd blog && zola build
+
+# Serve the blog locally with live reload at http://127.0.0.1:1111 (syncs snippets first).
+blog-serve: blog-sync
+    cd blog && zola serve
+
+# CI gate: sync snippets then build the site, failing on bad templates, missing snippets or
+# broken internal links. Mirrors the `check-blog` job in pr-checks.yml.
+blog-check: blog-sync
+    cd blog && zola build
 
 # === Docker / FalkorDB lifecycle =============================================
 

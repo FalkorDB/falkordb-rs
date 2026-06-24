@@ -55,6 +55,7 @@ def cpu_model() -> str:
                 if line.startswith("model name"):
                     return line.split(":", 1)[1].strip()
     except OSError:
+        # /proc/cpuinfo is Linux-only and may be unreadable; fall back to platform.processor() below.
         pass
     return platform.processor() or "unknown CPU"
 

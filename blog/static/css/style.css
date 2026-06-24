@@ -243,6 +243,10 @@ figure.diagram:hover {
     border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
     box-shadow: 0 8px 26px color-mix(in srgb, var(--accent-2) 14%, transparent);
 }
+figure.diagram:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
 figure.diagram::after {
     content: "click to zoom";
     display: block; margin-top: .3rem;

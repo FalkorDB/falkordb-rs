@@ -60,6 +60,7 @@
         modal.className = "diagram-modal";
         modal.setAttribute("role", "dialog");
         modal.setAttribute("aria-modal", "true");
+        modal.setAttribute("aria-label", "Expanded diagram");
         modal.innerHTML =
             '<button class="diagram-modal-close" type="button" aria-label="Close diagram">\u00d7</button>' +
             '<div class="diagram-stage"></div>' +
@@ -67,6 +68,8 @@
         document.body.appendChild(modal);
 
         var stage = modal.querySelector(".diagram-stage");
+        var closeButton = modal.querySelector(".diagram-modal-close");
+        var previousFocus = null;
         var svg = null, scale = 1, x = 0, y = 0, dragging = false, lx = 0, ly = 0;
         var pointers = new Map(), startDist = 0, startScale = 1;
 
@@ -77,6 +80,7 @@
             return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
         }
         function openDiagram(src) {
+            previousFocus = document.activeElement;
             stage.innerHTML = "";
             svg = src.cloneNode(true);
             svg.removeAttribute("style");
@@ -85,10 +89,16 @@
             reset();
             modal.classList.add("open");
             document.body.style.overflow = "hidden";
+            closeButton.focus();
         }
-        function close() { modal.classList.remove("open"); document.body.style.overflow = ""; svg = null; pointers.clear(); }
+        function close() {
+            modal.classList.remove("open");
+            document.body.style.overflow = "";
+            svg = null; pointers.clear();
+            if (previousFocus && previousFocus.focus) { previousFocus.focus(); previousFocus = null; }
+        }
 
-        modal.querySelector(".diagram-modal-close").addEventListener("click", close);
+        closeButton.addEventListener("click", close);
         modal.addEventListener("click", function (e) { if (e.target === modal) close(); });
         document.addEventListener("keydown", function (e) { if (e.key === "Escape" && modal.classList.contains("open")) close(); });
 
@@ -125,9 +135,13 @@
         stage.addEventListener("dblclick", reset);
 
         document.querySelectorAll("figure.diagram").forEach(function (fig) {
-            fig.addEventListener("click", function () {
-                var s = fig.querySelector("svg");
-                if (s) openDiagram(s);
+            fig.tabIndex = 0;
+            fig.setAttribute("role", "button");
+            fig.setAttribute("aria-label", "Zoom diagram");
+            function openFig() { var s = fig.querySelector("svg"); if (s) openDiagram(s); }
+            fig.addEventListener("click", openFig);
+            fig.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openFig(); }
             });
         });
     })();

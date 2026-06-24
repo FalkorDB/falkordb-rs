@@ -23,8 +23,8 @@ render_emoji = true
 
 [markdown.highlighting]
 style = "inline"
-light_theme = "github-light"
-dark_theme = "github-dark"
+light_theme = "github-light-high-contrast"
+dark_theme = "github-dark-high-contrast"
 error_on_missing_language = false
 
 [extra]

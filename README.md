@@ -13,6 +13,8 @@
 
 [![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 
+> 📖 **New — the [FalkorDB-rs Dev Log](https://falkordb.github.io/falkordb-rs/):** field notes on the design behind this client, from type-safe parameters and async streaming to the embedded server and replica routing.
+
 <!-- cargo-rdme start -->
 
 The official Rust client for [FalkorDB](https://www.falkordb.com/) — a fast, low-latency

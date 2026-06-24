@@ -185,3 +185,4 @@ inlined
 repo
 runtimes
 uncompiled
+Zola

@@ -11,7 +11,7 @@
 {%- set t = d | get(key=name) -%}
 <figure class="bench">
 {%- if t.title %}
-<figcaption class="bench-title">{{ t.title }}</figcaption>
+<div class="bench-title">{{ t.title }}</div>
 {%- endif %}
 <table>
 <thead><tr>{% for h in t.headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>

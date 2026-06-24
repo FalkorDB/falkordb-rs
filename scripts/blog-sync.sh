@@ -32,10 +32,12 @@ copy_and_anchor() {
     awk -v dest="$dest" -v rel="$rel" '
         /\/\/[ \t]*ANCHOR_END:/ {
             n = $0; sub(/.*ANCHOR_END:[ \t]*/, "", n); sub(/[ \t\r]+$/, "", n)
+            if (n !~ /^[A-Za-z0-9_-]+$/) next
             active[n] = 0; next
         }
         /\/\/[ \t]*ANCHOR:/ {
             n = $0; sub(/.*ANCHOR:[ \t]*/, "", n); sub(/[ \t\r]+$/, "", n)
+            if (n !~ /^[A-Za-z0-9_-]+$/) next
             active[n] = 1; seen[n] = 1; next
         }
         {

@@ -193,7 +193,7 @@ bench-all: bench bench-resource
 # with provenance metadata rendered by the blog). Needs a reachable server. Not a CI gate —
 # criterion numbers vary by machine/run. Use `just bench-export-local` to manage Docker.
 bench-export:
-    ./scripts/bench-export.sh
+    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} ./scripts/bench-export.sh
 
 # Spin up a server, regenerate the blog benchmark numbers, then tear it down.
 bench-export-local: db-up

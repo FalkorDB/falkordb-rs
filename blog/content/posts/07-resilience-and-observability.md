@@ -61,8 +61,8 @@ Two more pieces round it out:
   doesn't explode because someone parameterized a label with a user ID. Plays directly into the
   `metrics` ecosystem.
 - **`FalkorDBError::mitigation_hint()`** — because an error that only tells you *what* went wrong is
-  half an error. The hint tells you what to *do* about it. It's the difference between "ConnectionDown"
-  and "ConnectionDown — the server may be restarting or unreachable; check connectivity and consider a
+  half an error. The hint tells you what to *do* about it. It's the difference between `ConnectionDown`
+  and "`ConnectionDown` — the server may be restarting or unreachable; check connectivity and consider a
   retry policy." Future-me, staring at a log line, is the customer for that sentence.
 
 None of this is glamorous. All of it is the difference between a library you *use* and a library you

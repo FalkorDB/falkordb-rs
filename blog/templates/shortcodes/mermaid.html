@@ -2,7 +2,7 @@
   mermaid — render a sequence/flow diagram from a raw .mmd file under blog/diagrams/.
   Loading from a file (rather than a shortcode body) keeps the diagram source out of the
   Markdown pipeline, so arrows like -->> are never mangled. Rendered client-side by the
-  vendored, pinned mermaid bundle wired up in base.html.
+  pinned mermaid bundle (loaded from a CDN with Subresource Integrity) wired up in base.html.
 
   Params:
     path    – file name under blog/diagrams/, e.g. "async-stream.mmd" (required)

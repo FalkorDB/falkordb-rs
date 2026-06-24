@@ -1,7 +1,7 @@
 sequenceDiagram
     autonumber
     participant App
-    participant S as Stream&lt;Item = FalkorResult&lt;Row&gt;&gt;
+    participant S as Row stream
     participant DB as FalkorDB
     App->>DB: GRAPH.RO_QUERY
     DB-->>S: header + result set

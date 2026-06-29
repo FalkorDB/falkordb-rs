@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.0...v0.10.1) - 2026-06-29
+
 ### Other
 
 - Added a "Dev Log" technical blog under `blog/`, built with [Zola](https://www.getzola.org/) and

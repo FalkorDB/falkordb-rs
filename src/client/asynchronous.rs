@@ -252,6 +252,7 @@ impl ProvidesSyncConnections for FalkorAsyncClientInner {
 /// # Thread Safety
 /// This struct is fully thread safe, it can be cloned and passed between threads without constraints,
 /// Its API uses only immutable references
+#[derive(Clone)]
 pub struct FalkorAsyncClient {
     inner: Arc<FalkorAsyncClientInner>,
     _connection_info: FalkorConnectionInfo,

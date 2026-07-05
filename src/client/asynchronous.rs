@@ -672,6 +672,14 @@ mod tests {
     };
     use tokio::sync::mpsc::error::TryRecvError;
 
+    #[test]
+    fn falkor_async_client_is_clone_send_sync() {
+        // The struct's doc comment promises the client can be cloned and shared across threads.
+        // Assert those bounds at compile time so the impls (notably `Clone`) cannot silently regress.
+        fn assert_clone_send_sync<T: Clone + Send + Sync>() {}
+        assert_clone_send_sync::<FalkorAsyncClient>();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_multiplexed_strategy_with_max_inflight() {
         // An explicit multiplexed strategy combined with a bounded in-flight limit

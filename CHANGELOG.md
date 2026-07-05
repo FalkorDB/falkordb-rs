@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Derive `Clone` for `FalkorAsyncClient`, matching `FalkorSyncClient` and its own thread-safety
+  documentation, which already stated the client can be cloned and shared across threads
+  ([#287](https://github.com/FalkorDB/falkordb-rs/pull/287))
+
 ## [0.10.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.0...v0.10.1) - 2026-06-29
 
 ### Other

@@ -50,6 +50,7 @@ cleans
 FalkorResult
 FalkorClientBuilder
 FalkorConnectionInfo
+FalkorAsyncClient
 EntityType
 IndexType
 EmbeddedServer

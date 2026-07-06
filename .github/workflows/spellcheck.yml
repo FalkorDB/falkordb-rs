@@ -14,7 +14,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Spellcheck
-        uses: rojopolis/spellcheck-github-actions@390a08ee9c46943112f21d2ff671649a2bacd33f # 0.62.0
+        uses: rojopolis/spellcheck-github-actions@e619e00ca22f01ade9d73048dcd6518bedc552f2 # 0.63.0
         with:
           config_path: .github/spellcheck-settings.yml
           task_name: Markdown
@@ -30,7 +30,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Spellcheck blog posts
-        uses: rojopolis/spellcheck-github-actions@390a08ee9c46943112f21d2ff671649a2bacd33f # 0.62.0
+        uses: rojopolis/spellcheck-github-actions@e619e00ca22f01ade9d73048dcd6518bedc552f2 # 0.63.0
         with:
           config_path: .github/spellcheck-settings.yml
           task_name: Blog
@@ -53,7 +53,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: printf '# %s\n' "$PR_TITLE" > .pr-title.md
       - name: Spellcheck PR title
-        uses: rojopolis/spellcheck-github-actions@390a08ee9c46943112f21d2ff671649a2bacd33f # 0.62.0
+        uses: rojopolis/spellcheck-github-actions@e619e00ca22f01ade9d73048dcd6518bedc552f2 # 0.63.0
         with:
           config_path: .github/spellcheck-settings.yml
           task_name: PRTitle

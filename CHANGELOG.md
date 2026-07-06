@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#290](https://github.com/FalkorDB/falkordb-rs/pull/290) and
   [#291](https://github.com/FalkorDB/falkordb-rs/pull/291) into one change so the `init` and
   `analyze` steps stay pinned to the same `github/codeql-action` version
-  ([#PR](https://github.com/FalkorDB/falkordb-rs/pull/PR))
+  ([#292](https://github.com/FalkorDB/falkordb-rs/pull/292))
 
 ## [0.10.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.1...v0.10.2) - 2026-07-05
 

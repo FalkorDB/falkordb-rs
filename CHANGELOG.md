@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#291](https://github.com/FalkorDB/falkordb-rs/pull/291) into one change so the `init` and
   `analyze` steps stay pinned to the same `github/codeql-action` version
   ([#292](https://github.com/FalkorDB/falkordb-rs/pull/292))
+- Bump the `github/codeql-action` (`init` and `analyze`, 4.36.3 → 4.37.0) GitHub Actions and the
+  `regex` crate (1.12.4 → 1.13.0), combining the Dependabot updates from
+  [#293](https://github.com/FalkorDB/falkordb-rs/pull/293),
+  [#294](https://github.com/FalkorDB/falkordb-rs/pull/294) and
+  [#295](https://github.com/FalkorDB/falkordb-rs/pull/295) into one change so the `init` and
+  `analyze` steps stay pinned to the same `github/codeql-action` version
+  ([#296](https://github.com/FalkorDB/falkordb-rs/pull/296))
 
 ## [0.10.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.1...v0.10.2) - 2026-07-05
 

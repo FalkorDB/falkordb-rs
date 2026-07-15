@@ -639,6 +639,7 @@ mod tests {
             sentinel_replica: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         assert!(FalkorSyncClient::create_readonly_pool(&mut provider, 4).is_none());
     }
@@ -665,6 +666,7 @@ mod tests {
             sentinel_replica: Some(replica),
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         assert!(provider.has_sentinel_replica());
         assert!(FalkorSyncClient::create_readonly_pool(&mut provider, 4).is_none());

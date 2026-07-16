@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `FalkorClientBuilder::with_response_timeout(Option<Duration>)` to configure an optional
+  client-side response timeout for async connections. It defaults to `None` (no client-side
+  deadline) — matching `falkordb-py`'s `socket_timeout` — so the server's `TIMEOUT` /
+  `TIMEOUT_DEFAULT` configuration governs how long a query may run
+  ([#297](https://github.com/FalkorDB/falkordb-rs/pull/297))
+
+### Fixed
+
+- Override the built-in 500ms default response timeout that `redis-rs 1.x` applies to every async
+  connection path (multiplexed, sentinel, replica, and `ConnectionManager`). Queries that took
+  longer than 500ms (for example `LOAD CSV`, deep traversals, or heavy aggregations) previously
+  failed client-side with a spurious connection error while the server kept executing them, and
+  the ensuing retries could duplicate writes. The response timeout is now unset by default
+  ([#297](https://github.com/FalkorDB/falkordb-rs/pull/297))
+
 ### Other
 
 - Bump the `github/codeql-action` (`init` and `analyze`, 4.36.2 → 4.36.3) and

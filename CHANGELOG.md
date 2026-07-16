@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-conventional title matched nothing and released nothing). Also sets a Conventional-Commit
   `commit-message` prefix for Dependabot and documents the rule in
   `.github/copilot-instructions.md` ([#298](https://github.com/FalkorDB/falkordb-rs/pull/298))
+- Bump the `redis` crate (1.3.0 → 1.4.0), the `regex` crate (1.13.0 → 1.13.1), the `which` crate
+  (8.0.4 → 8.0.5) and the `MarcoIeni/release-plz-action` GitHub Action (0.5.130 → 0.5.131),
+  combining the Dependabot updates from
+  [#301](https://github.com/FalkorDB/falkordb-rs/pull/301),
+  [#302](https://github.com/FalkorDB/falkordb-rs/pull/302),
+  [#303](https://github.com/FalkorDB/falkordb-rs/pull/303) and
+  [#304](https://github.com/FalkorDB/falkordb-rs/pull/304) into one change
 
 ## [0.10.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.1...v0.10.2) - 2026-07-05
 

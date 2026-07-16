@@ -228,7 +228,7 @@ spellcheck-pr-title:
 # Conventional-Commit types accepted in a PR title. The release-triggering subset
 # `feat|fix|docs` mirrors release-plz's `release_commits` in release-plz.toml (so a fix/feat/docs
 # PR actually cuts a release); the remaining types are valid but ride along with the next release.
-pr_title_pattern := '^(feat|fix|docs|ci|chore|refactor|perf|test|build|style|revert)(\(.+\))?!?: .+'
+pr_title_pattern := '^(feat|fix|docs|ci|chore|refactor|perf|test|build|style|revert)(\([^()[:space:]][^()]*\))?!?: .+'
 
 # Validate a PR title as a Conventional Commit, exactly as the `PR title format` CI gate does.
 # The title becomes the squash-merge subject and its prefix drives the release, so a malformed
@@ -270,6 +270,8 @@ test-pr-title:
         "update the readme"
         "fix:no space after the colon"
         "feature: not a recognized type"
+        "fix( ): whitespace-only scope"
+        "fix(): empty scope"
     )
     rc=0
     for t in "${good[@]}"; do

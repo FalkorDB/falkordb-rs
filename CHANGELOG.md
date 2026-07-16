@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#295](https://github.com/FalkorDB/falkordb-rs/pull/295) into one change so the `init` and
   `analyze` steps stay pinned to the same `github/codeql-action` version
   ([#296](https://github.com/FalkorDB/falkordb-rs/pull/296))
+- Add a `PR title format` CI gate (`just check-pr-title`, in `spellcheck.yml`) that rejects a
+  pull-request title which isn't a Conventional Commit, so a `fix` / `feat` / `docs` change is
+  titled to match `release-plz`'s `release_commits` and actually cuts a release (PR #297's
+  non-conventional title matched nothing and released nothing). Also sets a Conventional-Commit
+  `commit-message` prefix for Dependabot and documents the rule in
+  `.github/copilot-instructions.md` ([#298](https://github.com/FalkorDB/falkordb-rs/pull/298))
 
 ## [0.10.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.1...v0.10.2) - 2026-07-05
 

@@ -216,18 +216,15 @@ impl<const R: char> FalkorClientBuilder<R> {
     /// The consumed and modified self.
     ///
     /// # Examples
-    /// ```no_run
-    /// # use falkordb::FalkorClientBuilder;
-    /// # use std::time::Duration;
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// // Client users configure the response timeout through the public builder API.
-    /// let client = FalkorClientBuilder::new_async()
-    ///     .with_response_timeout(Some(Duration::from_secs(30)))
-    ///     .build()
-    ///     .await?;
-    /// # let _ = client;
-    /// # Ok(())
-    /// # }
+    /// ```
+    /// use falkordb::FalkorClientBuilder;
+    /// use std::time::Duration;
+    ///
+    /// // Client users set the response timeout through the public builder API; `None` (the
+    /// // default) leaves it unset. The deadline applies to async connections, and the builder
+    /// // method is reachable on every `FalkorClientBuilder`.
+    /// let builder = FalkorClientBuilder::new().with_response_timeout(Some(Duration::from_secs(30)));
+    /// # let _ = builder;
     /// ```
     pub fn with_response_timeout(
         self,

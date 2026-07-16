@@ -214,6 +214,21 @@ impl<const R: char> FalkorClientBuilder<R> {
     ///
     /// # Returns
     /// The consumed and modified self.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use falkordb::FalkorClientBuilder;
+    /// # use std::time::Duration;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Client users configure the response timeout through the public builder API.
+    /// let client = FalkorClientBuilder::new_async()
+    ///     .with_response_timeout(Some(Duration::from_secs(30)))
+    ///     .build()
+    ///     .await?;
+    /// # let _ = client;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_response_timeout(
         self,
         response_timeout: Option<Duration>,
@@ -509,6 +524,15 @@ mod tests {
         assert_eq!(builder.response_timeout, Some(Duration::from_secs(30)));
 
         let builder = builder.with_response_timeout(None);
+        assert!(builder.response_timeout.is_none());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn test_builder_async_response_timeout_defaults_to_none() {
+        // The async builder is the one that actually applies the response timeout; its default
+        // must be `None`, restoring the pre-redis-1.x behavior of no client-side deadline.
+        let builder = FalkorClientBuilder::new_async();
         assert!(builder.response_timeout.is_none());
     }
 

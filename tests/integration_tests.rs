@@ -802,6 +802,69 @@ mod async_tests {
         let _ = graph.delete().await;
     }
 
+    // Regression test for the redis-rs 1.x 500ms default response-timeout bug: the default async
+    // client must impose no client-side deadline (the pre-bug behavior), while an explicit short
+    // timeout must still cut a slow query.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_default_response_timeout_imposes_no_client_deadline() {
+        if skip_if_no_server() {
+            return;
+        }
+
+        // A query that runs for well over redis-rs 1.x's old 500ms default response timeout
+        // (~1s on typical hardware). Its exact duration only needs to clearly exceed the 100ms
+        // deadline asserted below, so the contrast stays deterministic across machines.
+        const SLOW_QUERY: &str =
+            "UNWIND range(1, 10000000) AS x WITH x WHERE x % 2 = 0 RETURN count(x)";
+
+        // Default async client: no client-side response timeout — the pre-redis-1.x behavior the
+        // fix restores. The slow query runs to completion instead of being cut off at 500ms.
+        let conn_info = match get_test_connection_info() {
+            Ok(info) => info,
+            Err(_) => return,
+        };
+        let default_client = match falkordb::FalkorClientBuilder::new_async()
+            .with_connection_info(conn_info)
+            .build()
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut graph = default_client.select_graph("test_default_response_timeout");
+        let default_result = graph.query(SLOW_QUERY).execute().await;
+        let _ = graph.delete().await;
+        assert!(
+            default_result.is_ok(),
+            "the default client applies no client-side response timeout, so a slow query must \
+             complete just as it did before redis-rs 1.x introduced its 500ms default"
+        );
+
+        // Contrast: a short explicit response timeout cuts the very same query, proving the
+        // deadline is genuinely applied to async connections (what redis-rs 1.x's 500ms default
+        // silently did) and that the default above truly means "no deadline".
+        let conn_info = match get_test_connection_info() {
+            Ok(info) => info,
+            Err(_) => return,
+        };
+        let bounded_client = match falkordb::FalkorClientBuilder::new_async()
+            .with_connection_info(conn_info)
+            .with_response_timeout(Some(std::time::Duration::from_millis(100)))
+            .build()
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut graph = bounded_client.select_graph("test_bounded_response_timeout");
+        let bounded_result = graph.query(SLOW_QUERY).execute().await;
+        let _ = graph.delete().await;
+        assert!(
+            bounded_result.is_err(),
+            "a 100ms client-side response timeout must cut off the multi-second query"
+        );
+    }
+
     #[cfg(feature = "serde")]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_query_as() {

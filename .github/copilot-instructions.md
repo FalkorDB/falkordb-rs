@@ -29,6 +29,7 @@ Key recipes:
 | `just proptest` | `serde` property tests (no server). |
 | `just spellcheck` | Spellcheck the Markdown docs. |
 | `just spellcheck-pr-title` | Spellcheck a PR title (`PR_TITLE='…' just spellcheck-pr-title`). |
+| `just check-pr-title` | Validate a PR title is a Conventional Commit (`PR_TITLE='…' just check-pr-title`). |
 
 Tests need a running server; prefer the `*-local` wrappers, which manage Docker and the fixture.
 
@@ -89,6 +90,14 @@ don't pile up.
   history) and their Conventional-Commit prefix drives the release, so keep them clean at the
   source. **`CHANGELOG.md` entries are hand-written and spellchecked too** — an unknown word there
   fails the `spellcheck` gate, so backtick code/type names or add them to the wordlist.
+- **PR titles must be a valid Conventional Commit** — the `PR title format` CI gate
+  (`just check-pr-title`, in `spellcheck.yml`) rejects any title that isn't
+  `<type>[(scope)][!]: <subject>` with a recognized `<type>`. It guards against titles like
+  `Fix spurious connection errors: …` (PR #297): that isn't a Conventional Commit, so it matched
+  none of release-plz's `release_commits` and silently cut **no** release. The release-triggering
+  types are `feat` / `fix` / `docs` (mirroring `release_commits` in `release-plz.toml`);
+  `ci` / `chore` / `refactor` / `perf` / `test` / `build` / `style` / `revert` are accepted too but
+  ride along with the next release. Run it locally with `PR_TITLE='fix: …' just check-pr-title`.
 - When you add or rename a **public type / term**, add its name to **`.github/wordlist.txt`**.
 - In Markdown/docs, **backtick** code and type names (`` `ConnectionDown` ``) — backticked spans
   are ignored by the spellchecker.

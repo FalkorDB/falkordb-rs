@@ -13,6 +13,11 @@ semver_check = false # disable API breaking changes checks, I suggest this becom
 # temporarily relax this filter.
 release_commits = '^(feat|fix|docs)(\(.+?\))?!?:'
 
+# The `PR title format` CI gate (`just check-pr-title`, in .github/workflows/spellcheck.yml)
+# enforces that every PR title is a Conventional Commit, so a fix/feat/docs change is titled to
+# match the regex above and actually cuts a release. PR #297's non-conventional
+# "Fix spurious connection errors: …" title matched nothing here and released nothing.
+
 [changelog]
 # Changelog entries are hand-written under "## [Unreleased]" in CHANGELOG.md (see the
 # "CHANGELOG & releases" section of .github/copilot-instructions.md). On release, release-plz

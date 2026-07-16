@@ -4,6 +4,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `edited` so fixing a PR title re-runs the title checks (spelling + Conventional-Commit format).
+    types: [opened, synchronize, reopened, edited]
 jobs:
   spellcheck:
     runs-on: ubuntu-latest
@@ -57,3 +59,26 @@ jobs:
         with:
           config_path: .github/spellcheck-settings.yml
           task_name: PRTitle
+
+  # Validate that the pull-request title is a Conventional Commit whose type release-plz
+  # recognizes. The title becomes the squash-merge subject and its prefix drives the release
+  # (release_commits in release-plz.toml), so a malformed title silently skips the release — as
+  # PR #297's "Fix spurious connection errors: ..." did. Runs the same `just check-pr-title`
+  # recipe developers run locally, so CI and local stay identical.
+  pr-title-format:
+    name: PR title format
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
+      - name: Check PR title is a Conventional Commit
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: just check-pr-title

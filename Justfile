@@ -223,6 +223,64 @@ spellcheck-blog:
 spellcheck-pr-title:
     printf '# %s\n' "${PR_TITLE:?set PR_TITLE to the pull-request title}" > .pr-title.md && pyspelling -c .github/spellcheck-settings.yml -n PRTitle && rm -f .pr-title.md || { rm -f .pr-title.md; exit 1; }
 
+# === PR title (Conventional Commits) =========================================
+
+# Conventional-Commit types accepted in a PR title. The release-triggering subset
+# `feat|fix|docs` mirrors release-plz's `release_commits` in release-plz.toml (so a fix/feat/docs
+# PR actually cuts a release); the remaining types are valid but ride along with the next release.
+pr_title_pattern := '^(feat|fix|docs|ci|chore|refactor|perf|test|build|style|revert)(\(.+\))?!?: .+'
+
+# Validate a PR title as a Conventional Commit, exactly as the `PR title format` CI gate does.
+# The title becomes the squash-merge subject and its prefix drives the release, so a malformed
+# title silently skips it — as happened with PR #297's "Fix spurious connection errors: ...",
+# which matched none of release-plz's release_commits and cut no release. Set PR_TITLE first,
+# e.g. `PR_TITLE='fix: handle ConnectionDown' just check-pr-title`.
+check-pr-title: test-pr-title
+    #!/usr/bin/env bash
+    set -euo pipefail
+    title="${PR_TITLE:?set PR_TITLE to the pull-request title}"
+    if ! grep -Eq '{{pr_title_pattern}}' <<<"$title"; then
+        printf '::error::PR title is not a Conventional Commit: %s\n' "$title" >&2
+        printf 'Expected "<type>[(scope)][!]: <subject>", where <type> is one of:\n' >&2
+        printf '  feat, fix, docs                                       (trigger a release via release-plz)\n' >&2
+        printf '  ci, chore, refactor, perf, test, build, style, revert (ride along with the next release)\n' >&2
+        printf 'e.g. "fix: override redis-rs default response timeout"\n' >&2
+        exit 1
+    fi
+    printf 'PR title OK: %s\n' "$title"
+
+# Self-test the check-pr-title pattern against known-good/known-bad titles (incl. PR #297's subject
+# that slipped through and skipped a release). Needs no PR_TITLE; runs as part of check-pr-title.
+test-pr-title:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pattern='{{pr_title_pattern}}'
+    good=(
+        "fix: derive Clone for FalkorAsyncClient"
+        "feat!: make replica routing for read-only queries opt-in"
+        "feat(blog): add diagram zoom, a livelier theme"
+        "docs: generate README from crate docs via cargo-rdme"
+        "ci: compile README doctests and examples in CI"
+        "build(deps): bump codeql-action to 4.37.0 and regex to 1.13.0"
+        "chore: release v0.10.2"
+    )
+    bad=(
+        "Fix spurious connection errors: override redis-rs 1.x default 500ms response timeout"
+        "Bump redis from 1.2.0 to 1.3.0"
+        "update the readme"
+        "fix:no space after the colon"
+        "feature: not a recognized type"
+    )
+    rc=0
+    for t in "${good[@]}"; do
+        if ! grep -Eq "$pattern" <<<"$t"; then printf 'want PASS, got FAIL: %s\n' "$t" >&2; rc=1; fi
+    done
+    for t in "${bad[@]}"; do
+        if grep -Eq "$pattern" <<<"$t"; then printf 'want FAIL, got PASS: %s\n' "$t" >&2; rc=1; fi
+    done
+    if [ "$rc" -ne 0 ]; then exit 1; fi
+    printf 'test-pr-title: all %d cases passed\n' "$(( ${#good[@]} + ${#bad[@]} ))"
+
 # === llms.txt (AI-readable API surface) ======================================
 
 # Regenerate the repo-root llms.txt from docs/llms.template.md + the public API parsed

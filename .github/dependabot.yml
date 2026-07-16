@@ -6,6 +6,10 @@ updates:
     schedule:
       interval: "weekly"
     target-branch: "main"
+    # Conventional-Commit prefix so the PR title passes the `PR title format` gate (a bare
+    # "Bump ..." title would fail it); `build` rides along with the next release.
+    commit-message:
+      prefix: "build"
 
   # This is actually for cargo crates
   - package-ecosystem: cargo
@@ -13,3 +17,7 @@ updates:
     schedule:
       interval: "weekly"
     target-branch: "main"
+    # Conventional-Commit prefix so the PR title passes the `PR title format` gate (a bare
+    # "Bump ..." title would fail it); `build` rides along with the next release.
+    commit-message:
+      prefix: "build"

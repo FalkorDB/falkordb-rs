@@ -142,6 +142,14 @@ pub(crate) enum FalkorClientProvider {
         #[cfg(feature = "embedded-core")]
         #[allow(dead_code)]
         embedded_server: Option<std::sync::Arc<crate::embedded::EmbeddedServer>>,
+        /// Client-side response timeout applied to async connections. `None` (the
+        /// default) disables the client-side deadline entirely, letting the server's
+        /// own `TIMEOUT`/`TIMEOUT_DEFAULT` configuration govern query duration. This
+        /// overrides redis-rs 1.x's default 500ms response timeout, which is far too
+        /// short for typical graph queries (e.g. `LOAD CSV`, deep traversals) and
+        /// would otherwise surface as spurious connection errors while the server
+        /// keeps executing the query.
+        response_timeout: Option<std::time::Duration>,
     },
 }
 
@@ -167,21 +175,40 @@ impl FalkorClientProvider {
         })
     }
 
+    /// Async connection config carrying the provider's response timeout. Always set
+    /// explicitly (even when `None`) so redis-rs 1.x's default 500ms response timeout
+    /// never applies.
+    #[cfg(feature = "tokio")]
+    fn async_connection_config(
+        response_timeout: Option<std::time::Duration>
+    ) -> redis::AsyncConnectionConfig {
+        redis::AsyncConnectionConfig::new().set_response_timeout(response_timeout)
+    }
+
     #[cfg(feature = "tokio")]
     pub(crate) async fn get_async_connection(&mut self) -> FalkorResult<FalkorAsyncConnection> {
         Ok(match self {
             FalkorClientProvider::Redis {
                 sentinel: Some(sentinel),
+                response_timeout,
                 ..
             } => FalkorAsyncConnection::Redis(
                 sentinel
-                    .get_async_connection()
+                    .get_async_connection_with_config(&Self::async_connection_config(
+                        *response_timeout,
+                    ))
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
-            FalkorClientProvider::Redis { client, .. } => FalkorAsyncConnection::Redis(
+            FalkorClientProvider::Redis {
+                client,
+                response_timeout,
+                ..
+            } => FalkorAsyncConnection::Redis(
                 client
-                    .get_multiplexed_async_connection()
+                    .get_multiplexed_async_connection_with_config(&Self::async_connection_config(
+                        *response_timeout,
+                    ))
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
@@ -216,10 +243,13 @@ impl FalkorClientProvider {
         match self {
             FalkorClientProvider::Redis {
                 sentinel_replica: Some(replica),
+                response_timeout,
                 ..
             } => Ok(FalkorAsyncConnection::Redis(
                 replica
-                    .get_async_connection()
+                    .get_async_connection_with_config(&Self::async_connection_config(
+                        *response_timeout,
+                    ))
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             )),
@@ -262,6 +292,7 @@ impl FalkorClientProvider {
         &mut self,
         max_inflight: Option<NonZeroUsize>,
     ) -> FalkorResult<FalkorAsyncConnection> {
+        let response_timeout = self.response_timeout();
         let client = match self {
             FalkorClientProvider::Redis {
                 sentinel: Some(sentinel),
@@ -274,7 +305,7 @@ impl FalkorClientProvider {
             #[cfg(test)]
             FalkorClientProvider::None => return Err(FalkorDBError::UnavailableProvider),
         };
-        Self::manager_from_client(client, max_inflight).await
+        Self::manager_from_client(client, max_inflight, response_timeout).await
     }
 
     /// Replica-routed counterpart of
@@ -285,6 +316,7 @@ impl FalkorClientProvider {
         &mut self,
         max_inflight: Option<NonZeroUsize>,
     ) -> FalkorResult<FalkorAsyncConnection> {
+        let response_timeout = self.response_timeout();
         match self {
             FalkorClientProvider::Redis {
                 sentinel_replica: Some(replica),
@@ -294,9 +326,21 @@ impl FalkorClientProvider {
                     .async_get_client()
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-                Self::manager_from_client(client, max_inflight).await
+                Self::manager_from_client(client, max_inflight, response_timeout).await
             }
             _ => Err(FalkorDBError::UnavailableProvider),
+        }
+    }
+
+    /// The configured client-side response timeout (`None` disables it).
+    #[cfg(feature = "tokio")]
+    fn response_timeout(&self) -> Option<std::time::Duration> {
+        match self {
+            FalkorClientProvider::Redis {
+                response_timeout, ..
+            } => *response_timeout,
+            #[cfg(test)]
+            FalkorClientProvider::None => None,
         }
     }
 
@@ -304,16 +348,19 @@ impl FalkorClientProvider {
     async fn manager_from_client(
         client: redis::Client,
         max_inflight: Option<NonZeroUsize>,
+        response_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<FalkorAsyncConnection> {
-        let manager = match max_inflight {
-            Some(limit) => {
-                let config =
-                    redis::aio::ConnectionManagerConfig::new().set_concurrency_limit(limit.get());
-                redis::aio::ConnectionManager::new_with_config(client, config).await
-            }
-            None => redis::aio::ConnectionManager::new(client).await,
-        }
-        .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        // Always set the response timeout explicitly (even when `None`) so redis-rs
+        // 1.x's default 500ms response timeout never applies.
+        let config =
+            redis::aio::ConnectionManagerConfig::new().set_response_timeout(response_timeout);
+        let config = match max_inflight {
+            Some(limit) => config.set_concurrency_limit(limit.get()),
+            None => config,
+        };
+        let manager = redis::aio::ConnectionManager::new_with_config(client, config)
+            .await
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
         Ok(FalkorAsyncConnection::Managed(manager))
     }
 
@@ -509,6 +556,7 @@ mod tests {
             sentinel_replica: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         assert!(!provider.has_sentinel_replica());
     }
@@ -655,6 +703,7 @@ mod tests {
             sentinel_replica: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         assert!(!provider.has_sentinel_replica());
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
@@ -679,6 +728,7 @@ mod tests {
             sentinel: None,
             sentinel_replica: None,
             embedded_server: None,
+            response_timeout: None,
         };
         // Just verify the structure can be created
     }
@@ -693,6 +743,7 @@ mod tests {
             sentinel_replica: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         // Just verify the structure can be created
     }
@@ -718,6 +769,7 @@ mod tests {
             sentinel_replica: Some(replica),
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         // The replica connection fails and the error must surface as a replica-path
         // RedisError; the call must not fall back to the primary.
@@ -749,6 +801,7 @@ mod tests {
                 sentinel_replica: Some(replica),
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
+                response_timeout: None,
             };
             let result = provider.get_async_replica_connection().await;
             assert!(
@@ -770,6 +823,7 @@ mod tests {
             sentinel_replica: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         let result = provider.get_replica_connection();
         assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
@@ -788,6 +842,7 @@ mod tests {
                 sentinel_replica: None,
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
+                response_timeout: None,
             };
             let result = provider.get_async_replica_connection().await;
             assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
@@ -827,6 +882,7 @@ mod tests {
                 sentinel_replica: None,
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
+                response_timeout: None,
             };
             // The sentinel arm resolves the master through an unreachable sentinel, which
             // fails fast with a RedisError rather than bypassing it.
@@ -859,6 +915,7 @@ mod tests {
                 sentinel_replica: Some(replica),
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
+                response_timeout: None,
             };
             let result = provider.get_async_replica_connection_manager(None).await;
             assert!(
@@ -881,6 +938,7 @@ mod tests {
                 sentinel_replica: None,
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
+                response_timeout: None,
             };
             let result = provider.get_async_replica_connection_manager(None).await;
             assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));

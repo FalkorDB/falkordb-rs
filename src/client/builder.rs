@@ -23,6 +23,7 @@ pub struct FalkorClientBuilder<const R: char> {
     retry_policy: RetryPolicy,
     query_logging: bool,
     read_preference: ReadPreference,
+    response_timeout: Option<Duration>,
 }
 
 impl<const R: char> FalkorClientBuilder<R> {
@@ -197,9 +198,36 @@ impl<const R: char> FalkorClientBuilder<R> {
         self.with_tcp_settings(settings)
     }
 
+    /// Set a client-side response timeout for async connections.
+    ///
+    /// By default no client-side timeout is applied (`None`), matching the other
+    /// FalkorDB clients (e.g. falkordb-py's `socket_timeout=None`): query duration is
+    /// governed by the server's own `TIMEOUT`/`TIMEOUT_DEFAULT` configuration. This
+    /// default deliberately overrides redis-rs 1.x's built-in 500ms response timeout,
+    /// which is far too short for typical graph workloads (`LOAD CSV`, deep
+    /// traversals) and would otherwise cut the connection while the server keeps
+    /// executing the query.
+    ///
+    /// # Arguments
+    /// * `response_timeout`: maximum time to wait for a server response, or `None` to
+    ///   wait indefinitely (the default).
+    ///
+    /// # Returns
+    /// The consumed and modified self.
+    pub fn with_response_timeout(
+        self,
+        response_timeout: Option<Duration>,
+    ) -> Self {
+        Self {
+            response_timeout,
+            ..self
+        }
+    }
+
     fn get_client<E: ToString, T: TryInto<FalkorConnectionInfo, Error = E>>(
         connection_info: T,
         tcp_settings: Option<&redis::io::tcp::TcpSettings>,
+        response_timeout: Option<Duration>,
     ) -> FalkorResult<(FalkorClientProvider, FalkorConnectionInfo)> {
         let connection_info = connection_info
             .try_into()
@@ -227,6 +255,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                     sentinel: None,
                     sentinel_replica: None,
                     embedded_server: Some(embedded_server),
+                    response_timeout,
                 },
                 FalkorConnectionInfo::Redis(redis_connection_info),
             ));
@@ -250,6 +279,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                         sentinel_replica: None,
                         #[cfg(feature = "embedded-core")]
                         embedded_server: None,
+                        response_timeout,
                     }
                 }
                 #[cfg(feature = "embedded-core")]
@@ -277,6 +307,7 @@ impl FalkorClientBuilder<'S'> {
             retry_policy: RetryPolicy::disabled(),
             query_logging: false,
             read_preference: ReadPreference::Primary,
+            response_timeout: None,
         }
     }
 
@@ -289,8 +320,11 @@ impl FalkorClientBuilder<'S'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        let (mut client, actual_connection_info) =
-            Self::get_client(connection_info, self.tcp_settings.as_ref())?;
+        let (mut client, actual_connection_info) = Self::get_client(
+            connection_info,
+            self.tcp_settings.as_ref(),
+            self.response_timeout,
+        )?;
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
@@ -329,6 +363,7 @@ impl FalkorClientBuilder<'A'> {
             retry_policy: RetryPolicy::disabled(),
             query_logging: false,
             read_preference: ReadPreference::Primary,
+            response_timeout: None,
         }
     }
 
@@ -407,8 +442,11 @@ impl FalkorClientBuilder<'A'> {
             .connection_info
             .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
 
-        let (mut client, actual_connection_info) =
-            Self::get_client(connection_info, self.tcp_settings.as_ref())?;
+        let (mut client, actual_connection_info) = Self::get_client(
+            connection_info,
+            self.tcp_settings.as_ref(),
+            self.response_timeout,
+        )?;
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
@@ -456,6 +494,22 @@ mod tests {
         assert!(client.is_ok());
 
         assert_eq!(client.unwrap().connection_pool_size(), 16);
+    }
+
+    #[test]
+    fn test_builder_response_timeout_defaults_to_none() {
+        let builder = FalkorClientBuilder::new();
+        assert!(builder.response_timeout.is_none());
+    }
+
+    #[test]
+    fn test_builder_with_response_timeout() {
+        let builder =
+            FalkorClientBuilder::new().with_response_timeout(Some(Duration::from_secs(30)));
+        assert_eq!(builder.response_timeout, Some(Duration::from_secs(30)));
+
+        let builder = builder.with_response_timeout(None);
+        assert!(builder.response_timeout.is_none());
     }
 
     #[test]

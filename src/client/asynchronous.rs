@@ -925,6 +925,7 @@ mod tests {
             sentinel_replica: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         assert!(FalkorAsyncClient::build_executor(
             &mut provider,
@@ -960,6 +961,7 @@ mod tests {
             sentinel_replica: Some(replica),
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         assert!(provider.has_sentinel_replica());
         assert!(FalkorAsyncClient::build_executor(
@@ -986,6 +988,7 @@ mod tests {
             sentinel_replica: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
+            response_timeout: None,
         };
         let readonly_conn = provider
             .get_async_connection()

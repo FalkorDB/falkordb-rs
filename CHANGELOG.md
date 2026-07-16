@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.2...v0.10.3) - 2026-07-16
+
 ### Added
 
 - `FalkorClientBuilder::with_response_timeout(Option<Duration>)` to configure an optional

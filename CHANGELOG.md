@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Other
+
+- Bump the `futures` and `futures-core` crates (0.3.32 → 0.3.33), the `serde` crate
+  (1.0.228 → 1.0.229), the `redis` crate (1.4.0 → 1.4.1), the `tokio` crate (1.52.3 → 1.53.0) and
+  the `github/codeql-action` (`init` and `analyze`) GitHub Action (4.37.0 → 4.37.1, pinned SHA
+  `99df26d` → `7188fc3`), combining the Dependabot updates from
+  [#307](https://github.com/FalkorDB/falkordb-rs/pull/307),
+  [#308](https://github.com/FalkorDB/falkordb-rs/pull/308),
+  [#309](https://github.com/FalkorDB/falkordb-rs/pull/309),
+  [#310](https://github.com/FalkorDB/falkordb-rs/pull/310),
+  [#311](https://github.com/FalkorDB/falkordb-rs/pull/311),
+  [#312](https://github.com/FalkorDB/falkordb-rs/pull/312) and
+  [#313](https://github.com/FalkorDB/falkordb-rs/pull/313) into one change so the `init` and
+  `analyze` steps stay pinned to the same `github/codeql-action` version
+  ([#314](https://github.com/FalkorDB/falkordb-rs/pull/314))
+
 ## [0.10.3](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.2...v0.10.3) - 2026-07-16
 
 ### Added

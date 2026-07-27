@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- Bump the `tokio` crate (1.53.0 → 1.53.1), the `libc` crate (0.2.186 → 0.2.189), the
+  `thiserror` crate (2.0.18 → 2.0.19), the `serde_json` crate (1.0.150 → 1.0.151), the
+  `actions/checkout` GitHub Action (7.0.0 → 7.0.1, pinned SHA `9c091bb` → `3d3c42e`) and the
+  `github/codeql-action` (`init` and `analyze`) GitHub Action (4.37.1 → 4.37.3, pinned SHA
+  `7188fc3` → `e4fba86`), combining the Dependabot updates from
+  [#315](https://github.com/FalkorDB/falkordb-rs/pull/315),
+  [#316](https://github.com/FalkorDB/falkordb-rs/pull/316),
+  [#317](https://github.com/FalkorDB/falkordb-rs/pull/317),
+  [#318](https://github.com/FalkorDB/falkordb-rs/pull/318),
+  [#319](https://github.com/FalkorDB/falkordb-rs/pull/319),
+  [#320](https://github.com/FalkorDB/falkordb-rs/pull/320) and
+  [#321](https://github.com/FalkorDB/falkordb-rs/pull/321) into one change, and allow the
+  temporary `syn` 2/3 duplication that `thiserror` 2.0.19 introduces in the `cargo deny` bans
+  check ([#322](https://github.com/FalkorDB/falkordb-rs/pull/322))
+
 - Bump the `futures` and `futures-core` crates (0.3.32 → 0.3.33), the `serde` crate
   (1.0.228 → 1.0.229), the `redis` crate (1.4.0 → 1.4.1), the `tokio` crate (1.52.3 → 1.53.0) and
   the `github/codeql-action` (`init` and `analyze`) GitHub Action (4.37.0 → 4.37.1, pinned SHA

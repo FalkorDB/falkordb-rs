@@ -14,6 +14,10 @@ skip = [
     # `sha2` (embedded download checksum verification) pulls `cpufeatures` 0.2 while
     # `redis`'s `rand`/`chacha20` pull 0.3. Tiny CPU-feature-detection shim; benign.
     "cpufeatures",
+    # `thiserror-impl` 2.0.19 moved to `syn` 3 while `displaydoc` (via `redis` → `url` →
+    # `idna`'s icu crates) still uses `syn` 2. Compile-time proc-macro dependency only;
+    # resolves once the ecosystem migrates to `syn` 3.
+    "syn",
 ]
 
 [sources]

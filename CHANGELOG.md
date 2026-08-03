@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- Bump the `redis` crate (1.4.1 → 1.5.0), the `rojopolis/spellcheck-github-actions` GitHub
+  Action (0.63.0 → 0.63.1, pinned SHA `e619e00` → `b1a70f1`) and the `github/codeql-action`
+  (`init` and `analyze`) GitHub Action (4.37.3 → 4.37.4, pinned SHA `e4fba86` → `f205ea1`),
+  combining the Dependabot updates from
+  [#323](https://github.com/FalkorDB/falkordb-rs/pull/323),
+  [#324](https://github.com/FalkorDB/falkordb-rs/pull/324),
+  [#325](https://github.com/FalkorDB/falkordb-rs/pull/325) and
+  [#326](https://github.com/FalkorDB/falkordb-rs/pull/326) into one change
+  ([#327](https://github.com/FalkorDB/falkordb-rs/pull/327))
+
 - Bump the `tokio` crate (1.53.0 → 1.53.1), the `libc` crate (0.2.186 → 0.2.189), the
   `thiserror` crate (2.0.18 → 2.0.19), the `serde_json` crate (1.0.150 → 1.0.151), the
   `actions/checkout` GitHub Action (7.0.0 → 7.0.1, pinned SHA `9c091bb` → `3d3c42e`) and the

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#324](https://github.com/FalkorDB/falkordb-rs/pull/324),
   [#325](https://github.com/FalkorDB/falkordb-rs/pull/325) and
   [#326](https://github.com/FalkorDB/falkordb-rs/pull/326) into one change
+  ([#327](https://github.com/FalkorDB/falkordb-rs/pull/327))
 
 - Bump the `tokio` crate (1.53.0 → 1.53.1), the `libc` crate (0.2.186 → 0.2.189), the
   `thiserror` crate (2.0.18 → 2.0.19), the `serde_json` crate (1.0.150 → 1.0.151), the

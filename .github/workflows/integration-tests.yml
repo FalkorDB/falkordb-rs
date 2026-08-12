@@ -26,6 +26,10 @@ env:
   # Retry transient crates.io download failures and avoid HTTP/2 "unexpected eof" errors.
   CARGO_NET_RETRY: "10"
   CARGO_HTTP_MULTIPLEXING: "false"
+  # FalkorDB image tag under test: the released `latest` for pull requests,
+  # pushes and tags, `edge` for the scheduled daily run, or an explicit tag on
+  # manual dispatch.
+  FALKORDB_VERSION: ${{ github.event.inputs.falkordb_image_tag || (github.event_name == 'schedule' && 'edge' || 'latest') }}
   FALKORDB_HOST: 127.0.0.1
   FALKORDB_PORT: 6379
 
@@ -33,23 +37,14 @@ jobs:
   integration-tests:
     runs-on: ubuntu-latest
     
-    services:
-      falkordb:
-        # Released `latest` for PRs/pushes/tags, `edge` for the scheduled daily
-        # run (or an explicit tag on manual dispatch).
-        image: falkordb/falkordb:${{ github.event.inputs.falkordb_image_tag || (github.event_name == 'schedule' && 'edge' || 'latest') }}
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      
+      - name: Start FalkorDB
+        run: |
+          docker run -d --name falkordb -p 6379:6379 "falkordb/falkordb:$FALKORDB_VERSION"
       
       - name: Install Rust
         uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
@@ -96,23 +91,14 @@ jobs:
   integration-tests-tokio:
     runs-on: ubuntu-latest
     
-    services:
-      falkordb:
-        # Released `latest` for PRs/pushes/tags, `edge` for the scheduled daily
-        # run (or an explicit tag on manual dispatch).
-        image: falkordb/falkordb:${{ github.event.inputs.falkordb_image_tag || (github.event_name == 'schedule' && 'edge' || 'latest') }}
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      
+      - name: Start FalkorDB
+        run: |
+          docker run -d --name falkordb -p 6379:6379 "falkordb/falkordb:$FALKORDB_VERSION"
       
       - name: Install Rust
         uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1

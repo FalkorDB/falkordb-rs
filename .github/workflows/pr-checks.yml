@@ -34,7 +34,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -52,7 +52,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, cargo-deny
         with:
           tool: just,cargo-deny
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -70,7 +70,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -90,7 +90,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -110,7 +110,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -140,7 +140,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -158,7 +158,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -176,7 +176,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, nextest
         with:
           tool: just,nextest
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -194,7 +194,7 @@ jobs:
       - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
         with:
           tool: just
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.

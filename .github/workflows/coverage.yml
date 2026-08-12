@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
   pull_request:
     branches:
       - main
@@ -14,7 +16,7 @@ on:
       falkordb_image_tag:
         description: "FalkorDB Docker image tag to test against (defaults to latest)"
         required: false
-        default: ""
+        default: "latest"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

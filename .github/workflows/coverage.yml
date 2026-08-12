@@ -25,26 +25,50 @@ env:
   # Retry transient crates.io download failures and avoid HTTP/2 "unexpected eof" errors.
   CARGO_NET_RETRY: "10"
   CARGO_HTTP_MULTIPLEXING: "false"
-  # FalkorDB image tag under test: the released `latest` for pull requests,
-  # pushes and tags, `edge` for the scheduled daily run, or an explicit tag on
-  # manual dispatch.
-  FALKORDB_VERSION: ${{ github.event.inputs.falkordb_image_tag || (github.event_name == 'schedule' && 'edge' || 'latest') }}
   FALKORDB_HOST: 127.0.0.1
   FALKORDB_PORT: 6379
 
 # Generate code coverage using llvm cov
 jobs:
+  # Single source of truth for the FalkorDB image tag. It cannot be a plain
+  # `env:` variable because GitHub does not allow the `env` context in
+  # `jobs.<id>.services.<id>.image`, so it is resolved once here and consumed
+  # via `needs.falkordb-version.outputs.version`.
+  falkordb-version:
+    name: Resolve FalkorDB version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        env:
+          # Released `latest` for pull requests, pushes and tags; `edge` for the
+          # scheduled daily run; an explicit tag on manual dispatch.
+          FALKORDB_VERSION: ${{ github.event.inputs.falkordb_image_tag || (github.event_name == 'schedule' && 'edge' || 'latest') }}
+        run: |
+          echo "Testing against falkordb/falkordb:$FALKORDB_VERSION"
+          echo "version=$FALKORDB_VERSION" >> "$GITHUB_OUTPUT"
+
   coverage:
     runs-on: ubuntu-latest
+    needs: falkordb-version
+
+    services:
+      falkordb:
+        # Tag resolved by the `falkordb-version` job above.
+        image: falkordb/falkordb:${{ needs.falkordb-version.outputs.version }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      
-      - name: Start FalkorDB
-        run: |
-          docker run -d --name falkordb -p 6379:6379 "falkordb/falkordb:$FALKORDB_VERSION"
       
       - name: Install redis-cli
         run: |

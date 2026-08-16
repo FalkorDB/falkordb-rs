@@ -110,6 +110,12 @@ jobs:
           cache-targets: "false"
           cache-bin: "false"
 
+      # The library tests query the shared `imdb` fixture, so it has to exist
+      # before they run. Only the coverage job populated it until now, which is
+      # part of why these tests were never run here.
+      - name: Populate test graph
+        run: pip install falkordb && just db-populate
+
       - name: Run integration tests
         run: just integration
 
@@ -176,6 +182,12 @@ jobs:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
           cache-targets: "false"
           cache-bin: "false"
+
+      # The library tests query the shared `imdb` fixture, so it has to exist
+      # before they run. Only the coverage job populated it until now, which is
+      # part of why these tests were never run here.
+      - name: Populate test graph
+        run: pip install falkordb && just db-populate
 
       - name: Run async integration tests
         run: just integration --features tokio

@@ -113,12 +113,16 @@ check-embedded-bundle:
     cargo build --features embedded-bundle --example embedded_usage
     cargo test --features embedded-bundle --lib embedded::bundle
 
-# Run the integration_tests binary with the given cargo args, exactly as the
-# integration CI jobs do. Examples: `just integration`,
+# Run the library and integration tests with the given cargo args, exactly as
+# the integration CI jobs do. Examples: `just integration`,
 # `just integration --features tokio`, `just integration --all-features`.
+#
+# --lib matters: a large share of the tests that talk to a live server live in
+# the library itself (src/graph/blocking.rs, src/graph/asynchronous.rs), so
+# selecting only --test integration_tests silently skipped them in CI.
 integration *args:
     FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
-        cargo test --test integration_tests {{args}} --verbose
+        cargo test --lib --test integration_tests {{args}} --verbose
 
 # Run a single test by name filter, e.g. `just test-one test_borrow_connection`.
 test-one filter:

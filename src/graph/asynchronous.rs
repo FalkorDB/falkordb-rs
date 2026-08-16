@@ -474,9 +474,10 @@ impl AsyncGraph {
 mod tests {
     use super::*;
     use crate::{
+        response::execution_plan::skip_results_root,
         test_utils::{
             create_async_test_client, imdb_async_test_client, open_empty_async_test_graph,
-            retry_until_async, skip_results_root,
+            retry_until_async,
         },
         ConstraintType, FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
@@ -1027,6 +1028,8 @@ mod tests {
         assert!(execution_plan.operations().get("Aggregate").is_some());
         assert_eq!(execution_plan.operations()["Aggregate"].len(), 1);
 
+        // FalkorDB up to 4.2 roots the plan in a `Results` operation that newer servers no
+        // longer plan, so assert on the operations below it to pass on both generations.
         let steps = skip_results_root(execution_plan.plan());
         assert_eq!(
             steps.iter().map(|step| step.trim()).collect::<Vec<_>>(),
@@ -1052,6 +1055,7 @@ mod tests {
             .await
             .expect("Could not generate the query");
 
+        // As in `test_explain`, ignore the legacy `Results` root the server may still plan.
         assert_eq!(skip_results_root(execution_plan.plan()).len(), 2);
 
         let mut current_rc = execution_plan.operation_tree().clone();

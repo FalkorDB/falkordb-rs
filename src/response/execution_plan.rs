@@ -269,6 +269,18 @@ impl ExecutionPlan {
     }
 }
 
+/// Execution-plan steps without the `Results` root operation that FalkorDB up to 4.2 puts above
+/// every plan and newer servers no longer plan. `GRAPH.PROFILE` appends per-operation statistics
+/// to the step, hence the second form. Test-only: the client is indifferent to the root, only
+/// assertions on a plan's shape have to be.
+#[cfg(test)]
+pub(crate) fn skip_results_root(steps: &[String]) -> &[String] {
+    match steps.first() {
+        Some(root) if root == "Results" || root.starts_with("Results |") => &steps[1..],
+        _ => steps,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,36 +439,30 @@ mod tests {
         assert!(plan.operations().contains_key("Filter"));
     }
 
-    fn parse_plan(steps: &[&str]) -> ExecutionPlan {
-        ExecutionPlan::parse(redis::Value::Array(
-            steps
-                .iter()
-                .map(|step| redis::Value::BulkString(step.as_bytes().to_vec()))
-                .collect(),
-        ))
-        .expect("Could not parse execution plan")
-    }
-
-    /// FalkorDB up to 4.2 roots every plan in a `Results` operation that newer servers no
-    /// longer plan, and `GRAPH.PROFILE` appends statistics to that step, so all three forms
-    /// must normalize to the same operations.
+    /// FalkorDB up to 4.2 roots every plan in a `Results` operation that newer servers no longer
+    /// plan, and `GRAPH.PROFILE` appends statistics to that step. Only one of those forms can be
+    /// produced by the server a given test run targets, so both are asserted here directly.
     #[test]
     fn test_skip_results_root() {
-        let plans = [
-            parse_plan(&["Results", "    Project", "        Unwind"]),
-            parse_plan(&["Project", "    Unwind"]),
-            parse_plan(&[
+        let steps = |steps: &[&str]| steps.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert_eq!(
+            skip_results_root(&steps(&["Results", "    Project"])),
+            ["    Project"]
+        );
+        assert_eq!(
+            skip_results_root(&steps(&[
                 "Results | Records produced: 1001, Execution time: 0.084527 ms",
                 "    Project | Records produced: 1001, Execution time: 0.104004 ms",
-                "        Unwind | Records produced: 1001, Execution time: 0.062085 ms",
-            ]),
-        ];
+            ])),
+            ["    Project | Records produced: 1001, Execution time: 0.104004 ms"]
+        );
 
-        for plan in &plans {
-            let steps = crate::test_utils::skip_results_root(plan.plan());
-            assert_eq!(steps.len(), 2);
-            assert!(steps[0].trim_start().starts_with("Project"));
-            assert!(steps[1].trim_start().starts_with("Unwind"));
-        }
+        // Already rootless, and an operation merely starting with `Results`: both kept whole.
+        assert_eq!(
+            skip_results_root(&steps(&["Project", "    Unwind"])),
+            ["Project", "    Unwind"]
+        );
+        assert_eq!(skip_results_root(&steps(&["ResultsFoo"])), ["ResultsFoo"]);
     }
 }

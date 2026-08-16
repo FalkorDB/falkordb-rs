@@ -1164,16 +1164,6 @@ pub(crate) mod test_utils {
         client
     }
 
-    /// Execution-plan steps without the `Results` root operation that FalkorDB up to 4.2 puts
-    /// above every plan and newer servers no longer plan. `GRAPH.PROFILE` appends per-operation
-    /// statistics to the step, hence the second form.
-    pub(crate) fn skip_results_root(steps: &[String]) -> &[String] {
-        match steps.first() {
-            Some(root) if root == "Results" || root.starts_with("Results |") => &steps[1..],
-            _ => steps,
-        }
-    }
-
     pub(crate) fn open_empty_test_graph(graph_name: &str) -> TestSyncGraphHandle {
         let client = create_test_client();
 

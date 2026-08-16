@@ -477,8 +477,8 @@ mod tests {
         );
     }
 
-    /// A childless `Results` root has nothing to skip to, so it is returned as-is rather than
-    /// panicking.
+    /// A childless `Results` root leaves no steps behind, and nothing for the tree helper to
+    /// skip to — so the tree root is returned as-is rather than panicking.
     #[test]
     fn test_skip_results_root_keeps_childless_root() {
         let plan = parse_plan(&["Results"]);

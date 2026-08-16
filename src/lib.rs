@@ -1169,10 +1169,11 @@ pub(crate) mod test_utils {
     const LEGACY_RESULTS_ROOT: &str = "Results";
 
     /// Execution-plan steps without the legacy `Results` root. A step is
-    /// `<name>[ | <args or profile stats>]`, so only the leading name is matched.
+    /// `<name>[ | <args or profile stats>]`, so it is split on `|` — as `ExecutionPlan::parse`
+    /// does — and only the operation name is matched.
     pub(crate) fn skip_results_root(steps: &[String]) -> &[String] {
-        match steps.first().map(|step| step.trim_start()) {
-            Some(first) if first.starts_with(LEGACY_RESULTS_ROOT) => &steps[1..],
+        match steps.first().and_then(|step| step.split('|').next()) {
+            Some(name) if name.trim() == LEGACY_RESULTS_ROOT => &steps[1..],
             _ => steps,
         }
     }

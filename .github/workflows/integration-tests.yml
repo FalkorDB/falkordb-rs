@@ -53,6 +53,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: falkordb-version
 
+    # Without this the job inherits the six hour default, so a hung suite
+    # holds a runner all morning and then reports `cancelled`, not `failure`.
+    timeout-minutes: 30
+
     services:
       falkordb:
         # Tag resolved by the `falkordb-version` job above.
@@ -105,6 +109,12 @@ jobs:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
           cache-targets: "false"
           cache-bin: "false"
+
+      # The library tests query the shared `imdb` fixture, so it has to exist
+      # before they run. Only the coverage job populated it until now, which is
+      # part of why these tests were never run here.
+      - name: Populate test graph
+        run: pip install falkordb && just db-populate
 
       - name: Run integration tests
         run: just integration
@@ -116,6 +126,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: falkordb-version
 
+    # Without this the job inherits the six hour default, so a hung suite
+    # holds a runner all morning and then reports `cancelled`, not `failure`.
+    timeout-minutes: 30
+
     services:
       falkordb:
         # Tag resolved by the `falkordb-version` job above.
@@ -168,6 +182,12 @@ jobs:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
           cache-targets: "false"
           cache-bin: "false"
+
+      # The library tests query the shared `imdb` fixture, so it has to exist
+      # before they run. Only the coverage job populated it until now, which is
+      # part of why these tests were never run here.
+      - name: Populate test graph
+        run: pip install falkordb && just db-populate
 
       - name: Run async integration tests
         run: just integration --features tokio
@@ -180,7 +200,10 @@ jobs:
   report-scheduled-failure:
     name: Report scheduled failure
     needs: [falkordb-version, integration-tests, integration-tests-tokio]
-    if: ${{ always() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
+    # `cancelled` as well as `failure`: a job stopped by its own timeout, or by
+    # GitHub's six hour ceiling, reports `cancelled`, and a nightly that hangs is
+    # exactly the case this alert exists for.
+    if: ${{ always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
     permissions:
       issues: write
     # Pinned, and only the one secret it declares is passed: a mutable ref

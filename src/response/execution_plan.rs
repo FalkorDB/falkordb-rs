@@ -426,4 +426,52 @@ mod tests {
         assert!(plan.operations().contains_key("Scan"));
         assert!(plan.operations().contains_key("Filter"));
     }
+
+    fn parse_plan(steps: &[&str]) -> ExecutionPlan {
+        ExecutionPlan::parse(redis::Value::Array(
+            steps
+                .iter()
+                .map(|step| redis::Value::BulkString(step.as_bytes().to_vec()))
+                .collect(),
+        ))
+        .expect("Could not parse execution plan")
+    }
+
+    /// FalkorDB up to 4.2 roots every plan in a `Results` operation that newer servers no
+    /// longer plan, so the shared test helpers must normalize both shapes identically.
+    #[test]
+    fn test_plan_helpers_normalize_legacy_results_root() {
+        let legacy = parse_plan(&["Results", "    Project", "        Unwind"]);
+        let current = parse_plan(&["Project", "    Unwind"]);
+        let expected = vec!["Project".to_string(), "    Unwind".to_string()];
+
+        assert_eq!(crate::test_utils::plan_steps(&legacy), expected);
+        assert_eq!(crate::test_utils::plan_steps(&current), expected);
+        assert_eq!(crate::test_utils::plan_root(&legacy).name, "Project");
+        assert_eq!(crate::test_utils::plan_root(&current).name, "Project");
+    }
+
+    /// `GRAPH.PROFILE` appends per-operation statistics to every step, so the root is matched
+    /// on its operation name rather than the whole line.
+    #[test]
+    fn test_plan_helpers_normalize_profiled_results_root() {
+        let profiled = parse_plan(&[
+            "Results | Records produced: 1001, Execution time: 0.084527 ms",
+            "    Project | Records produced: 1001, Execution time: 0.104004 ms",
+            "        Unwind | Records produced: 1001, Execution time: 0.062085 ms",
+        ]);
+
+        assert_eq!(crate::test_utils::plan_steps(&profiled).len(), 2);
+        assert_eq!(crate::test_utils::plan_root(&profiled).name, "Project");
+    }
+
+    /// A `Results` root with no children cannot be skipped, so it is returned as-is rather
+    /// than panicking.
+    #[test]
+    fn test_plan_root_keeps_childless_results_root() {
+        let plan = parse_plan(&["Results"]);
+
+        assert_eq!(crate::test_utils::plan_root(&plan).name, "Results");
+        assert!(crate::test_utils::plan_steps(&plan).is_empty());
+    }
 }

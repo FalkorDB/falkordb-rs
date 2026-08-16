@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run had been failing on this since the planner change landed; the tests now assert on the
   operations below that root, so they pass against both current releases and `edge`. The
   client itself needed no change — plan parsing already handles either shape
-  (PR_LINK_PLACEHOLDER)
+  ([#343](https://github.com/FalkorDB/falkordb-rs/pull/343))
 
 - Bump the `redis` crate (1.4.1 → 1.5.0), the `rojopolis/spellcheck-github-actions` GitHub
   Action (0.63.0 → 0.63.1, pinned SHA `e619e00` → `b1a70f1`) and the `github/codeql-action`

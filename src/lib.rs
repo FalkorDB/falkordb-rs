@@ -1164,41 +1164,26 @@ pub(crate) mod test_utils {
         client
     }
 
-    /// Root operation FalkorDB up to 4.2 puts at the top of every execution plan. Newer
-    /// servers no longer plan it, so tests that assert on plan shape normalize it away via
-    /// [`plan_steps`] and [`plan_root`] and pass on both server generations.
+    /// Root operation FalkorDB up to 4.2 puts at the top of every execution plan, which newer
+    /// servers no longer plan. Tests skip it so their assertions hold on both generations.
     const LEGACY_RESULTS_ROOT: &str = "Results";
 
-    /// Execution-plan steps with the legacy `Results` root removed and the remaining steps
-    /// de-indented by the level it added, leaving only the operations the server planned.
-    /// A step is `<name>[ | <args or profile stats>]`, so only the leading name is matched.
-    pub(crate) fn plan_steps(plan: &ExecutionPlan) -> Vec<String> {
-        let steps = plan.plan();
-        let has_results_root = steps
-            .first()
-            .and_then(|step| step.split('|').next())
-            .is_some_and(|name| name.trim() == LEGACY_RESULTS_ROOT);
-        match has_results_root {
-            true => steps[1..]
-                .iter()
-                .map(|step| step.strip_prefix("    ").unwrap_or(step).to_string())
-                .collect(),
-            false => steps.to_vec(),
+    /// Execution-plan steps without the legacy `Results` root. A step is
+    /// `<name>[ | <args or profile stats>]`, so only the leading name is matched.
+    pub(crate) fn skip_results_root(steps: &[String]) -> &[String] {
+        match steps.first().map(|step| step.trim_start()) {
+            Some(first) if first.starts_with(LEGACY_RESULTS_ROOT) => &steps[1..],
+            _ => steps,
         }
     }
 
-    /// Root of the operation tree, skipping the legacy `Results` root when the server
-    /// still emits it.
-    pub(crate) fn plan_root(
-        plan: &ExecutionPlan
-    ) -> std::rc::Rc<crate::response::execution_plan::Operation> {
-        let root = plan.operation_tree();
-        match root.name == LEGACY_RESULTS_ROOT {
-            true => root
-                .children
-                .first()
-                .map_or_else(|| std::rc::Rc::clone(root), std::rc::Rc::clone),
-            false => std::rc::Rc::clone(root),
+    /// Operation tree without the legacy `Results` root.
+    pub(crate) fn skip_results_root_op(
+        tree: &std::rc::Rc<crate::response::execution_plan::Operation>
+    ) -> &std::rc::Rc<crate::response::execution_plan::Operation> {
+        match tree.name == LEGACY_RESULTS_ROOT {
+            true => tree.children.first().unwrap_or(tree),
+            false => tree,
         }
     }
 

@@ -476,7 +476,7 @@ mod tests {
     use crate::{
         test_utils::{
             create_async_test_client, imdb_async_test_client, open_empty_async_test_graph,
-            plan_root, plan_steps, retry_until_async,
+            retry_until_async, skip_results_root, skip_results_root_op,
         },
         ConstraintType, FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
@@ -1027,11 +1027,17 @@ mod tests {
         assert!(execution_plan.operations().get("Aggregate").is_some());
         assert_eq!(execution_plan.operations()["Aggregate"].len(), 1);
 
-        let steps = plan_steps(&execution_plan);
-        assert_eq!(steps.len(), 6);
+        let steps = skip_results_root(execution_plan.plan());
         assert_eq!(
-            steps.join("\n"),
-            "Limit\n    Aggregate\n        Filter\n            Node By Index Scan | (b:actor)\n                Project\n                    Node By Label Scan | (a:actor)"
+            steps.iter().map(|step| step.trim()).collect::<Vec<_>>(),
+            [
+                "Limit",
+                "Aggregate",
+                "Filter",
+                "Node By Index Scan | (b:actor)",
+                "Project",
+                "Node By Label Scan | (a:actor)",
+            ]
         );
     }
 
@@ -1046,10 +1052,10 @@ mod tests {
             .await
             .expect("Could not generate the query");
 
-        assert_eq!(plan_steps(&execution_plan).len(), 2);
+        assert_eq!(skip_results_root(execution_plan.plan()).len(), 2);
 
         let expected = vec!["Project", "Unwind"];
-        let mut current_rc = plan_root(&execution_plan);
+        let mut current_rc = skip_results_root_op(execution_plan.operation_tree()).clone();
         for step in expected {
             assert_eq!(current_rc.name, step);
             if step != "Unwind" {

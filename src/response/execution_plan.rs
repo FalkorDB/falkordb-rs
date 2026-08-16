@@ -440,38 +440,53 @@ mod tests {
     /// FalkorDB up to 4.2 roots every plan in a `Results` operation that newer servers no
     /// longer plan, so the shared test helpers must normalize both shapes identically.
     #[test]
-    fn test_plan_helpers_normalize_legacy_results_root() {
+    fn test_skip_results_root_normalizes_both_plan_shapes() {
         let legacy = parse_plan(&["Results", "    Project", "        Unwind"]);
         let current = parse_plan(&["Project", "    Unwind"]);
-        let expected = vec!["Project".to_string(), "    Unwind".to_string()];
 
-        assert_eq!(crate::test_utils::plan_steps(&legacy), expected);
-        assert_eq!(crate::test_utils::plan_steps(&current), expected);
-        assert_eq!(crate::test_utils::plan_root(&legacy).name, "Project");
-        assert_eq!(crate::test_utils::plan_root(&current).name, "Project");
+        for plan in [&legacy, &current] {
+            let steps = crate::test_utils::skip_results_root(plan.plan());
+            assert_eq!(
+                steps.iter().map(|step| step.trim()).collect::<Vec<_>>(),
+                ["Project", "Unwind"]
+            );
+            assert_eq!(
+                crate::test_utils::skip_results_root_op(plan.operation_tree()).name,
+                "Project"
+            );
+        }
     }
 
     /// `GRAPH.PROFILE` appends per-operation statistics to every step, so the root is matched
-    /// on its operation name rather than the whole line.
+    /// on its leading operation name rather than the whole line.
     #[test]
-    fn test_plan_helpers_normalize_profiled_results_root() {
+    fn test_skip_results_root_matches_profiled_root() {
         let profiled = parse_plan(&[
             "Results | Records produced: 1001, Execution time: 0.084527 ms",
             "    Project | Records produced: 1001, Execution time: 0.104004 ms",
             "        Unwind | Records produced: 1001, Execution time: 0.062085 ms",
         ]);
 
-        assert_eq!(crate::test_utils::plan_steps(&profiled).len(), 2);
-        assert_eq!(crate::test_utils::plan_root(&profiled).name, "Project");
+        assert_eq!(
+            crate::test_utils::skip_results_root(profiled.plan()).len(),
+            2
+        );
+        assert_eq!(
+            crate::test_utils::skip_results_root_op(profiled.operation_tree()).name,
+            "Project"
+        );
     }
 
-    /// A `Results` root with no children cannot be skipped, so it is returned as-is rather
-    /// than panicking.
+    /// A childless `Results` root has nothing to skip to, so it is returned as-is rather than
+    /// panicking.
     #[test]
-    fn test_plan_root_keeps_childless_results_root() {
+    fn test_skip_results_root_keeps_childless_root() {
         let plan = parse_plan(&["Results"]);
 
-        assert_eq!(crate::test_utils::plan_root(&plan).name, "Results");
-        assert!(crate::test_utils::plan_steps(&plan).is_empty());
+        assert!(crate::test_utils::skip_results_root(plan.plan()).is_empty());
+        assert_eq!(
+            crate::test_utils::skip_results_root_op(plan.operation_tree()).name,
+            "Results"
+        );
     }
 }

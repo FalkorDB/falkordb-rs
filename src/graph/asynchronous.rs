@@ -476,7 +476,7 @@ mod tests {
     use crate::{
         test_utils::{
             create_async_test_client, imdb_async_test_client, open_empty_async_test_graph,
-            retry_until_async,
+            plan_root, plan_steps, retry_until_async,
         },
         ConstraintType, FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
@@ -1024,13 +1024,14 @@ mod tests {
         let mut graph = imdb_async_test_client().await.select_graph("imdb");
 
         let execution_plan = graph.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().await.expect("Could not create execution plan");
-        assert_eq!(execution_plan.plan().len(), 7);
         assert!(execution_plan.operations().get("Aggregate").is_some());
         assert_eq!(execution_plan.operations()["Aggregate"].len(), 1);
 
+        let steps = plan_steps(&execution_plan);
+        assert_eq!(steps.len(), 6);
         assert_eq!(
-            execution_plan.string_representation(),
-            "\nResults\n    Limit\n        Aggregate\n            Filter\n                Node By Index Scan | (b:actor)\n                    Project\n                        Node By Label Scan | (a:actor)"
+            steps.join("\n"),
+            "Limit\n    Aggregate\n        Filter\n            Node By Index Scan | (b:actor)\n                Project\n                    Node By Label Scan | (a:actor)"
         );
     }
 
@@ -1045,10 +1046,10 @@ mod tests {
             .await
             .expect("Could not generate the query");
 
-        assert_eq!(execution_plan.plan().len(), 3);
+        assert_eq!(plan_steps(&execution_plan).len(), 2);
 
-        let expected = vec!["Results", "Project", "Unwind"];
-        let mut current_rc = execution_plan.operation_tree().clone();
+        let expected = vec!["Project", "Unwind"];
+        let mut current_rc = plan_root(&execution_plan);
         for step in expected {
             assert_eq!(current_rc.name, step);
             if step != "Unwind" {

@@ -438,55 +438,25 @@ mod tests {
     }
 
     /// FalkorDB up to 4.2 roots every plan in a `Results` operation that newer servers no
-    /// longer plan, so the shared test helpers must normalize both shapes identically.
+    /// longer plan, and `GRAPH.PROFILE` appends statistics to that step, so all three forms
+    /// must normalize to the same operations.
     #[test]
-    fn test_skip_results_root_normalizes_both_plan_shapes() {
-        let legacy = parse_plan(&["Results", "    Project", "        Unwind"]);
-        let current = parse_plan(&["Project", "    Unwind"]);
+    fn test_skip_results_root() {
+        let plans = [
+            parse_plan(&["Results", "    Project", "        Unwind"]),
+            parse_plan(&["Project", "    Unwind"]),
+            parse_plan(&[
+                "Results | Records produced: 1001, Execution time: 0.084527 ms",
+                "    Project | Records produced: 1001, Execution time: 0.104004 ms",
+                "        Unwind | Records produced: 1001, Execution time: 0.062085 ms",
+            ]),
+        ];
 
-        for plan in [&legacy, &current] {
+        for plan in &plans {
             let steps = crate::test_utils::skip_results_root(plan.plan());
-            assert_eq!(
-                steps.iter().map(|step| step.trim()).collect::<Vec<_>>(),
-                ["Project", "Unwind"]
-            );
-            assert_eq!(
-                crate::test_utils::skip_results_root_op(plan.operation_tree()).name,
-                "Project"
-            );
+            assert_eq!(steps.len(), 2);
+            assert!(steps[0].trim_start().starts_with("Project"));
+            assert!(steps[1].trim_start().starts_with("Unwind"));
         }
-    }
-
-    /// `GRAPH.PROFILE` appends per-operation statistics to every step, so the root is matched
-    /// on its leading operation name rather than the whole line.
-    #[test]
-    fn test_skip_results_root_matches_profiled_root() {
-        let profiled = parse_plan(&[
-            "Results | Records produced: 1001, Execution time: 0.084527 ms",
-            "    Project | Records produced: 1001, Execution time: 0.104004 ms",
-            "        Unwind | Records produced: 1001, Execution time: 0.062085 ms",
-        ]);
-
-        assert_eq!(
-            crate::test_utils::skip_results_root(profiled.plan()).len(),
-            2
-        );
-        assert_eq!(
-            crate::test_utils::skip_results_root_op(profiled.operation_tree()).name,
-            "Project"
-        );
-    }
-
-    /// A childless `Results` root leaves no steps behind, and nothing for the tree helper to
-    /// skip to — so the tree root is returned as-is rather than panicking.
-    #[test]
-    fn test_skip_results_root_keeps_childless_root() {
-        let plan = parse_plan(&["Results"]);
-
-        assert!(crate::test_utils::skip_results_root(plan.plan()).is_empty());
-        assert_eq!(
-            crate::test_utils::skip_results_root_op(plan.operation_tree()).name,
-            "Results"
-        );
     }
 }

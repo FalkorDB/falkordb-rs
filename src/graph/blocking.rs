@@ -466,7 +466,7 @@ mod tests {
     use crate::{
         test_utils::{
             create_test_client, imdb_test_client, open_empty_test_graph, retry_until,
-            skip_results_root, skip_results_root_op,
+            skip_results_root,
         },
         FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
@@ -984,8 +984,12 @@ mod tests {
 
         assert_eq!(skip_results_root(execution_plan.plan()).len(), 2);
 
+        let mut current_rc = execution_plan.operation_tree().clone();
+        if current_rc.name == "Results" {
+            current_rc = current_rc.children[0].clone();
+        }
+
         let expected = vec!["Project", "Unwind"];
-        let mut current_rc = skip_results_root_op(execution_plan.operation_tree()).clone();
         for step in expected {
             assert_eq!(current_rc.name, step);
             if step != "Unwind" {

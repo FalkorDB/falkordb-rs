@@ -1164,27 +1164,13 @@ pub(crate) mod test_utils {
         client
     }
 
-    /// Root operation FalkorDB up to 4.2 puts at the top of every execution plan, which newer
-    /// servers no longer plan. Tests skip it so their assertions hold on both generations.
-    const LEGACY_RESULTS_ROOT: &str = "Results";
-
-    /// Execution-plan steps without the legacy `Results` root. A step is
-    /// `<name>[ | <args or profile stats>]`, so it is split on `|` — as `ExecutionPlan::parse`
-    /// does — and only the operation name is matched.
+    /// Execution-plan steps without the `Results` root operation that FalkorDB up to 4.2 puts
+    /// above every plan and newer servers no longer plan. `GRAPH.PROFILE` appends per-operation
+    /// statistics to the step, hence the second form.
     pub(crate) fn skip_results_root(steps: &[String]) -> &[String] {
-        match steps.first().and_then(|step| step.split('|').next()) {
-            Some(name) if name.trim() == LEGACY_RESULTS_ROOT => &steps[1..],
+        match steps.first() {
+            Some(root) if root == "Results" || root.starts_with("Results |") => &steps[1..],
             _ => steps,
-        }
-    }
-
-    /// Operation tree without the legacy `Results` root.
-    pub(crate) fn skip_results_root_op(
-        tree: &std::rc::Rc<crate::response::execution_plan::Operation>
-    ) -> &std::rc::Rc<crate::response::execution_plan::Operation> {
-        match tree.name == LEGACY_RESULTS_ROOT {
-            true => tree.children.first().unwrap_or(tree),
-            false => tree,
         }
     }
 

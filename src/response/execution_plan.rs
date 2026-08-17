@@ -269,6 +269,18 @@ impl ExecutionPlan {
     }
 }
 
+/// Execution-plan steps without the `Results` root operation that FalkorDB up to 4.2 puts above
+/// every plan and newer servers no longer plan. `GRAPH.PROFILE` appends per-operation statistics
+/// to the step, hence the second form. Test-only: the client is indifferent to the root, only
+/// assertions on a plan's shape have to be.
+#[cfg(test)]
+pub(crate) fn skip_results_root(steps: &[String]) -> &[String] {
+    match steps.first() {
+        Some(root) if root == "Results" || root.starts_with("Results |") => &steps[1..],
+        _ => steps,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,5 +437,32 @@ mod tests {
         assert_eq!(plan.operations().len(), 2);
         assert!(plan.operations().contains_key("Scan"));
         assert!(plan.operations().contains_key("Filter"));
+    }
+
+    /// FalkorDB up to 4.2 roots every plan in a `Results` operation that newer servers no longer
+    /// plan, and `GRAPH.PROFILE` appends statistics to that step. Only one of those forms can be
+    /// produced by the server a given test run targets, so both are asserted here directly.
+    #[test]
+    fn test_skip_results_root() {
+        let steps = |steps: &[&str]| steps.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert_eq!(
+            skip_results_root(&steps(&["Results", "    Project"])),
+            ["    Project"]
+        );
+        assert_eq!(
+            skip_results_root(&steps(&[
+                "Results | Records produced: 1001, Execution time: 0.084527 ms",
+                "    Project | Records produced: 1001, Execution time: 0.104004 ms",
+            ])),
+            ["    Project | Records produced: 1001, Execution time: 0.104004 ms"]
+        );
+
+        // Already rootless, and an operation merely starting with `Results`: both kept whole.
+        assert_eq!(
+            skip_results_root(&steps(&["Project", "    Unwind"])),
+            ["Project", "    Unwind"]
+        );
+        assert_eq!(skip_results_root(&steps(&["ResultsFoo"])), ["ResultsFoo"]);
     }
 }

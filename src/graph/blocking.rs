@@ -464,6 +464,7 @@ impl HasGraphSchema for SyncGraph {
 mod tests {
     use super::*;
     use crate::{
+        response::execution_plan::skip_results_root,
         test_utils::{create_test_client, imdb_test_client, open_empty_test_graph, retry_until},
         FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
@@ -952,13 +953,22 @@ mod tests {
         let mut graph = imdb_test_client().select_graph("imdb");
 
         let execution_plan = graph.explain("MATCH (a:actor) WITH a MATCH (b:actor) WHERE a.age = b.age AND a <> b RETURN a, collect(b) LIMIT 100").execute().expect("Could not create execution plan");
-        assert_eq!(execution_plan.plan().len(), 7);
         assert!(execution_plan.operations().get("Aggregate").is_some());
         assert_eq!(execution_plan.operations()["Aggregate"].len(), 1);
 
+        // FalkorDB up to 4.2 roots the plan in a `Results` operation that newer servers no
+        // longer plan, so assert on the operations below it to pass on both generations.
+        let steps = skip_results_root(execution_plan.plan());
         assert_eq!(
-            execution_plan.string_representation(),
-            "\nResults\n    Limit\n        Aggregate\n            Filter\n                Node By Index Scan | (b:actor)\n                    Project\n                        Node By Label Scan | (a:actor)"
+            steps.iter().map(|step| step.trim()).collect::<Vec<_>>(),
+            [
+                "Limit",
+                "Aggregate",
+                "Filter",
+                "Node By Index Scan | (b:actor)",
+                "Project",
+                "Node By Label Scan | (a:actor)",
+            ]
         );
     }
 
@@ -972,10 +982,15 @@ mod tests {
             .execute()
             .expect("Could not generate the query");
 
-        assert_eq!(execution_plan.plan().len(), 3);
+        // As in `test_explain`, ignore the legacy `Results` root the server may still plan.
+        assert_eq!(skip_results_root(execution_plan.plan()).len(), 2);
 
-        let expected = vec!["Results", "Project", "Unwind"];
         let mut current_rc = execution_plan.operation_tree().clone();
+        if current_rc.name == "Results" {
+            current_rc = current_rc.children[0].clone();
+        }
+
+        let expected = vec!["Project", "Unwind"];
         for step in expected {
             assert_eq!(current_rc.name, step);
             if step != "Unwind" {

@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- Bump the `redis` crate (1.5.0 → 1.7.0), the `which` crate (8.0.5 → 8.0.6), the `futures`
+  and `futures-core` crates (0.3.33 → 0.3.34), the `thiserror` crate (2.0.19 → 2.0.20), the
+  `MarcoIeni/release-plz-action` GitHub Action (0.5.131 → 0.5.132, pinned SHA `2eb1d8b` →
+  `b5543c1`), the `actions/deploy-pages` GitHub Action (5.0.0 → 5.0.1, pinned SHA `cd2ce8f`
+  → `368f825`), the `github/codeql-action` (`init` and `analyze`) GitHub Action (4.37.6 /
+  4.37.7 → 4.37.9, pinned SHA `5595cca` / `ff2f1c6` → `cdf488f`) and the
+  `rojopolis/spellcheck-github-actions` GitHub Action (0.64.0 → 0.66.0, pinned SHA `26a39cd`
+  → `c1934c5`), combining the Dependabot updates from
+  [#337](https://github.com/FalkorDB/falkordb-rs/pull/337),
+  [#338](https://github.com/FalkorDB/falkordb-rs/pull/338),
+  [#339](https://github.com/FalkorDB/falkordb-rs/pull/339),
+  [#341](https://github.com/FalkorDB/falkordb-rs/pull/341),
+  [#345](https://github.com/FalkorDB/falkordb-rs/pull/345),
+  [#346](https://github.com/FalkorDB/falkordb-rs/pull/346),
+  [#347](https://github.com/FalkorDB/falkordb-rs/pull/347),
+  [#348](https://github.com/FalkorDB/falkordb-rs/pull/348),
+  [#349](https://github.com/FalkorDB/falkordb-rs/pull/349) and
+  [#350](https://github.com/FalkorDB/falkordb-rs/pull/350) into one change
+  ([#351](https://github.com/FalkorDB/falkordb-rs/pull/351))
+
 - Make the `test_explain` and `test_profile` tests tolerate FalkorDB dropping the `Results`
   root operation from `GRAPH.EXPLAIN` / `GRAPH.PROFILE` output. The nightly `edge` coverage
   run had been failing on this since the planner change landed; the tests now assert on the

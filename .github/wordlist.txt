@@ -12,6 +12,7 @@ thiserror
 mut
 redis
 dependabot
+MarcoIeni
 yml
 yaml
 codecov

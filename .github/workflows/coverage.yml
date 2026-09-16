@@ -108,6 +108,10 @@ jobs:
         run: just coverage
       
       - name: Upload coverage reports to Codecov
+        # Dependabot-authored PRs cannot access repository secrets, regardless of
+        # who triggers a re-run. The generated report remains validated by the
+        # coverage command; skip only its token-protected upload.
+        if: github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: codecov.json

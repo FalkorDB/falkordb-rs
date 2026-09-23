@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop policing Sentinel detection with the configured response timeout, so a short timeout no
+  longer prevents the async client from being constructed. `FalkorClientBuilder::build` probes
+  the server with `INFO` to detect a Sentinel deployment, and that probe inherited the
+  response timeout set through
+  [`with_response_timeout`](https://docs.rs/falkordb/latest/falkordb/struct.FalkorClientBuilder.html#method.with_response_timeout)
+  — turning "a query must answer within X" into "the client must finish connecting within X".
+  Whenever the handshake and probe were slower than the timeout, `build` failed with
+  `ConnectionDown` and the client could not be created at all. The probe now uses its own
+  deadline, never shorter than ten seconds, so it still bounds a server that goes silent after
+  the handshake without rejecting a healthy but momentarily slow one. This was also the cause
+  of the intermittent `test_default_response_timeout_imposes_no_client_deadline` failures on
+  the daily `edge` coverage run: the client, not FalkorDB, was at fault
+  ([#359](https://github.com/FalkorDB/falkordb-rs/pull/359))
+
 ### Other
 
 - Bump the `redis` crate (1.5.0 → 1.7.0), the `which` crate (8.0.5 → 8.0.6), the `futures`

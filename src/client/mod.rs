@@ -150,6 +150,13 @@ pub(crate) enum FalkorClientProvider {
         /// would otherwise surface as spurious connection errors while the server
         /// keeps executing the query.
         response_timeout: Option<std::time::Duration>,
+        /// Deadline for everything that must finish before a connection is usable:
+        /// establishing it, and the one-off topology probe
+        /// [`get_sentinel_client_async`](FalkorClientProvider::get_sentinel_client_async)
+        /// runs while the client is being built. It deliberately does not bound query
+        /// responses — that is `response_timeout`'s job — so a caller can demand quick
+        /// answers without making their client impossible to construct.
+        connect_timeout: Option<std::time::Duration>,
     },
 }
 
@@ -175,20 +182,24 @@ impl FalkorClientProvider {
         })
     }
 
-    /// Async connection config carrying the provider's response timeout. Always set
+    /// Async connection config carrying the provider's timeouts. Both are always set
     /// explicitly (even when `None`) so redis-rs 1.x's default 500ms response timeout
     /// never applies.
     #[cfg(feature = "tokio")]
     fn async_connection_config(
-        response_timeout: Option<std::time::Duration>
+        response_timeout: Option<std::time::Duration>,
+        connect_timeout: Option<std::time::Duration>,
     ) -> redis::AsyncConnectionConfig {
-        redis::AsyncConnectionConfig::new().set_response_timeout(response_timeout)
+        redis::AsyncConnectionConfig::new()
+            .set_response_timeout(response_timeout)
+            .set_connection_timeout(connect_timeout)
     }
 
     #[cfg(feature = "tokio")]
     pub(crate) async fn get_async_connection(&mut self) -> FalkorResult<FalkorAsyncConnection> {
         let response_timeout = self.response_timeout();
-        self.get_async_connection_with_response_timeout(response_timeout)
+        let connect_timeout = self.connect_timeout();
+        self.get_async_connection_with_timeouts(response_timeout, connect_timeout)
             .await
     }
 
@@ -196,9 +207,10 @@ impl FalkorClientProvider {
     /// timeout, so callers that are not executing user queries can opt out of the
     /// configured deadline. See [`get_sentinel_client_async`](Self::get_sentinel_client_async).
     #[cfg(feature = "tokio")]
-    async fn get_async_connection_with_response_timeout(
+    async fn get_async_connection_with_timeouts(
         &mut self,
         response_timeout: Option<std::time::Duration>,
+        connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<FalkorAsyncConnection> {
         Ok(match self {
             FalkorClientProvider::Redis {
@@ -208,6 +220,7 @@ impl FalkorClientProvider {
                 sentinel
                     .get_async_connection_with_config(&Self::async_connection_config(
                         response_timeout,
+                        connect_timeout,
                     ))
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
@@ -216,6 +229,7 @@ impl FalkorClientProvider {
                 client
                     .get_multiplexed_async_connection_with_config(&Self::async_connection_config(
                         response_timeout,
+                        connect_timeout,
                     ))
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
@@ -252,11 +266,13 @@ impl FalkorClientProvider {
             FalkorClientProvider::Redis {
                 sentinel_replica: Some(replica),
                 response_timeout,
+                connect_timeout,
                 ..
             } => Ok(FalkorAsyncConnection::Redis(
                 replica
                     .get_async_connection_with_config(&Self::async_connection_config(
                         *response_timeout,
+                        *connect_timeout,
                     ))
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
@@ -301,6 +317,7 @@ impl FalkorClientProvider {
         max_inflight: Option<NonZeroUsize>,
     ) -> FalkorResult<FalkorAsyncConnection> {
         let response_timeout = self.response_timeout();
+        let connect_timeout = self.connect_timeout();
         let client = match self {
             FalkorClientProvider::Redis {
                 sentinel: Some(sentinel),
@@ -313,7 +330,7 @@ impl FalkorClientProvider {
             #[cfg(test)]
             FalkorClientProvider::None => return Err(FalkorDBError::UnavailableProvider),
         };
-        Self::manager_from_client(client, max_inflight, response_timeout).await
+        Self::manager_from_client(client, max_inflight, response_timeout, connect_timeout).await
     }
 
     /// Replica-routed counterpart of
@@ -325,6 +342,7 @@ impl FalkorClientProvider {
         max_inflight: Option<NonZeroUsize>,
     ) -> FalkorResult<FalkorAsyncConnection> {
         let response_timeout = self.response_timeout();
+        let connect_timeout = self.connect_timeout();
         match self {
             FalkorClientProvider::Redis {
                 sentinel_replica: Some(replica),
@@ -334,7 +352,8 @@ impl FalkorClientProvider {
                     .async_get_client()
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-                Self::manager_from_client(client, max_inflight, response_timeout).await
+                Self::manager_from_client(client, max_inflight, response_timeout, connect_timeout)
+                    .await
             }
             _ => Err(FalkorDBError::UnavailableProvider),
         }
@@ -352,16 +371,31 @@ impl FalkorClientProvider {
         }
     }
 
+    /// The configured deadline for connection setup (`None` disables it).
+    #[cfg(feature = "tokio")]
+    fn connect_timeout(&self) -> Option<std::time::Duration> {
+        match self {
+            FalkorClientProvider::Redis {
+                connect_timeout, ..
+            } => *connect_timeout,
+            #[cfg(test)]
+            FalkorClientProvider::None => None,
+        }
+    }
+
     #[cfg(feature = "tokio")]
     async fn manager_from_client(
         client: redis::Client,
         max_inflight: Option<NonZeroUsize>,
         response_timeout: Option<std::time::Duration>,
+        connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<FalkorAsyncConnection> {
         // Always set the response timeout explicitly (even when `None`) so redis-rs
-        // 1.x's default 500ms response timeout never applies.
-        let config =
-            redis::aio::ConnectionManagerConfig::new().set_response_timeout(response_timeout);
+        // 1.x's default 500ms response timeout never applies. The connect timeout bounds
+        // each (re)connection attempt the manager makes, never a query's reply.
+        let config = redis::aio::ConnectionManagerConfig::new()
+            .set_response_timeout(response_timeout)
+            .set_connection_timeout(connect_timeout);
         let config = match max_inflight {
             Some(limit) => config.set_concurrency_limit(limit.get()),
             None => config,
@@ -490,15 +524,15 @@ impl FalkorClientProvider {
         &mut self,
         connection_info: &redis::ConnectionInfo,
     ) -> FalkorResult<Option<SentinelClients>> {
-        // Topology detection runs while the client is still being built, so it must not
-        // inherit the configured response timeout as-is: that deadline expresses "a query
+        // Topology detection runs while the client is still being built, so it is bounded by
+        // the connect timeout rather than the response timeout: the latter expresses "a query
         // must answer within X", not "the client must finish connecting within X". Applying
-        // it here made `FalkorClientBuilder::build` fail with a connection error whenever the
-        // handshake or this `INFO` happened to be slower than a tight timeout — the client
-        // could not even be constructed. See [`sentinel_probe_timeout`].
-        let probe_timeout = sentinel_probe_timeout(self.response_timeout());
+        // the response timeout here made `FalkorClientBuilder::build` fail with a connection
+        // error whenever the handshake or this `INFO` happened to be slower than a tight
+        // timeout — the client could not even be constructed.
+        let connect_timeout = self.connect_timeout();
         let mut conn = self
-            .get_async_connection_with_response_timeout(probe_timeout)
+            .get_async_connection_with_timeouts(connect_timeout, connect_timeout)
             .await?;
         if !conn.check_is_redis_sentinel().await? {
             return Ok(None);
@@ -542,26 +576,6 @@ impl FalkorClientProvider {
 pub(crate) struct SentinelClients {
     pub(crate) master: redis::sentinel::SentinelClient,
     pub(crate) replica: Option<redis::sentinel::SentinelClient>,
-}
-
-/// Floor for the Sentinel-detection deadline. Client setup must not be policed by a
-/// query-response budget (see
-/// [`get_sentinel_client_async`](FalkorClientProvider::get_sentinel_client_async)), yet a
-/// caller who configured a timeout still wants no unbounded wait if the server completes the
-/// handshake and then never answers. Ten seconds is orders of magnitude above a healthy
-/// handshake plus `INFO` round trip, even on a loaded CI runner, so the probe never rejects a
-/// reachable server.
-#[cfg(feature = "tokio")]
-const SENTINEL_PROBE_MIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// The deadline for the Sentinel-detection probe, derived from the configured response
-/// timeout: never shorter than [`SENTINEL_PROBE_MIN_TIMEOUT`], and absent when no response
-/// timeout is configured (the default, which imposes no client-side deadline at all).
-#[cfg(feature = "tokio")]
-fn sentinel_probe_timeout(
-    response_timeout: Option<std::time::Duration>
-) -> Option<std::time::Duration> {
-    response_timeout.map(|timeout| timeout.max(SENTINEL_PROBE_MIN_TIMEOUT))
 }
 
 pub(crate) trait ProvidesSyncConnections: Sync + Send {
@@ -613,9 +627,9 @@ mod tests {
                         "+OK\r\n".to_string()
                     };
 
-                    stream
-                        .write_all(reply.as_bytes())
-                        .expect("reply to the client");
+                    // A deliberately slow reply may arrive after the client has given up and
+                    // gone away, which is exactly what the connect-timeout test provokes.
+                    let _ = stream.write_all(reply.as_bytes());
                 }
             }
         });
@@ -703,27 +717,32 @@ mod tests {
         );
     }
 
-    /// The probe deadline never shortens client construction to a query-response budget, but
-    /// it still bounds a server that goes silent after the handshake.
+    /// The connect timeout is what bounds setup, so a server that accepts the connection and
+    /// then goes silent cannot hang client construction, however generous — or absent — the
+    /// query response timeout is.
     #[cfg(feature = "tokio")]
-    #[test]
-    fn test_sentinel_probe_timeout_floor() {
-        use std::time::Duration;
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_sentinel_detection_is_bounded_by_the_connect_timeout() {
+        let url = spawn_slow_info_server(std::time::Duration::from_secs(30));
 
-        assert_eq!(
-            sentinel_probe_timeout(None),
-            None,
-            "no configured response timeout means no client-side deadline at all"
-        );
-        assert_eq!(
-            sentinel_probe_timeout(Some(Duration::from_millis(1))),
-            Some(SENTINEL_PROBE_MIN_TIMEOUT),
-            "a query-sized timeout is raised to the floor rather than policing setup"
-        );
-        assert_eq!(
-            sentinel_probe_timeout(Some(SENTINEL_PROBE_MIN_TIMEOUT * 6)),
-            Some(SENTINEL_PROBE_MIN_TIMEOUT * 6),
-            "a timeout above the floor is left alone, so the probe stays bounded"
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            // No query deadline at all: setup is bounded on its own terms.
+            response_timeout: None,
+            connect_timeout: Some(std::time::Duration::from_millis(50)),
+        };
+
+        let connection_info =
+            redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
+        let probe = provider.get_sentinel_client_async(&connection_info).await;
+
+        assert!(
+            probe.is_err(),
+            "a server that goes silent after the handshake must not hang client construction"
         );
     }
 
@@ -744,6 +763,7 @@ mod tests {
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: Some(std::time::Duration::from_millis(5)),
+            connect_timeout: Some(crate::DEFAULT_CONNECT_TIMEOUT),
         };
 
         let connection_info =
@@ -780,6 +800,7 @@ mod tests {
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
+            connect_timeout: None,
         };
         assert!(!provider.has_sentinel_replica());
     }
@@ -927,6 +948,7 @@ mod tests {
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
+            connect_timeout: None,
         };
         assert!(!provider.has_sentinel_replica());
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
@@ -952,6 +974,7 @@ mod tests {
             sentinel_replica: None,
             embedded_server: None,
             response_timeout: None,
+            connect_timeout: None,
         };
         // Just verify the structure can be created
     }
@@ -967,6 +990,7 @@ mod tests {
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
+            connect_timeout: None,
         };
         // Just verify the structure can be created
     }
@@ -993,6 +1017,7 @@ mod tests {
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
+            connect_timeout: None,
         };
         // The replica connection fails and the error must surface as a replica-path
         // RedisError; the call must not fall back to the primary.
@@ -1025,6 +1050,7 @@ mod tests {
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
+                connect_timeout: None,
             };
             let result = provider.get_async_replica_connection().await;
             assert!(
@@ -1047,6 +1073,7 @@ mod tests {
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
+            connect_timeout: None,
         };
         let result = provider.get_replica_connection();
         assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
@@ -1066,6 +1093,7 @@ mod tests {
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
+                connect_timeout: None,
             };
             let result = provider.get_async_replica_connection().await;
             assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
@@ -1106,6 +1134,7 @@ mod tests {
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
+                connect_timeout: None,
             };
             // The sentinel arm resolves the master through an unreachable sentinel, which
             // fails fast with a RedisError rather than bypassing it.
@@ -1139,6 +1168,7 @@ mod tests {
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
+                connect_timeout: None,
             };
             let result = provider.get_async_replica_connection_manager(None).await;
             assert!(
@@ -1162,6 +1192,7 @@ mod tests {
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
+                connect_timeout: None,
             };
             let result = provider.get_async_replica_connection_manager(None).await;
             assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));

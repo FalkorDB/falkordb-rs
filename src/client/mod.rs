@@ -187,27 +187,35 @@ impl FalkorClientProvider {
 
     #[cfg(feature = "tokio")]
     pub(crate) async fn get_async_connection(&mut self) -> FalkorResult<FalkorAsyncConnection> {
+        let response_timeout = self.response_timeout();
+        self.get_async_connection_with_response_timeout(response_timeout)
+            .await
+    }
+
+    /// [`get_async_connection`](Self::get_async_connection) with an explicit response
+    /// timeout, so callers that are not executing user queries can opt out of the
+    /// configured deadline. See [`get_sentinel_client_async`](Self::get_sentinel_client_async).
+    #[cfg(feature = "tokio")]
+    async fn get_async_connection_with_response_timeout(
+        &mut self,
+        response_timeout: Option<std::time::Duration>,
+    ) -> FalkorResult<FalkorAsyncConnection> {
         Ok(match self {
             FalkorClientProvider::Redis {
                 sentinel: Some(sentinel),
-                response_timeout,
                 ..
             } => FalkorAsyncConnection::Redis(
                 sentinel
                     .get_async_connection_with_config(&Self::async_connection_config(
-                        *response_timeout,
+                        response_timeout,
                     ))
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
             ),
-            FalkorClientProvider::Redis {
-                client,
-                response_timeout,
-                ..
-            } => FalkorAsyncConnection::Redis(
+            FalkorClientProvider::Redis { client, .. } => FalkorAsyncConnection::Redis(
                 client
                     .get_multiplexed_async_connection_with_config(&Self::async_connection_config(
-                        *response_timeout,
+                        response_timeout,
                     ))
                     .await
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
@@ -482,7 +490,16 @@ impl FalkorClientProvider {
         &mut self,
         connection_info: &redis::ConnectionInfo,
     ) -> FalkorResult<Option<SentinelClients>> {
-        let mut conn = self.get_async_connection().await?;
+        // Topology detection runs while the client is still being built, so it must not
+        // inherit the configured response timeout as-is: that deadline expresses "a query
+        // must answer within X", not "the client must finish connecting within X". Applying
+        // it here made `FalkorClientBuilder::build` fail with a connection error whenever the
+        // handshake or this `INFO` happened to be slower than a tight timeout — the client
+        // could not even be constructed. See [`sentinel_probe_timeout`].
+        let probe_timeout = sentinel_probe_timeout(self.response_timeout());
+        let mut conn = self
+            .get_async_connection_with_response_timeout(probe_timeout)
+            .await?;
         if !conn.check_is_redis_sentinel().await? {
             return Ok(None);
         }
@@ -527,6 +544,26 @@ pub(crate) struct SentinelClients {
     pub(crate) replica: Option<redis::sentinel::SentinelClient>,
 }
 
+/// Floor for the Sentinel-detection deadline. Client setup must not be policed by a
+/// query-response budget (see
+/// [`get_sentinel_client_async`](FalkorClientProvider::get_sentinel_client_async)), yet a
+/// caller who configured a timeout still wants no unbounded wait if the server completes the
+/// handshake and then never answers. Ten seconds is orders of magnitude above a healthy
+/// handshake plus `INFO` round trip, even on a loaded CI runner, so the probe never rejects a
+/// reachable server.
+#[cfg(feature = "tokio")]
+const SENTINEL_PROBE_MIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The deadline for the Sentinel-detection probe, derived from the configured response
+/// timeout: never shorter than [`SENTINEL_PROBE_MIN_TIMEOUT`], and absent when no response
+/// timeout is configured (the default, which imposes no client-side deadline at all).
+#[cfg(feature = "tokio")]
+fn sentinel_probe_timeout(
+    response_timeout: Option<std::time::Duration>
+) -> Option<std::time::Duration> {
+    response_timeout.map(|timeout| timeout.max(SENTINEL_PROBE_MIN_TIMEOUT))
+}
+
 pub(crate) trait ProvidesSyncConnections: Sync + Send {
     fn get_connection(&self) -> FalkorResult<FalkorSyncConnection>;
 }
@@ -535,6 +572,192 @@ pub(crate) trait ProvidesSyncConnections: Sync + Send {
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    /// Start a minimal RESP server on a background thread and return the URL to reach it.
+    /// It answers every command immediately except `INFO`, which it holds back for
+    /// `info_delay`, so a test can pin down which timeout a code path is subject to without
+    /// needing a real server. One connection — all the Sentinel probe opens — is served.
+    #[cfg(feature = "tokio")]
+    fn spawn_slow_info_server(info_delay: std::time::Duration) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener
+            .local_addr()
+            .expect("read the bound address")
+            .port();
+
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept the probe's connection");
+            let mut pending = String::new();
+            let mut chunk = [0u8; 1024];
+
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+
+                // Commands are ASCII here, so decoding each read is safe even though a read
+                // may land mid-command; `take_commands` is what re-establishes the framing.
+                pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+
+                for command in take_commands(&mut pending) {
+                    // Match `INFO` as a whole argument: `SETINFO`, sent by the handshake,
+                    // must neither match nor be delayed.
+                    let reply = if command.contains("\r\nINFO\r\n") {
+                        std::thread::sleep(info_delay);
+                        let body = "# Server\r\nredis_mode:standalone\r\n";
+                        format!("${}\r\n{body}\r\n", body.len())
+                    } else {
+                        "+OK\r\n".to_string()
+                    };
+
+                    stream
+                        .write_all(reply.as_bytes())
+                        .expect("reply to the client");
+                }
+            }
+        });
+
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    /// Split every complete RESP command off the front of `pending`, leaving a partial one
+    /// behind. TCP reads are not message boundaries: a read can carry several pipelined
+    /// commands or half of one, and answering per read rather than per command would
+    /// desynchronize the stream and stall whatever the server is standing in for.
+    #[cfg(feature = "tokio")]
+    fn take_commands(pending: &mut String) -> Vec<String> {
+        let mut commands = Vec::new();
+
+        // A request is an array header (`*<argc>`) followed by `argc` bulk strings, each a
+        // `$<len>` header and a payload line, so a whole command spans `1 + 2 * argc` lines.
+        while let Some((header, _)) = pending.split_once("\r\n") {
+            let argc: usize = header
+                .strip_prefix('*')
+                .expect("a RESP request starts with an array header")
+                .parse()
+                .expect("a RESP array header carries its argument count");
+
+            let Some(end) = crlf_lines_end(pending, 1 + 2 * argc) else {
+                break;
+            };
+
+            commands.push(pending.drain(..end).collect());
+        }
+
+        commands
+    }
+
+    /// The offset just past `lines` CRLF-terminated lines of `buf`, or `None` when it holds
+    /// fewer than that.
+    #[cfg(feature = "tokio")]
+    fn crlf_lines_end(
+        buf: &str,
+        lines: usize,
+    ) -> Option<usize> {
+        let mut end = 0;
+        for _ in 0..lines {
+            end += buf[end..].find("\r\n")? + 2;
+        }
+
+        Some(end)
+    }
+
+    /// Whatever the fake server stands in for, it must recover the command framing from a
+    /// byte stream: reads carry pipelined commands, split commands, or both.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn test_take_commands_reframes_the_byte_stream() {
+        let ping = "*1\r\n$4\r\nPING\r\n";
+        let info = "*2\r\n$4\r\nINFO\r\n$6\r\nserver\r\n";
+
+        let mut pending = String::new();
+        assert!(
+            take_commands(&mut pending).is_empty(),
+            "an empty buffer holds no command"
+        );
+
+        pending.push_str(ping);
+        pending.push_str(info);
+        assert_eq!(
+            take_commands(&mut pending),
+            vec![ping.to_string(), info.to_string()],
+            "pipelined commands are answered one by one"
+        );
+        assert!(pending.is_empty(), "nothing is left behind");
+
+        let (head, tail) = info.split_at(12);
+        pending.push_str(head);
+        assert!(
+            take_commands(&mut pending).is_empty(),
+            "a partial command is held back rather than answered early"
+        );
+
+        pending.push_str(tail);
+        assert_eq!(
+            take_commands(&mut pending),
+            vec![info.to_string()],
+            "the command is answered once the rest of it arrives"
+        );
+    }
+
+    /// The probe deadline never shortens client construction to a query-response budget, but
+    /// it still bounds a server that goes silent after the handshake.
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn test_sentinel_probe_timeout_floor() {
+        use std::time::Duration;
+
+        assert_eq!(
+            sentinel_probe_timeout(None),
+            None,
+            "no configured response timeout means no client-side deadline at all"
+        );
+        assert_eq!(
+            sentinel_probe_timeout(Some(Duration::from_millis(1))),
+            Some(SENTINEL_PROBE_MIN_TIMEOUT),
+            "a query-sized timeout is raised to the floor rather than policing setup"
+        );
+        assert_eq!(
+            sentinel_probe_timeout(Some(SENTINEL_PROBE_MIN_TIMEOUT * 6)),
+            Some(SENTINEL_PROBE_MIN_TIMEOUT * 6),
+            "a timeout above the floor is left alone, so the probe stays bounded"
+        );
+    }
+
+    /// Sentinel detection runs while the client is still being built, so it must not be cut
+    /// off by the configured response timeout — that deadline bounds query responses, not
+    /// client construction. Against a server whose `INFO` is far slower than the timeout,
+    /// detection must still complete; before the fix this returned a connection error and
+    /// `FalkorClientBuilder::build` failed outright.
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_sentinel_detection_is_not_bounded_by_the_response_timeout() {
+        let url = spawn_slow_info_server(std::time::Duration::from_millis(250));
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: Some(std::time::Duration::from_millis(5)),
+        };
+
+        let connection_info =
+            redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
+        let sentinels = provider
+            .get_sentinel_client_async(&connection_info)
+            .await
+            .expect("detection must outlive the 5ms query response timeout");
+
+        assert!(
+            sentinels.is_none(),
+            "the fake server reports redis_mode:standalone, so no Sentinel clients are built"
+        );
+    }
 
     #[test]
     fn test_falkor_client_provider_none_connection() {

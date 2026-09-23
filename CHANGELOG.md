@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `FalkorClientBuilder::with_connect_timeout` sets a deadline for connection setup on async
+  connections, separately from the query deadline set by
+  [`with_response_timeout`](https://docs.rs/falkordb/latest/falkordb/struct.FalkorClientBuilder.html#method.with_response_timeout).
+  It bounds everything that must finish before a connection can serve a query — establishing
+  the connection, and the one-off topology probe `build` performs — but never a query's own
+  reply, so callers can demand quick answers from queries without making the client
+  impossible to construct on a momentarily slow server. This mirrors the separation redis-rs
+  and the other FalkorDB and Redis clients all make. It defaults to the newly exported
+  `DEFAULT_CONNECT_TIMEOUT` (ten seconds), which is orders of magnitude above a healthy
+  handshake yet stops a server that accepts the connection and then goes silent from hanging
+  client construction forever; pass `None` to restore the previous unbounded behavior
+  ([#360](https://github.com/FalkorDB/falkordb-rs/pull/360))
+
 ### Fixed
 
 - Stop policing Sentinel detection with the configured response timeout, so a short timeout no
@@ -16,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — turning "a query must answer within X" into "the client must finish connecting within X".
   Whenever the handshake and probe were slower than the timeout, `build` failed with
   `ConnectionDown` and the client could not be created at all. The probe now uses its own
-  deadline, never shorter than ten seconds, so it still bounds a server that goes silent after
-  the handshake without rejecting a healthy but momentarily slow one. This was also the cause
+  deadline — the connect timeout described below — so it still bounds a server that goes
+  silent after the handshake without rejecting a healthy but momentarily slow one. This was
+  also the cause
   of the intermittent `test_default_response_timeout_imposes_no_client_deadline` failures on
   the daily `edge` coverage run: the client, not FalkorDB, was at fault
   ([#359](https://github.com/FalkorDB/falkordb-rs/pull/359))

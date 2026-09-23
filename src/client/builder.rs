@@ -24,7 +24,16 @@ pub struct FalkorClientBuilder<const R: char> {
     query_logging: bool,
     read_preference: ReadPreference,
     response_timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
 }
+
+/// Default deadline for connection setup, used unless
+/// [`with_connect_timeout`](FalkorClientBuilder::with_connect_timeout) says otherwise. Ten
+/// seconds is orders of magnitude above a healthy handshake plus topology probe, even on a
+/// loaded machine, so it never rejects a reachable server — it only stops client
+/// construction from hanging forever on one that accepts the connection and then goes
+/// silent.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl<const R: char> FalkorClientBuilder<R> {
     /// Provide a connection info for the database connection
@@ -208,6 +217,10 @@ impl<const R: char> FalkorClientBuilder<R> {
     /// traversals) and would otherwise cut the connection while the server keeps
     /// executing the query.
     ///
+    /// This deadline covers query replies only. Connection setup is bounded separately by
+    /// [`with_connect_timeout`](FalkorClientBuilder::with_connect_timeout), so a short
+    /// response timeout never makes the client harder to construct.
+    ///
     /// # Arguments
     /// * `response_timeout`: maximum time to wait for a server response, or `None` to
     ///   wait indefinitely (the default).
@@ -236,10 +249,52 @@ impl<const R: char> FalkorClientBuilder<R> {
         }
     }
 
+    /// Set the deadline for connection setup on async connections.
+    ///
+    /// This bounds everything that must finish before a connection can serve a query —
+    /// establishing it, and the one-off topology probe
+    /// [`build`](FalkorClientBuilder::build) performs — but never a query's own reply, which
+    /// is [`with_response_timeout`](FalkorClientBuilder::with_response_timeout)'s job.
+    /// Keeping the two apart means a caller can demand quick answers from queries without
+    /// making the client impossible to construct on a momentarily slow server.
+    ///
+    /// Defaults to [`DEFAULT_CONNECT_TIMEOUT`]. `None` waits indefinitely, which lets a
+    /// server that accepts the connection and then never answers hang client construction.
+    ///
+    /// # Arguments
+    /// * `connect_timeout`: maximum time to wait for a connection to become usable, or
+    ///   `None` to wait indefinitely.
+    ///
+    /// # Returns
+    /// The consumed and modified self.
+    ///
+    /// # Examples
+    /// ```
+    /// use falkordb::FalkorClientBuilder;
+    /// use std::time::Duration;
+    ///
+    /// // Fail fast when the server is unreachable, while still letting a long query run to
+    /// // completion: the two deadlines are independent.
+    /// let builder = FalkorClientBuilder::new()
+    ///     .with_connect_timeout(Some(Duration::from_secs(2)))
+    ///     .with_response_timeout(None);
+    /// # let _ = builder;
+    /// ```
+    pub fn with_connect_timeout(
+        self,
+        connect_timeout: Option<Duration>,
+    ) -> Self {
+        Self {
+            connect_timeout,
+            ..self
+        }
+    }
+
     fn get_client<E: ToString, T: TryInto<FalkorConnectionInfo, Error = E>>(
         connection_info: T,
         tcp_settings: Option<&redis::io::tcp::TcpSettings>,
         response_timeout: Option<Duration>,
+        connect_timeout: Option<Duration>,
     ) -> FalkorResult<(FalkorClientProvider, FalkorConnectionInfo)> {
         let connection_info = connection_info
             .try_into()
@@ -268,6 +323,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                     sentinel_replica: None,
                     embedded_server: Some(embedded_server),
                     response_timeout,
+                    connect_timeout,
                 },
                 FalkorConnectionInfo::Redis(redis_connection_info),
             ));
@@ -292,6 +348,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                         #[cfg(feature = "embedded-core")]
                         embedded_server: None,
                         response_timeout,
+                        connect_timeout,
                     }
                 }
                 #[cfg(feature = "embedded-core")]
@@ -320,6 +377,7 @@ impl FalkorClientBuilder<'S'> {
             query_logging: false,
             read_preference: ReadPreference::Primary,
             response_timeout: None,
+            connect_timeout: Some(DEFAULT_CONNECT_TIMEOUT),
         }
     }
 
@@ -336,6 +394,7 @@ impl FalkorClientBuilder<'S'> {
             connection_info,
             self.tcp_settings.as_ref(),
             self.response_timeout,
+            self.connect_timeout,
         )?;
 
         #[allow(irrefutable_let_patterns)]
@@ -376,6 +435,7 @@ impl FalkorClientBuilder<'A'> {
             query_logging: false,
             read_preference: ReadPreference::Primary,
             response_timeout: None,
+            connect_timeout: Some(DEFAULT_CONNECT_TIMEOUT),
         }
     }
 
@@ -458,6 +518,7 @@ impl FalkorClientBuilder<'A'> {
             connection_info,
             self.tcp_settings.as_ref(),
             self.response_timeout,
+            self.connect_timeout,
         )?;
 
         #[allow(irrefutable_let_patterns)]
@@ -531,6 +592,40 @@ mod tests {
         // must be `None`, restoring the pre-redis-1.x behavior of no client-side deadline.
         let builder = FalkorClientBuilder::new_async();
         assert!(builder.response_timeout.is_none());
+    }
+
+    #[test]
+    fn test_builder_connect_timeout_defaults_to_the_shared_default() {
+        // Setup is bounded out of the box: an unreachable-but-accepting server must never be
+        // able to hang `build()` forever.
+        let builder = FalkorClientBuilder::new();
+        assert_eq!(builder.connect_timeout, Some(DEFAULT_CONNECT_TIMEOUT));
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn test_builder_async_connect_timeout_defaults_to_the_shared_default() {
+        let builder = FalkorClientBuilder::new_async();
+        assert_eq!(builder.connect_timeout, Some(DEFAULT_CONNECT_TIMEOUT));
+    }
+
+    #[test]
+    fn test_builder_with_connect_timeout() {
+        let builder = FalkorClientBuilder::new().with_connect_timeout(Some(Duration::from_secs(2)));
+        assert_eq!(builder.connect_timeout, Some(Duration::from_secs(2)));
+
+        // `None` is an explicit opt-out, restoring the unbounded setup of earlier releases.
+        let builder = builder.with_connect_timeout(None);
+        assert!(builder.connect_timeout.is_none());
+    }
+
+    #[test]
+    fn test_connect_and_response_timeouts_are_independent() {
+        let builder = FalkorClientBuilder::new()
+            .with_connect_timeout(Some(Duration::from_secs(2)))
+            .with_response_timeout(Some(Duration::from_millis(1)));
+        assert_eq!(builder.connect_timeout, Some(Duration::from_secs(2)));
+        assert_eq!(builder.response_timeout, Some(Duration::from_millis(1)));
     }
 
     #[test]

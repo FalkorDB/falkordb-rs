@@ -17,7 +17,9 @@ updates:
     schedule:
       interval: "weekly"
     target-branch: "main"
-    # Conventional-Commit prefix so the PR title passes the `PR title format` gate (a bare
-    # "Bump ..." title would fail it); `build` rides along with the next release.
+    # Conventional-Commit prefix so the PR title passes the `PR title format` gate. Runtime
+    # dependency bumps use `fix` so they match `release_commits` in release-plz.toml and cut a
+    # release (users get the updated dep); dev-only bumps stay `build` and ride along.
     commit-message:
-      prefix: "build"
+      prefix: "fix"
+      prefix-development: "build"

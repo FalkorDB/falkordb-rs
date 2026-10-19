@@ -17,9 +17,9 @@ updates:
     schedule:
       interval: "weekly"
     target-branch: "main"
-    # Conventional-Commit prefix so the PR title passes the `PR title format` gate. Runtime
-    # dependency bumps use `fix` so they match `release_commits` in release-plz.toml and cut a
-    # release (users get the updated dep); dev-only bumps stay `build` and ride along.
+    # Conventional-Commit prefix so the PR title passes the `PR title format` gate. Cargo bumps
+    # use `fix` so they match `release_commits` in release-plz.toml and cut a release (users get
+    # the updated dep). Dependabot can't prefix dev-only bumps differently for Cargo, so
+    # .github/workflows/dependabot-title.yml retitles those to `build` to ride along instead.
     commit-message:
       prefix: "fix"
-      prefix-development: "build"

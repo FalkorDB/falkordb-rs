@@ -1,0 +1,68 @@
+name: Dependabot PR title
+
+# Dependabot can't tell dev-only Cargo bumps apart (`prefix-development` isn't supported for
+# Cargo), so every Cargo PR is opened as `fix: bump …`, which cuts a release (see
+# `release_commits` in release-plz.toml). Retitle bumps of crates that only appear in
+# [dev-dependencies] to `build:` so they ride along with the next release instead.
+
+on:
+  # pull_request_target gives a write token to Dependabot PRs. Safe here: we only check out the
+  # base branch (never the PR head) and only read Cargo.toml from it.
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  retitle:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && startsWith(github.head_ref, 'dependabot/cargo/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Retitle dev-only bumps to build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess, tomllib
+
+          title = os.environ["PR_TITLE"]
+          m = re.match(r"fix: bump (\S+) from ", title)
+          if not m:
+              print(f"not a single-crate bump title, leaving as is: {title}")
+              raise SystemExit
+
+          crate = m.group(1)
+          manifest = tomllib.load(open("Cargo.toml", "rb"))
+
+          def runtime_tables(m):
+              yield m.get("dependencies", {})
+              yield m.get("build-dependencies", {})
+              for t in m.get("target", {}).values():
+                  yield t.get("dependencies", {})
+                  yield t.get("build-dependencies", {})
+
+          def renamed(spec):
+              return spec.get("package") if isinstance(spec, dict) else None
+
+          runtime = any(
+              crate in t or crate in {renamed(s) for s in t.values()}
+              for t in runtime_tables(manifest)
+          )
+          if runtime:
+              print(f"{crate} is a runtime dependency, keeping fix")
+              raise SystemExit
+
+          new_title = title.replace("fix:", "build:", 1)
+          subprocess.run(
+              ["gh", "pr", "edit", os.environ["PR_NUMBER"], "--title", new_title],
+              check=True,
+          )
+          print(f"retitled: {new_title}")
+          PY

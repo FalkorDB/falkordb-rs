@@ -576,6 +576,38 @@ cargo add falkordb --features tokio-native-tls
 
 A runnable example is provided in [`examples/tls.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/tls.rs).
 
+#### Connection deadlines
+
+Two independent deadlines govern an async client, and collapsing them into one is a
+classic way to end up with a client that cannot be constructed at all — a tight query
+deadline should never mean "the handshake must also finish that fast":
+
+- `with_connect_timeout` bounds **setup**:
+  establishing the connection, and the one-off topology probe `build` performs. It
+  defaults to `DEFAULT_CONNECT_TIMEOUT` (ten seconds), far above a healthy handshake
+  but enough to stop a server that accepts the connection and then goes silent from
+  hanging client construction forever.
+- `with_response_timeout` bounds **a
+  query's reply**, and defaults to `None`: query duration is left to the server's own
+  `TIMEOUT`/`TIMEOUT_DEFAULT` configuration, as in the other FalkorDB clients.
+
+```rust
+use falkordb::FalkorClientBuilder;
+use std::time::Duration;
+
+// Fail fast when the server is unreachable, yet let a long analytical query run to
+// completion: neither deadline constrains the other.
+let client = FalkorClientBuilder::new_async()
+            .with_connect_timeout(Some(Duration::from_secs(2)))
+            .with_response_timeout(None)
+            .build()
+            .await
+            .expect("Failed to build client");
+```
+
+> **Note:** both deadlines apply to async connections. Passing `None` to
+> `with_connect_timeout` restores the unbounded setup of earlier releases.
+
 #### TCP keepalive
 
 Long-lived clients behind NATs, stateful firewalls, or idle-timeout-enforcing

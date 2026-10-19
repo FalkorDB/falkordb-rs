@@ -72,6 +72,7 @@ hand; if you change the public API, run `just llms` and commit the updated `llms
 - `ConstraintStatus`
 - `ConstraintType`
 - `CopyGraphBuilder`
+- `DEFAULT_CONNECT_TIMEOUT`
 - `Date`
 - `DateTime`
 - `Duration`

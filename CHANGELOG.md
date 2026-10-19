@@ -6,7 +6,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.3...v0.10.4) - 2026-09-23
+
+### Added
+
+- `FalkorClientBuilder::with_connect_timeout` sets a deadline for connection setup on async
+  connections, separately from the query deadline set by
+  [`with_response_timeout`](https://docs.rs/falkordb/latest/falkordb/struct.FalkorClientBuilder.html#method.with_response_timeout).
+  It bounds everything that must finish before a connection can serve a query — establishing
+  the connection, and the one-off topology probe `build` performs — but never a query's own
+  reply, so callers can demand quick answers from queries without making the client
+  impossible to construct on a momentarily slow server. This mirrors the separation redis-rs
+  and the other FalkorDB and Redis clients all make. It defaults to the newly exported
+  `DEFAULT_CONNECT_TIMEOUT` (ten seconds), which is orders of magnitude above a healthy
+  handshake yet stops a server that accepts the connection and then goes silent from hanging
+  client construction forever; pass `None` to restore the previous unbounded behavior
+  ([#360](https://github.com/FalkorDB/falkordb-rs/pull/360))
+
+### Fixed
+
+- Stop policing Sentinel detection with the configured response timeout, so a short timeout no
+  longer prevents the async client from being constructed. `FalkorClientBuilder::build` probes
+  the server with `INFO` to detect a Sentinel deployment, and that probe inherited the
+  response timeout set through
+  [`with_response_timeout`](https://docs.rs/falkordb/latest/falkordb/struct.FalkorClientBuilder.html#method.with_response_timeout)
+  — turning "a query must answer within X" into "the client must finish connecting within X".
+  Whenever the handshake and probe were slower than the timeout, `build` failed with
+  `ConnectionDown` and the client could not be created at all. The probe now uses its own
+  deadline — the connect timeout described below — so it still bounds a server that goes
+  silent after the handshake without rejecting a healthy but momentarily slow one. This was
+  also the cause
+  of the intermittent `test_default_response_timeout_imposes_no_client_deadline` failures on
+  the daily `edge` coverage run: the client, not FalkorDB, was at fault
+  ([#359](https://github.com/FalkorDB/falkordb-rs/pull/359))
+
 ### Other
+
+- Bump the `redis` crate (1.5.0 → 1.7.0), the `which` crate (8.0.5 → 8.0.6), the `futures`
+  and `futures-core` crates (0.3.33 → 0.3.34), the `thiserror` crate (2.0.19 → 2.0.20), the
+  `MarcoIeni/release-plz-action` GitHub Action (0.5.131 → 0.5.132, pinned SHA `2eb1d8b` →
+  `b5543c1`), the `actions/deploy-pages` GitHub Action (5.0.0 → 5.0.1, pinned SHA `cd2ce8f`
+  → `368f825`), the `github/codeql-action` (`init` and `analyze`) GitHub Action (4.37.6 /
+  4.37.7 → 4.37.9, pinned SHA `5595cca` / `ff2f1c6` → `cdf488f`) and the
+  `rojopolis/spellcheck-github-actions` GitHub Action (0.64.0 → 0.66.0, pinned SHA `26a39cd`
+  → `c1934c5`), combining the Dependabot updates from
+  [#337](https://github.com/FalkorDB/falkordb-rs/pull/337),
+  [#338](https://github.com/FalkorDB/falkordb-rs/pull/338),
+  [#339](https://github.com/FalkorDB/falkordb-rs/pull/339),
+  [#341](https://github.com/FalkorDB/falkordb-rs/pull/341),
+  [#345](https://github.com/FalkorDB/falkordb-rs/pull/345),
+  [#346](https://github.com/FalkorDB/falkordb-rs/pull/346),
+  [#347](https://github.com/FalkorDB/falkordb-rs/pull/347),
+  [#348](https://github.com/FalkorDB/falkordb-rs/pull/348),
+  [#349](https://github.com/FalkorDB/falkordb-rs/pull/349) and
+  [#350](https://github.com/FalkorDB/falkordb-rs/pull/350) into one change
+  ([#351](https://github.com/FalkorDB/falkordb-rs/pull/351))
 
 - Make the `test_explain` and `test_profile` tests tolerate FalkorDB dropping the `Results`
   root operation from `GRAPH.EXPLAIN` / `GRAPH.PROFILE` output. The nightly `edge` coverage

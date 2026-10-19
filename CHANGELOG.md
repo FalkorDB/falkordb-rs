@@ -20,10 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [#374](https://github.com/FalkorDB/falkordb-rs/pull/374) through
   [#379](https://github.com/FalkorDB/falkordb-rs/pull/379) into one change
   ([#381](https://github.com/FalkorDB/falkordb-rs/pull/381))
-- Title Cargo bumps from Dependabot `fix:` so they match release-plz's `release_commits` filter and
-  actually cut a release, and retitle bumps of crates that appear only in `[dev-dependencies]`
-  to `build:` with a small workflow, since Dependabot has no `prefix-development` option for
-  Cargo ([#380](https://github.com/FalkorDB/falkordb-rs/pull/380))
+- Title Cargo bumps from Dependabot `fix:` so they match the `release_commits` filter in
+  `release-plz.toml` and actually cut a release, and rename bumps of crates that appear only in
+  `[dev-dependencies]` to `build:` with a small workflow, since Dependabot has no
+  `prefix-development` option for Cargo ([#380](https://github.com/FalkorDB/falkordb-rs/pull/380))
 
 ## [0.10.4](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.3...v0.10.4) - 2026-09-23
 

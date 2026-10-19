@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.5](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.4...v0.10.5) - 2026-10-19
+
+### Other
+
+- Bump the `tokio` crate (1.53.1 → 1.53.3), the `sha2` crate (0.11.0 → 0.11.1), the `redis` crate
+  (1.7.0 → 1.7.1), the `thiserror` crate (2.0.20 → 2.0.21), the `libc` crate (0.2.189 →
+  0.2.190), the `serde_json` crate (1.0.151 → 1.0.154), the `proptest` crate (1.11.0 → 1.12.0),
+  the `rustls` crate (0.23.37 → 0.23.45), the `xxhash-rust` crate (0.8.15 → 0.8.19), the
+  `github/codeql-action` (`init` and `analyze`) GitHub Action (4.38.0 → 4.39.0, pinned SHA
+  `24c5418` → `6f2ac81`) and the `MarcoIeni/release-plz-action` GitHub Action (0.5.138 →
+  0.5.142, pinned SHA `18641b6` → `8921286`), combining the Dependabot updates from
+  [#374](https://github.com/FalkorDB/falkordb-rs/pull/374) through
+  [#379](https://github.com/FalkorDB/falkordb-rs/pull/379) into one change
+  ([#381](https://github.com/FalkorDB/falkordb-rs/pull/381))
+- Title Cargo bumps from Dependabot `fix:` so they match the `release_commits` filter in
+  `release-plz.toml` and actually cut a release, and rename bumps of crates that appear only in
+  `[dev-dependencies]` to `build:` with a small workflow, since Dependabot has no
+  `prefix-development` option for Cargo ([#380](https://github.com/FalkorDB/falkordb-rs/pull/380))
+
 ## [0.10.4](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.3...v0.10.4) - 2026-09-23
 
 ### Added

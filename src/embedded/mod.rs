@@ -1031,6 +1031,33 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn test_create_socket_from_config_reads_plain_quoted_path() {
+        let dir = std::env::temp_dir().join(format!("test_sock_cfg {}", std::process::id()));
+        if !quoted_verbatim(&dir) {
+            return;
+        }
+        fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join("falkor db.sock");
+        let config = EmbeddedServer::create_config_file(&dir, &socket_path, "x.rdb").unwrap();
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(CREATE_SOCKET_FROM_CONFIG)
+            .arg("sh")
+            .arg(&config)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            socket_path.exists(),
+            "the snippet should create the socket path"
+        );
+        assert!(!quoted_verbatim(Path::new("/tmp/a\"b")));
+        assert!(!quoted_verbatim(Path::new("/tmp/caf\u{e9}")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_quote_config_arg() {
         assert_eq!(quote_config_arg(b"plain"), r#""plain""#);
         assert_eq!(quote_config_arg(b"with spaces"), r#""with spaces""#);
@@ -1264,17 +1291,28 @@ mod tests {
         fake
     }
 
-    /// Fake-server shell snippet that creates the (quoted) `unixsocket` path from the config,
-    /// decoding `\"`, `\\`, and `\xHH` escapes produced by `quote_config_arg`.
+    /// Fake-server shell snippet that creates the (quoted) `unixsocket` path from the config.
+    /// It takes the quoted value verbatim and does not decode escapes, so tests using it must
+    /// first check [`quoted_verbatim`] for the directories the socket path is built from.
     #[cfg(unix)]
     const CREATE_SOCKET_FROM_CONFIG: &str =
-        "sock=$(sed -n 's/^unixsocket \"\\(.*\\)\"$/\\1/p' \"$1\"); sock=$(printf '%b' \"$sock\"); [ -n \"$sock\" ] && : > \"$sock\"";
+        "sock=$(sed -n 's/^unixsocket \"\\(.*\\)\"$/\\1/p' \"$1\"); [ -n \"$sock\" ] && : > \"$sock\"";
+
+    /// Whether `quote_config_arg` writes `path` without escapes, i.e. whether
+    /// [`CREATE_SOCKET_FROM_CONFIG`] reads it back unchanged.
+    #[cfg(unix)]
+    fn quoted_verbatim(path: &Path) -> bool {
+        !quote_config_arg(path.as_os_str().as_bytes()).contains('\\')
+    }
 
     #[test]
     #[cfg(unix)]
     fn test_start_cleans_up_temp_dirs_on_config_creation_failure() {
+        // Startup checks for libomp before accepting the fake module; skip if it is absent.
         #[cfg(target_os = "macos")]
-        assert!(provision::check_macos_libomp().is_ok());
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
 
         let dir = std::env::temp_dir().join(format!("test_redis_cfgfail_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -1306,8 +1344,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_start_cleans_up_on_spawn_failure() {
+        // Startup checks for libomp before accepting the fake module; skip if it is absent.
         #[cfg(target_os = "macos")]
-        assert!(provision::check_macos_libomp().is_ok());
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
 
         let dir = std::env::temp_dir().join(format!("test_redis_spawnfail_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -1348,8 +1389,15 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_custom_db_dir_without_socket_path_cleans_up_socket_dir_on_drop() {
+        // Startup checks for libomp before accepting the fake module; skip if it is absent.
         #[cfg(target_os = "macos")]
-        assert!(provision::check_macos_libomp().is_ok());
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
+        // The socket goes under the system temp dir, which the fake server must read back as is.
+        if !quoted_verbatim(&std::env::temp_dir()) {
+            return;
+        }
 
         let dir = std::env::temp_dir().join(format!("test_redis_sockdir_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -1462,6 +1510,10 @@ mod tests {
     fn test_start_detects_redis_dying_after_socket_appears() {
         #[cfg(target_os = "macos")]
         if provision::check_macos_libomp().is_err() {
+            return;
+        }
+        // The socket goes under the system temp dir, which the fake server must read back as is.
+        if !quoted_verbatim(&std::env::temp_dir()) {
             return;
         }
 

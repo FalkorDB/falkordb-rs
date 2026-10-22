@@ -77,11 +77,12 @@ impl AsyncGraph {
 
     /// Parses `raw` against the shared schema cache, refreshing the cache asynchronously on a miss.
     ///
-    /// The schema lock is only ever held for the synchronous, CPU-bound `parse`, never across an
-    /// await. When `parse` reports ids the cache does not know, the lock is released, the affected
-    /// schema maps are re-fetched over a pooled async connection, and `parse` runs again on a copy
-    /// of `raw`. A kind is fetched at most once per call, so ids the server really does not know
-    /// surface as the parse error instead of looping.
+    /// Only a shared read lock is taken, and only long enough to clone an `Arc`-backed snapshot of
+    /// the schema; `parse` then runs on that snapshot without holding any lock. When `parse`
+    /// reports ids the cache does not know, the affected schema maps are re-fetched over a pooled
+    /// async connection, and `parse` runs again on a copy of `raw`. A kind is fetched at most once
+    /// per call, so ids the server really does not know surface as the parse error instead of
+    /// looping.
     ///
     /// A task queued behind another task's refresh of the same kind skips its own fetch, but that
     /// does not count as its refresh: the other fetch may have started before this task's reply was
@@ -104,8 +105,9 @@ impl AsyncGraph {
             let seen = self.generations();
             let attempt = raw.clone();
             let (result, missing) = {
-                let mut schema = self.graph_schema.write();
-                schema.take_missing();
+                // Acquire only a shared read lock and clone the Arc-backed schema snapshot so
+                // concurrent readers never serialize behind an exclusive write lock.
+                let mut schema = self.graph_schema.read().snapshot();
                 let result = parse(attempt, &mut schema);
                 (result, schema.take_missing())
             };
@@ -123,15 +125,14 @@ impl AsyncGraph {
                 let fetched = match self.refresh_schema(schema_type, seen).await {
                     Ok(fetched) => fetched,
                     Err(refresh_err) => {
-                        // Parse once more with the failure recorded, so the rows / batch items that
-                        // needed the schema carry it, while the others keep their results.
+                        // Parse once more with the failure recorded on a local snapshot, so the
+                        // rows / batch items that needed the schema carry it, while the others
+                        // keep their results.
                         let result = {
-                            let mut schema = self.graph_schema.write();
+                            let mut schema = self.graph_schema.read().snapshot();
                             schema
                                 .set_refresh_failure(Some((schema_type, refresh_err.to_string())));
-                            let result = parse(raw, &mut schema);
-                            schema.set_refresh_failure(None);
-                            result
+                            parse(raw, &mut schema)
                         };
                         return result.map_err(|_| refresh_err);
                     }
@@ -812,6 +813,61 @@ mod tests {
         for task in tasks {
             assert_eq!(task.await.unwrap().unwrap(), "ConcurrentSeed");
         }
+        let _ = handle.inner.delete().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_parse_with_schema_uses_read_lock_when_cached() {
+        // When all schema ids are already cached, `parse_with_schema` must only acquire a read
+        // lock so concurrent readers never block each other.
+        let mut handle = open_empty_async_test_graph("parse_with_schema_read_lock").await;
+        handle
+            .inner
+            .query("CREATE (:CachedSeed)")
+            .execute()
+            .await
+            .expect("seed the graph");
+        // Warm the schema cache for label 0.
+        let _ = handle
+            .inner
+            .parse_with_schema((), |_, schema| {
+                schema.parse_single_id(0, SchemaType::Labels)
+            })
+            .await
+            .unwrap();
+
+        let graph = handle.inner.clone();
+        let schema_lock = Arc::clone(&handle.inner.graph_schema);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _read_guard = schema_lock.read();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        locked_rx.recv().unwrap();
+
+        // Run the parse on its own task: a regression to a write lock would block that worker
+        // synchronously inside `parking_lot`, which a timeout around an inline await could never
+        // interrupt. Release the reader before asserting so a blocked task can still finish.
+        let mut task = tokio::spawn(async move {
+            graph
+                .parse_with_schema((), |_, schema| {
+                    schema.parse_single_id(0, SchemaType::Labels)
+                })
+                .await
+        });
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), &mut task).await;
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        let resolved = match outcome {
+            Ok(joined) => joined.unwrap().unwrap(),
+            Err(_) => {
+                let _ = task.await;
+                panic!("parse_with_schema must not block on a held read guard");
+            }
+        };
+        assert_eq!(resolved, "CachedSeed");
         let _ = handle.inner.delete().await;
     }
 

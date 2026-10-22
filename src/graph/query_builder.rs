@@ -36,8 +36,9 @@ fn build_lazy_query_result<'g>(
     QueryResult::from_response(header, data, stats)
 }
 
-/// Builds a [`QueryResult`] over an owned [`RowStream`] by eagerly parsing every row against
-/// `graph_schema`, so the result is decoupled from later changes to the graph's schema.
+/// Builds a [`QueryResult`] over an owned [`RowStream`] by pre-scanning compact schema ids against
+/// `graph_schema` and capturing a schema snapshot, so rows decode lazily on `poll_next` while the
+/// stream remains decoupled from later changes to the graph's schema.
 #[cfg(feature = "tokio")]
 fn build_row_stream_result(
     header: Arc<[String]>,
@@ -478,10 +479,10 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         result
     }
 
-    /// Eagerly parses the reply into an owned [`RowStream`], so the result outlives the borrow of
-    /// the graph, is `Send + 'static`, and is decoupled from any later change to the graph's
-    /// schema. Unknown schema ids are resolved by an async refresh, see
-    /// [`AsyncGraph::parse_with_schema`].
+    /// Builds an owned [`RowStream`] from the reply, pre-resolving any unknown compact schema ids
+    /// via an async refresh (see [`AsyncGraph::parse_with_schema`]) and capturing a schema
+    /// snapshot so rows decode lazily on `poll_next` while outliving the borrow of the graph,
+    /// staying `Send + 'static`, and remaining decoupled from later changes to the graph's schema.
     async fn generate_async_result_set(
         self,
         value: redis::Value,

@@ -6,6 +6,7 @@
 //! An owned, `Send + 'static` async result set implementing [`futures_core::Stream`], available
 //! with the `tokio` feature.
 
+use crate::response::row::parse_row;
 use crate::{FalkorResult, FalkorValue, GraphSchema, Row};
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -14,14 +15,16 @@ use std::task::{Context, Poll};
 
 /// The owned result set produced by an [`AsyncGraph`](crate::AsyncGraph) query.
 ///
-/// Each row of the `GRAPH.QUERY` reply is parsed **eagerly** when the query runs (resolving compact
-/// ids against the graph schema, refreshing it once on a cache miss) into a `FalkorResult<Row>`, so
-/// a `RowStream` is a self-contained, `Send + 'static` buffer of already-decoded rows. It can be
-/// moved into a `tokio::spawn` task and composed with `futures::StreamExt`/`futures::TryStreamExt`,
-/// and it stays valid even if the graph is mutated or deleted before the stream is consumed.
+/// When a query runs, any compact schema ids referenced by the reply are resolved up front (with an
+/// async refresh on a cache miss) and a cheap `Arc`-backed snapshot of the [`GraphSchema`] is
+/// captured alongside the raw reply rows. Individual rows are then decoded **lazily on demand** as
+/// the stream is polled (`poll_next`), matching [`LazyResultSet`](crate::LazyResultSet) while
+/// keeping `RowStream` a self-contained, `Send + 'static` value that can be moved into a
+/// `tokio::spawn` task, composed with `futures::StreamExt`/`futures::TryStreamExt`, and consumed
+/// even if the graph is mutated or deleted afterwards.
 ///
-/// It implements [`futures_core::Stream`], yielding `FalkorResult<Row>`. The rows are already in
-/// memory, so this is a buffered stream — `poll_next` never returns `Poll::Pending`. Drain it with
+/// It implements [`futures_core::Stream`], yielding `FalkorResult<Row>`. The raw reply is already in
+/// memory, so `poll_next` never returns `Poll::Pending`. Drain it with
 /// `StreamExt`/`TryStreamExt` (`try_next().await`, `try_collect().await`,
 /// `map(..).buffer_unordered(..)`, …).
 ///
@@ -40,12 +43,15 @@ use std::task::{Context, Poll};
 /// # }
 /// ```
 pub struct RowStream {
-    rows: VecDeque<FalkorResult<Row>>,
+    header: Arc<[String]>,
+    raw_rows: VecDeque<redis::Value>,
+    graph_schema: GraphSchema,
 }
 
 impl RowStream {
-    /// Parses every raw row of a reply into a [`Row`], surfacing per-row parse failures as `Err`
-    /// items, while resolving compact ids against `graph_schema` (refreshing it on a cache miss).
+    /// Pre-scans `raw_rows` against `graph_schema` so any missing compact schema ids are recorded
+    /// (or refreshed on a sync schema), and constructs a lazy [`RowStream`] holding a snapshot of
+    /// `graph_schema` that decodes each row on demand when polled.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Parse Row Stream", skip_all, level = "debug")
@@ -55,28 +61,34 @@ impl RowStream {
         raw_rows: Vec<redis::Value>,
         graph_schema: &mut GraphSchema,
     ) -> Self {
+        graph_schema.scan_rows_for_missing_ids(&raw_rows);
         Self {
-            rows: crate::response::row::parse_rows(header, raw_rows, graph_schema).into(),
+            header,
+            raw_rows: raw_rows.into(),
+            graph_schema: graph_schema.snapshot(),
         }
     }
 
     /// Returns the number of rows remaining in the result set.
     pub fn len(&self) -> usize {
-        self.rows.len()
+        self.raw_rows.len()
     }
 
     /// Returns whether this result set is empty or depleted.
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.raw_rows.is_empty()
     }
 
     /// Iterates the rows as bare `Vec<FalkorValue>`, reproducing the pre-0.7 behaviour in which a
     /// row that fails to parse is yielded as a single `[FalkorValue::Unparseable]` element instead
     /// of surfacing the error. Prefer the default fallible iteration.
-    pub fn into_values_lossy(self) -> impl Iterator<Item = Vec<FalkorValue>> {
-        self.rows.into_iter().map(|row| match row {
-            Ok(row) => row.into_values(),
-            Err(err) => vec![FalkorValue::Unparseable(err.to_string())],
+    pub fn into_values_lossy(mut self) -> impl Iterator<Item = Vec<FalkorValue>> {
+        std::iter::from_fn(move || {
+            self.raw_rows.pop_front().map(|raw| {
+                parse_row(&self.header, raw, &mut self.graph_schema)
+                    .map(Row::into_values)
+                    .unwrap_or_else(|err| vec![FalkorValue::Unparseable(err.to_string())])
+            })
         })
     }
 }
@@ -88,13 +100,18 @@ impl futures_core::Stream for RowStream {
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        // Rows are already parsed and buffered in memory, so a row is always immediately ready;
-        // this never parks the task.
-        Poll::Ready(self.get_mut().rows.pop_front())
+        // Raw rows and the resolved schema snapshot are in memory, so each row decodes on demand
+        // without parking the task.
+        let this = self.get_mut();
+        Poll::Ready(
+            this.raw_rows
+                .pop_front()
+                .map(|raw| parse_row(&this.header, raw, &mut this.graph_schema)),
+        )
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.rows.len(), Some(self.rows.len()))
+        (self.raw_rows.len(), Some(self.raw_rows.len()))
     }
 }
 
@@ -102,7 +119,7 @@ impl futures_core::Stream for RowStream {
 mod tests {
     use super::*;
     use crate::client::blocking::create_empty_inner_sync_client;
-    use crate::FalkorDBError;
+    use crate::{FalkorDBError, SchemaType};
 
     /// A single-column row holding one scalar `i64` (`ParserTypeMarker::I64 == 3`), which parses
     /// without needing any schema lookup.
@@ -168,6 +185,8 @@ mod tests {
 
     #[test]
     fn shape_mismatch_surfaces_as_error() {
+        use futures::StreamExt;
+
         // The header declares one column, but this row carries two values.
         let two_value_row = redis::Value::Array(vec![
             redis::Value::Array(vec![redis::Value::Int(3), redis::Value::Int(1)]),
@@ -177,14 +196,16 @@ mod tests {
         let mut schema = GraphSchema::new("test", create_empty_inner_sync_client());
         let mut stream = RowStream::parse(header, vec![two_value_row], &mut schema);
 
-        let err = stream.rows.pop_front().unwrap().unwrap_err();
-        assert!(matches!(
+        let err = futures::executor::block_on(stream.next())
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
             err,
             FalkorDBError::RowShapeMismatch {
                 header_len: 1,
                 value_len: 2,
             }
-        ));
+        );
     }
 
     #[test]
@@ -205,10 +226,164 @@ mod tests {
     }
 
     #[test]
+    fn into_values_lossy_collapses_shape_mismatch() {
+        // A row wider than the header must collapse to a single `Unparseable`, matching the
+        // `RowShapeMismatch` error `poll_next` yields for the same reply.
+        let two_value_row = redis::Value::Array(vec![
+            redis::Value::Array(vec![redis::Value::Int(3), redis::Value::Int(1)]),
+            redis::Value::Array(vec![redis::Value::Int(3), redis::Value::Int(2)]),
+        ]);
+        let header: Arc<[String]> = Arc::from(vec!["n".to_string()]);
+        let mut schema = GraphSchema::new("test", create_empty_inner_sync_client());
+        let stream = RowStream::parse(header, vec![two_value_row], &mut schema);
+
+        let rows: Vec<Vec<FalkorValue>> = stream.into_values_lossy().collect();
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0].as_slice(), [FalkorValue::Unparseable(_)]));
+    }
+
+    #[test]
     fn size_hint_reports_remaining_rows() {
         use futures_core::Stream;
 
         let stream = stream_of(&[1, 2, 3]);
         assert_eq!(Stream::size_hint(&stream), (3, Some(3)));
+    }
+
+    #[test]
+    fn test_row_stream_decodes_lazily_on_poll_next() {
+        use futures::StreamExt;
+
+        // Each decoded `Row` clones `header: Arc<[String]>`. Retaining a reference to `header`
+        // lets us observe whether `Row`s were eagerly constructed inside `RowStream::parse`
+        // (which would bump `Arc::strong_count` by the number of valid rows immediately) or
+        // deferred until each `poll_next` call.
+        let malformed_row = redis::Value::Array(vec![redis::Value::Array(vec![
+            redis::Value::Int(9999),
+            redis::Value::Int(1),
+        ])]);
+        let header: Arc<[String]> = Arc::from(vec!["n".to_string()]);
+        let mut schema = GraphSchema::new_in_memory("test");
+        let mut stream = RowStream::parse(
+            Arc::clone(&header),
+            vec![scalar_row(42), scalar_row(99), malformed_row],
+            &mut schema,
+        );
+
+        // Before polling, only `header` and `stream.header` hold strong references (count == 2);
+        // no `Row` has been constructed yet.
+        assert_eq!(Arc::strong_count(&header), 2);
+
+        // Polling row 0 constructs the first `Row`, bumping the refcount to 3.
+        let first = futures::executor::block_on(stream.next()).unwrap().unwrap();
+        assert_eq!(first.try_get_at::<i64>(0).unwrap(), 42);
+        assert_eq!(Arc::strong_count(&header), 3);
+        assert_eq!(stream.len(), 2);
+
+        // Polling row 1 constructs the second `Row`, bumping the refcount to 4.
+        let second = futures::executor::block_on(stream.next()).unwrap().unwrap();
+        assert_eq!(second.try_get_at::<i64>(0).unwrap(), 99);
+        assert_eq!(Arc::strong_count(&header), 4);
+        assert_eq!(stream.len(), 1);
+
+        // Polling the third item decodes row 2 and surfaces its parse error without allocating a
+        // `Row`.
+        let third_err = futures::executor::block_on(stream.next())
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(third_err, FalkorDBError::ParsingUnknownType);
+        assert_eq!(Arc::strong_count(&header), 4);
+        assert!(stream.is_empty());
+    }
+
+    #[test]
+    fn test_row_stream_pre_scans_missing_schema_ids_and_isolates_snapshot() {
+        use futures::StreamExt;
+
+        let node_row = redis::Value::Array(vec![redis::Value::Array(vec![
+            redis::Value::Int(8),
+            redis::Value::Array(vec![
+                redis::Value::Int(1),
+                redis::Value::Array(vec![redis::Value::Int(0)]),
+                redis::Value::Array(vec![redis::Value::Array(vec![
+                    redis::Value::Int(0),
+                    redis::Value::Int(2),
+                    redis::Value::SimpleString("Alice".to_string()),
+                ])]),
+            ]),
+        ])]);
+        let header: Arc<[String]> = Arc::from(vec!["n".to_string()]);
+        let mut schema = GraphSchema::new_in_memory("test");
+
+        // On a cold in-memory schema, `RowStream::parse` records missing schema types up front.
+        let _cold = RowStream::parse(Arc::clone(&header), vec![node_row.clone()], &mut schema);
+        assert_eq!(
+            schema.take_missing(),
+            vec![SchemaType::Labels, SchemaType::Properties]
+        );
+
+        // Once the schema is populated, `RowStream::parse` captures an isolated snapshot that
+        // remains valid even if `schema.clear()` is called before the stream is polled.
+        let reply = |name: &str| {
+            redis::Value::Array(vec![
+                redis::Value::Array(vec![]),
+                redis::Value::Array(vec![redis::Value::Array(vec![redis::Value::SimpleString(
+                    name.to_string(),
+                )])]),
+                redis::Value::Array(vec![]),
+            ])
+        };
+        schema
+            .apply_refresh_reply(SchemaType::Labels, reply("Person"))
+            .unwrap();
+        schema
+            .apply_refresh_reply(SchemaType::Properties, reply("name"))
+            .unwrap();
+
+        let mut warm = RowStream::parse(header, vec![node_row], &mut schema);
+        assert!(schema.take_missing().is_empty());
+        schema.clear();
+
+        let row = futures::executor::block_on(warm.next()).unwrap().unwrap();
+        let node: crate::Node = row.try_get("n").unwrap();
+        assert_eq!(node.labels, vec!["Person".to_string()]);
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&FalkorValue::String("Alice".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_row_stream_concurrent_readers_do_not_block() {
+        let mut base = GraphSchema::new_in_memory("test");
+        let reply = redis::Value::Array(vec![
+            redis::Value::Array(vec![]),
+            redis::Value::Array(vec![redis::Value::Array(vec![redis::Value::SimpleString(
+                "Person".to_string(),
+            )])]),
+            redis::Value::Array(vec![]),
+        ]);
+        base.apply_refresh_reply(SchemaType::Labels, reply).unwrap();
+        let shared = Arc::new(parking_lot::RwLock::new(base));
+
+        // Hold a shared read guard across another `RowStream::parse` on a second thread: if parsing
+        // required an exclusive write lock, this would deadlock.
+        let held_guard = shared.read();
+        let shared_clone = Arc::clone(&shared);
+        let handle = std::thread::spawn(move || {
+            let mut snapshot = shared_clone.read().snapshot();
+            let header: Arc<[String]> = Arc::from(vec!["n".to_string()]);
+            let mut stream = RowStream::parse(header, vec![scalar_row(99)], &mut snapshot);
+            assert!(snapshot.take_missing().is_empty());
+            let row = futures::executor::block_on(futures::StreamExt::next(&mut stream))
+                .unwrap()
+                .unwrap();
+            row.try_get_at::<i64>(0).unwrap()
+        });
+        assert_eq!(handle.join().unwrap(), 99);
+        assert_eq!(
+            held_guard.labels().get(&0).map(String::as_str),
+            Some("Person")
+        );
     }
 }

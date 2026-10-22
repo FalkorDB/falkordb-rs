@@ -501,13 +501,25 @@ mod tests {
     fn weave_replies_aligns_replies_around_a_skipped_slot() {
         let mut schema = GraphSchema::new("test", create_empty_inner_sync_client());
         // Original order: [submitted, skipped(Err), submitted].
+        // Include a 3-element reply with one scalar row so `build_vec_rows` and `parse_rows`
+        // are exercised without needing a server round-trip.
+        let one_row_reply = redis::Value::Array(vec![
+            redis::Value::Array(vec![redis::Value::Array(vec![redis::Value::BulkString(
+                b"n".to_vec(),
+            )])]),
+            redis::Value::Array(vec![redis::Value::Array(vec![redis::Value::Array(vec![
+                redis::Value::Int(3),
+                redis::Value::Int(7),
+            ])])]),
+            redis::Value::Array(vec![]),
+        ]);
         let slots: Vec<Option<BatchItemResult>> = vec![
             None,
             Some(Err(FalkorDBError::RedisError("encode".to_string()))),
             None,
         ];
         let submitted = vec![0usize, 2usize];
-        let replies = vec![stats_only_reply(), stats_only_reply()];
+        let replies = vec![stats_only_reply(), one_row_reply];
 
         let out = weave_replies(slots, &submitted, replies, &mut schema).expect("woven");
 
@@ -517,8 +529,9 @@ mod tests {
             matches!(&out[1], Err(FalkorDBError::RedisError(m)) if m == "encode"),
             "the pre-filled encode error is preserved in its original slot"
         );
-        assert!(
-            out[2].is_ok(),
+        assert_eq!(
+            out[2].as_ref().unwrap().data.len(),
+            1,
             "second submitted query parsed into slot 2, not slot 1"
         );
     }

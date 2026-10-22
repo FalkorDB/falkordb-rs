@@ -288,9 +288,7 @@ It can be enabled like so:
 cargo add falkordb --features tokio
 ```
 
-Currently, this API requires running within a [
-`multi_threaded tokio scheduler`](https://docs.rs/tokio/latest/tokio/runtime/index.html#multi-thread-scheduler), and
-does not support the `current_thread` one, but this will probably be supported in the future.
+The async API works on both the multi-thread and the `current_thread` tokio schedulers.
 
 The API uses an almost identical API, but the various functions need to be awaited:
 

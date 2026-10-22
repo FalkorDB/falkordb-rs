@@ -420,6 +420,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_apply_refresh_reply_rejects_malformed_replies() {
+        let mut schema = GraphSchema::new_in_memory("graph_name");
+        let array = redis::Value::Array;
+        let bad_replies = [
+            redis::Value::Int(1),
+            array(vec![array(vec![])]),
+            array(vec![array(vec![]), redis::Value::Int(1)]),
+            array(vec![array(vec![]), array(vec![array(vec![])])]),
+            array(vec![
+                array(vec![]),
+                array(vec![array(vec![redis::Value::Int(1)])]),
+            ]),
+        ];
+        for reply in bad_replies {
+            // A malformed reply must error or at least leave the maps free of garbage names.
+            let _ = schema.apply_refresh_reply(SchemaType::Labels, reply);
+        }
+        assert!(schema.labels().is_empty());
+    }
+
+    #[test]
     fn test_label_not_exists() {
         let mut parser =
             GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());

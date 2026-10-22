@@ -537,6 +537,26 @@ mod tests {
         ConstraintType, FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
 
+    #[tokio::test]
+    async fn test_parse_with_schema_refreshes_once_then_surfaces_unknown_id() {
+        // An id the server has never issued: the schema is refreshed once, and the still-missing id
+        // is returned as the parse error rather than looping.
+        let handle = open_empty_async_test_graph("parse_with_schema_unknown_id").await;
+        let graph = &handle.inner;
+        let attempts = std::cell::Cell::new(0);
+        let result = graph
+            .parse_with_schema((), |_, schema| {
+                attempts.set(attempts.get() + 1);
+                schema.parse_single_id(i64::MAX, SchemaType::Labels)
+            })
+            .await;
+        assert!(matches!(
+            result,
+            Err(FalkorDBError::MissingSchemaId(SchemaType::Labels))
+        ));
+        assert_eq!(attempts.get(), 2);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_call_procedure_ro_routes_read_only() {
         // `call_procedure_ro` must build a read-only procedure call (GRAPH.RO_QUERY)

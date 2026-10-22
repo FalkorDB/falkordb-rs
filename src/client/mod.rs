@@ -144,8 +144,10 @@ mod native_tls_connect {
     /// limit, new attempts to that peer fail fast without affecting healthy peers.
     pub(super) const MAX_IN_FLIGHT_PER_TARGET: usize = 16;
 
-    static TARGET_COUNTS: OnceLock<Mutex<HashMap<(String, u16), Arc<AtomicUsize>>>> =
-        OnceLock::new();
+    /// In-flight attempt counters keyed by `(host, port)`.
+    type TargetCounts = Mutex<HashMap<(String, u16), Arc<AtomicUsize>>>;
+
+    static TARGET_COUNTS: OnceLock<TargetCounts> = OnceLock::new();
 
     pub(super) fn counter_for(client: &redis::Client) -> Arc<AtomicUsize> {
         let key = match client.get_connection_info().addr() {
@@ -157,10 +159,26 @@ mod native_tls_connect {
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Counters are only handed out under this lock, and every caller and running worker
+        // holds a clone, so one referenced by the map alone is idle and can never be revived.
+        map.retain(|_, counter| Arc::strong_count(counter) > 1);
         Arc::clone(
             map.entry(key)
                 .or_insert_with(|| Arc::new(AtomicUsize::new(0))),
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_tracked(client: &redis::Client) -> bool {
+        let redis::ConnectionAddr::TcpTls { host, port, .. } = client.get_connection_info().addr()
+        else {
+            return false;
+        };
+        TARGET_COUNTS.get().is_some_and(|map| {
+            map.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&(host.clone(), *port))
+        })
     }
 
     struct SlotGuard(Arc<AtomicUsize>);
@@ -324,20 +342,53 @@ impl FalkorClientProvider {
         }
     }
 
-    /// Open a synchronous connection and bound any follow-up probe commands on it by
-    /// `connect_timeout`.
+    /// The setup deadline `connect_timeout` from now, shared by every step of a connection's
+    /// setup so their total, not each step, is bounded by it.
+    fn setup_deadline(connect_timeout: Option<std::time::Duration>) -> Option<std::time::Instant> {
+        connect_timeout.map(|timeout| std::time::Instant::now() + timeout)
+    }
+
+    /// Time left before `deadline` (`None` when unbounded), or an error once it has passed.
+    fn remaining(
+        deadline: Option<std::time::Instant>
+    ) -> FalkorResult<Option<std::time::Duration>> {
+        deadline
+            .map(|deadline| {
+                deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .filter(|left| !left.is_zero())
+                    .ok_or_else(|| {
+                        FalkorDBError::RedisError(
+                            "Connection setup did not finish within the connect timeout"
+                                .to_string(),
+                        )
+                    })
+            })
+            .transpose()
+    }
+
+    /// Bound the next command on `conn` by what is left of `deadline`.
+    fn arm_probe(
+        conn: &redis::Connection,
+        deadline: Option<std::time::Instant>,
+    ) -> FalkorResult<()> {
+        let left = Self::remaining(deadline)?;
+        conn.set_read_timeout(left)
+            .and_then(|()| conn.set_write_timeout(left))
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
+    }
+
+    /// Open a synchronous probe connection within `deadline`.
     fn open_probe_connection(
         connection_info: &redis::ConnectionInfo,
-        connect_timeout: Option<std::time::Duration>,
+        deadline: Option<std::time::Instant>,
     ) -> FalkorResult<redis::Connection> {
-        redis::Client::open(connection_info.clone())
-            .and_then(|client| Self::connect_redis_client(&client, connect_timeout))
-            .and_then(|conn| {
-                conn.set_read_timeout(connect_timeout)
-                    .and_then(|()| conn.set_write_timeout(connect_timeout))
-                    .map(|()| conn)
-            })
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
+        let left = Self::remaining(deadline)?;
+        let conn = redis::Client::open(connection_info.clone())
+            .and_then(|client| Self::connect_redis_client(&client, left))
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        Self::arm_probe(&conn, deadline)?;
+        Ok(conn)
     }
 
     /// Build a node `redis::ConnectionInfo` for a Sentinel-discovered `(ip, port)` using
@@ -376,18 +427,21 @@ impl FalkorClientProvider {
             .collect()
     }
 
-    /// Query a Redis command on `conn`, mapping any error into [`FalkorDBError::RedisError`].
+    /// Query a Redis command on `conn` within `deadline`, mapping any error into
+    /// [`FalkorDBError::RedisError`].
     fn query_cmd<T: redis::FromRedisValue>(
         cmd: &redis::Cmd,
         conn: &mut redis::Connection,
+        deadline: Option<std::time::Instant>,
     ) -> FalkorResult<T> {
+        Self::arm_probe(conn, deadline)?;
         cmd.query(conn)
             .map_err(|err| FalkorDBError::RedisError(err.to_string()))
     }
 
     /// Check whether a candidate node reports the expected `expected_role` (`"master"` or
     /// `"slave"`) via `ROLE`, with both connection establishment and the role query
-    /// bounded by `connect_timeout`.
+    /// bounded by `deadline`.
     ///
     /// Like redis-rs's own resolver, a node whose server rejects `ROLE` (renamed, or denied by
     /// an ACL) is asked for the `role:` field of `INFO REPLICATION` instead. Transport failures
@@ -395,9 +449,9 @@ impl FalkorClientProvider {
     fn node_matches_role(
         node_info: &redis::ConnectionInfo,
         expected_role: &str,
-        connect_timeout: Option<std::time::Duration>,
+        deadline: Option<std::time::Instant>,
     ) -> FalkorResult<bool> {
-        let mut conn = Self::open_probe_connection(node_info, connect_timeout)?;
+        let mut conn = Self::open_probe_connection(node_info, deadline)?;
         match redis::cmd("ROLE").query::<Vec<redis::Value>>(&mut conn) {
             Ok(items) => Ok(items
                 .into_iter()
@@ -411,6 +465,7 @@ impl FalkorClientProvider {
                     redis::ErrorKind::Server(_) | redis::ErrorKind::Extension
                 ) =>
             {
+                Self::arm_probe(&conn, deadline)?;
                 let info: String = redis::cmd("INFO")
                     .arg("REPLICATION")
                     .query(&mut conn)
@@ -425,16 +480,19 @@ impl FalkorClientProvider {
     }
 
     /// Resolve a `redis::Client` for the current Sentinel master (`is_replica == false`)
-    /// or replica (`is_replica == true`) while bounding every Sentinel query and
-    /// candidate-node `ROLE` validation by `connect_timeout`.
+    /// or replica (`is_replica == true`), finishing every Sentinel query and candidate-node
+    /// `ROLE` validation by `deadline`, so stalled candidates cannot add up past it.
     fn resolve_sentinel_client_with_timeout(
         sentinel_info: &redis::ConnectionInfo,
         is_replica: bool,
-        connect_timeout: Option<std::time::Duration>,
+        deadline: Option<std::time::Instant>,
     ) -> FalkorResult<redis::Client> {
-        let mut sentinel_conn = Self::open_probe_connection(sentinel_info, connect_timeout)?;
-        let raw_masters: Vec<redis::Value> =
-            Self::query_cmd(redis::cmd("SENTINEL").arg("MASTERS"), &mut sentinel_conn)?;
+        let mut sentinel_conn = Self::open_probe_connection(sentinel_info, deadline)?;
+        let raw_masters: Vec<redis::Value> = Self::query_cmd(
+            redis::cmd("SENTINEL").arg("MASTERS"),
+            &mut sentinel_conn,
+            deadline,
+        )?;
         if raw_masters.len() > 1 {
             return Err(FalkorDBError::SentinelMastersCount);
         }
@@ -453,6 +511,7 @@ impl FalkorClientProvider {
             let raw_replicas: Vec<redis::Value> = Self::query_cmd(
                 redis::cmd("SENTINEL").arg("SLAVES").arg(&service_name),
                 &mut sentinel_conn,
+                deadline,
             )?;
             (
                 Self::parse_sentinel_maps(raw_replicas),
@@ -495,8 +554,9 @@ impl FalkorClientProvider {
 
         let mut last_probe_err = None;
         for (ip, port) in addresses {
+            Self::remaining(deadline)?;
             let node_info = Self::sentinel_node_connection_info(sentinel_info, ip, port);
-            match Self::node_matches_role(&node_info, expected_role, connect_timeout) {
+            match Self::node_matches_role(&node_info, expected_role, deadline) {
                 Ok(true) => {
                     return Ok(redis::Client::open(node_info).expect("valid Redis ConnectionInfo"));
                 }
@@ -521,6 +581,7 @@ impl FalkorClientProvider {
         response_timeout: Option<std::time::Duration>,
         connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<FalkorSyncConnection> {
+        let deadline = Self::setup_deadline(connect_timeout);
         let client = match self {
             FalkorClientProvider::Redis {
                 client: sentinel_client,
@@ -529,13 +590,13 @@ impl FalkorClientProvider {
             } => Self::resolve_sentinel_client_with_timeout(
                 sentinel_client.get_connection_info(),
                 false,
-                connect_timeout,
+                deadline,
             )?,
             FalkorClientProvider::Redis { client, .. } => client.clone(),
             #[cfg(test)]
             FalkorClientProvider::None => return Err(FalkorDBError::UnavailableProvider),
         };
-        Self::open_sync_connection(&client, response_timeout, connect_timeout)
+        Self::open_sync_connection(&client, response_timeout, Self::remaining(deadline)?)
     }
 
     /// Async connection config carrying the provider's timeouts. Both are always set
@@ -607,12 +668,13 @@ impl FalkorClientProvider {
                 sentinel_replica: Some(_),
                 ..
             } => {
+                let deadline = Self::setup_deadline(connect_timeout);
                 let client = Self::resolve_sentinel_client_with_timeout(
                     sentinel_client.get_connection_info(),
                     true,
-                    connect_timeout,
+                    deadline,
                 )?;
-                Self::open_sync_connection(&client, response_timeout, connect_timeout)
+                Self::open_sync_connection(&client, response_timeout, Self::remaining(deadline)?)
             }
             _ => Err(FalkorDBError::UnavailableProvider),
         }
@@ -1641,7 +1703,7 @@ mod tests {
             FalkorClientProvider::resolve_sentinel_client_with_timeout(
                 &multi_info,
                 false,
-                Some(std::time::Duration::from_millis(500)),
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
             ),
             Err(FalkorDBError::SentinelMastersCount)
         ));
@@ -1675,7 +1737,7 @@ mod tests {
             FalkorClientProvider::resolve_sentinel_client_with_timeout(
                 &info,
                 false,
-                Some(std::time::Duration::from_millis(500)),
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
             )
             .is_err(),
             "non-sentinel ROLE should return an error"
@@ -1705,7 +1767,7 @@ mod tests {
             FalkorClientProvider::resolve_sentinel_client_with_timeout(
                 &no_master_info,
                 true,
-                Some(std::time::Duration::from_millis(500)),
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
             )
             .is_err(),
             "replica resolution without any master in SENTINEL MASTERS should return an error"
@@ -1747,13 +1809,13 @@ mod tests {
         assert!(FalkorClientProvider::resolve_sentinel_client_with_timeout(
             &empty_info,
             false,
-            Some(std::time::Duration::from_millis(500)),
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
         )
         .is_err());
         assert!(FalkorClientProvider::resolve_sentinel_client_with_timeout(
             &empty_info,
             true,
-            Some(std::time::Duration::from_millis(500)),
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
         )
         .is_err());
     }
@@ -1925,7 +1987,7 @@ mod tests {
                 let client = FalkorClientProvider::resolve_sentinel_client_with_timeout(
                     &sentinel,
                     true,
-                    Some(std::time::Duration::from_secs(2)),
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(2)),
                 )
                 .expect("a healthy replica resolves");
                 resolved_port(&client)
@@ -1935,6 +1997,48 @@ mod tests {
             chosen,
             [first, second].into_iter().collect(),
             "repeated replica lookups must not all land on the first healthy replica"
+        );
+    }
+
+    #[test]
+    fn test_sync_replica_resolution_bounds_all_candidates_by_one_deadline() {
+        use std::net::TcpListener;
+
+        // Replicas that accept TCP and never answer: each would otherwise get its own
+        // full connect timeout.
+        let replicas: String = (0..5)
+            .map(|_| {
+                let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent replica");
+                let port = listener.local_addr().unwrap().port();
+                std::thread::spawn(move || {
+                    let held: Vec<_> = listener.incoming().take(5).collect();
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    drop(held);
+                });
+                sentinel_entry(&[
+                    ("ip", "127.0.0.1"),
+                    ("port", &port.to_string()),
+                    ("flags", "slave"),
+                ])
+            })
+            .collect();
+        let sentinel = spawn_fake_sentinel(
+            format!("*1\r\n{}", sentinel_entry(&[("name", "mymaster")])),
+            format!("*5\r\n{replicas}"),
+        );
+
+        let budget = std::time::Duration::from_millis(200);
+        let start = std::time::Instant::now();
+        assert!(FalkorClientProvider::resolve_sentinel_client_with_timeout(
+            &sentinel,
+            true,
+            Some(start + budget),
+        )
+        .is_err());
+        assert!(
+            start.elapsed() < budget * 3,
+            "five stalled replicas must share one {budget:?} deadline, took {:?}",
+            start.elapsed()
         );
     }
 
@@ -1981,7 +2085,7 @@ mod tests {
             FalkorClientProvider::resolve_sentinel_client_with_timeout(
                 &unflagged_sentinel,
                 false,
-                Some(std::time::Duration::from_secs(2)),
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(2)),
             )
             .is_err(),
             "a master entry without the master flag is not eligible"
@@ -1991,7 +2095,7 @@ mod tests {
         let client = FalkorClientProvider::resolve_sentinel_client_with_timeout(
             &sentinel,
             false,
-            Some(std::time::Duration::from_secs(2)),
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(2)),
         )
         .expect("a master that rejects ROLE resolves through INFO REPLICATION");
         assert_eq!(resolved_port(&client), master);
@@ -2001,7 +2105,7 @@ mod tests {
             FalkorClientProvider::resolve_sentinel_client_with_timeout(
                 &demoted,
                 false,
-                Some(std::time::Duration::from_secs(2)),
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(2)),
             )
             .is_err(),
             "a node whose INFO REPLICATION says slave is not accepted as the master"
@@ -2069,6 +2173,15 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+
+        // Once nothing holds the idle counter, the next lookup drops it from the map.
+        drop(in_flight);
+        assert!(native_tls_connect::is_tracked(&client));
+        drop(native_tls_connect::counter_for(&silent_tls_client(1)));
+        assert!(
+            !native_tls_connect::is_tracked(&client),
+            "idle per-target counters must not accumulate"
+        );
     }
 
     #[test]

@@ -97,12 +97,14 @@ fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>
                     return Err(FalkorDBError::ParsingArray);
                 }
 
-                let parsed_values = redis_value_as_vec(val)?
-                    .into_iter()
-                    .map(parse_falkor_enum::<IndexType>)
-                    .collect::<FalkorResult<Vec<_>>>()?;
-
-                Ok((key_str, parsed_values))
+                redis_value_as_vec(val)
+                    .and_then(|val_vec| {
+                        val_vec
+                            .into_iter()
+                            .map(parse_falkor_enum::<IndexType>)
+                            .collect::<FalkorResult<Vec<_>>>()
+                    })
+                    .map(|parsed_values| (key_str, parsed_values))
             })
             .collect::<Result<HashMap<_, _>, FalkorDBError>>()?;
 
@@ -205,10 +207,10 @@ mod tests {
     #[test]
     fn test_parse_types_map_rejects_unknown_index_type() {
         // An unknown type is an error, not silently dropped from the field's types.
-        assert!(matches!(
-            parse_types_map(types_map(&["RANGE", "NOT_AN_INDEX_TYPE"])),
-            Err(FalkorDBError::InvalidEnumType(_))
-        ));
+        assert_eq!(
+            parse_types_map(types_map(&["RANGE", "NOT_AN_INDEX_TYPE"])).unwrap_err(),
+            FalkorDBError::InvalidEnumType("Matching variant not found".to_string())
+        );
     }
 
     #[test]

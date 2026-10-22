@@ -80,6 +80,9 @@ pub struct GraphSchema {
     /// leaving the owner to refresh it (asynchronously) and parse again.
     client: Option<Arc<dyn ProvidesSyncConnections>>,
     missing: Vec<SchemaType>,
+    /// Set by the owner of an in-memory schema when refreshing it failed, so the lookups that
+    /// needed it report that failure instead of a bare missing id.
+    refresh_failure: Option<String>,
     graph_name: String,
     version: i64,
     labels: IdMap,
@@ -107,6 +110,7 @@ impl GraphSchema {
         Self {
             client,
             missing: Vec::new(),
+            refresh_failure: None,
             graph_name: graph_name.to_string(),
             version: 0,
             labels: IdMap::new(),
@@ -159,6 +163,15 @@ impl GraphSchema {
         std::mem::take(&mut self.missing)
     }
 
+    /// While set, lookups of unknown ids fail with this message rather than being recorded as
+    /// missing. Only meaningful for in-memory schemas.
+    pub(crate) fn set_refresh_failure(
+        &mut self,
+        failure: Option<String>,
+    ) {
+        self.refresh_failure = failure;
+    }
+
     /// The query that fetches the full id map of `schema_type` from the server.
     pub(crate) fn refresh_query(schema_type: SchemaType) -> String {
         format!("CALL {}()", get_refresh_command(schema_type))
@@ -182,7 +195,7 @@ impl GraphSchema {
         let new_keys = keys
             .into_iter()
             .enumerate()
-            .flat_map(|(idx, item)| {
+            .map(|(idx, item)| {
                 FalkorResult::<(i64, String)>::Ok((
                     idx as i64,
                     redis_value_as_vec(item)
@@ -197,7 +210,7 @@ impl GraphSchema {
                         .and_then(redis_value_as_string)?,
                 ))
             })
-            .collect::<HashMap<i64, String>>();
+            .collect::<FalkorResult<HashMap<i64, String>>>()?;
 
         *match schema_type {
             SchemaType::Labels => &mut self.labels,
@@ -216,6 +229,11 @@ impl GraphSchema {
         schema_type: SchemaType,
     ) -> FalkorResult<()> {
         let Some(client) = self.client.clone() else {
+            if let Some(failure) = &self.refresh_failure {
+                return Err(FalkorDBError::RedisError(format!(
+                    "schema refresh failed: {failure}"
+                )));
+            }
             if !self.missing.contains(&schema_type) {
                 self.missing.push(schema_type);
             }
@@ -226,7 +244,7 @@ impl GraphSchema {
         let res = client.get_connection().and_then(|mut conn| {
             conn.execute_command(
                 Some(self.graph_name.as_str()),
-                "GRAPH.QUERY",
+                "GRAPH.RO_QUERY",
                 None,
                 Some(&[Self::refresh_query(schema_type).as_str()]),
             )
@@ -381,6 +399,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_in_memory_schema_reports_refresh_failure() {
+        let mut schema = GraphSchema::new_in_memory("graph_name");
+        schema.set_refresh_failure(Some("timed out".to_string()));
+
+        let err = schema
+            .parse_single_id(3, SchemaType::Labels)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("schema refresh failed: timed out"));
+        assert!(schema.take_missing().is_empty());
+
+        schema.set_refresh_failure(None);
+        assert!(matches!(
+            schema.parse_single_id(3, SchemaType::Labels),
+            Err(FalkorDBError::MissingSchemaId(SchemaType::Labels))
+        ));
+    }
+
+    #[test]
     fn test_apply_refresh_reply_populates_ids() {
         let mut schema = GraphSchema::new_in_memory("graph_name");
         let reply = |names: &[&str]| {
@@ -434,8 +471,9 @@ pub(crate) mod tests {
             ]),
         ];
         for reply in bad_replies {
-            // A malformed reply must error or at least leave the maps free of garbage names.
-            let _ = schema.apply_refresh_reply(SchemaType::Labels, reply);
+            assert!(schema
+                .apply_refresh_reply(SchemaType::Labels, reply)
+                .is_err());
         }
         assert!(schema.labels().is_empty());
     }

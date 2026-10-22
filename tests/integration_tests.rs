@@ -1833,11 +1833,13 @@ mod async_schema_refresh {
         if skip_if_no_server() {
             return None;
         }
-        FalkorClientBuilder::new_async()
-            .with_connection_info(get_test_connection_info().ok()?)
-            .build()
-            .await
-            .ok()
+        Some(
+            FalkorClientBuilder::new_async()
+                .with_connection_info(get_test_connection_info().expect("valid connection info"))
+                .build()
+                .await
+                .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)"),
+        )
     }
 
     // Default `#[tokio::test]` is a current-thread runtime, which the schema refresh used to reject.

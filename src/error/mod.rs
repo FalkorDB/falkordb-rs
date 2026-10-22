@@ -245,8 +245,9 @@ impl FalkorDBError {
     pub fn mitigation_hint(&self) -> Option<&'static str> {
         match self {
             Self::SingleThreadedRuntime => Some(
-                "run async operations on a multi-thread Tokio runtime, e.g. \
-                 `#[tokio::main(flavor = \"multi_thread\")]`, not the current-thread runtime",
+                "the async client no longer returns this error and works on current-thread runtimes; \
+                 if you still see it, upgrade, or run on a multi-thread Tokio runtime, e.g. \
+                 `#[tokio::main(flavor = \"multi_thread\")]`",
             ),
             Self::NoRuntime => Some(
                 "no Tokio runtime is running — call async APIs from inside a runtime, or use the \

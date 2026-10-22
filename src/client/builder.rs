@@ -178,9 +178,9 @@ impl<const R: char> FalkorClientBuilder<R> {
     }
 
     /// Convenience: enable TCP keepalive probes with the given idle time.
-    /// Sends keepalive probes after `idle` of inactivity on direct Redis TCP
-    /// connections. See [`with_tcp_settings`](Self::with_tcp_settings) for
-    /// scope limitations.
+    /// Sends keepalive probes after `idle` of inactivity on Redis TCP
+    /// connections, both direct and Sentinel-resolved. See
+    /// [`with_tcp_settings`](Self::with_tcp_settings) for scope limitations.
     ///
     /// Equivalent to:
     /// ```ignore

@@ -170,16 +170,189 @@ impl FalkorClientProvider {
         response_timeout: Option<std::time::Duration>,
         connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<FalkorSyncConnection> {
-        let conn = match connect_timeout {
-            Some(timeout) => client.get_connection_with_timeout(timeout),
-            None => client.get_connection(),
-        }
-        .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        let conn = Self::connect_redis_client(client, connect_timeout)
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
         conn.set_read_timeout(response_timeout)
             .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
         conn.set_write_timeout(response_timeout)
             .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
         Ok(FalkorSyncConnection::Redis(conn))
+    }
+
+    /// Connect `client` with an optional setup deadline while avoiding redis-rs 1.7.1's
+    /// `tls_connector.connect(...).unwrap()` panic on the timed `native-tls` (without
+    /// `rustls`) code path.
+    fn connect_redis_client(
+        client: &redis::Client,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> redis::RedisResult<redis::Connection> {
+        match connect_timeout {
+            #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+            Some(timeout) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                client.get_connection_with_timeout(timeout)
+            }))
+            .unwrap_or_else(|_| {
+                Err(redis::RedisError::from((
+                    redis::ErrorKind::Io,
+                    "SSL Handshake error",
+                )))
+            }),
+            #[cfg(not(all(feature = "native-tls", not(feature = "rustls"))))]
+            Some(timeout) => client.get_connection_with_timeout(timeout),
+            None => client.get_connection(),
+        }
+    }
+
+    /// Open a synchronous connection and bound any follow-up probe commands on it by
+    /// `connect_timeout`.
+    fn open_probe_connection(
+        connection_info: &redis::ConnectionInfo,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> FalkorResult<redis::Connection> {
+        let client = redis::Client::open(connection_info.clone())
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        let conn = Self::connect_redis_client(&client, connect_timeout)
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        conn.set_read_timeout(connect_timeout)
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        conn.set_write_timeout(connect_timeout)
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        Ok(conn)
+    }
+
+    /// Build a node `redis::ConnectionInfo` for a Sentinel-discovered `(ip, port)` using
+    /// the Sentinel's Redis/TCP/TLS settings.
+    fn sentinel_node_connection_info(
+        sentinel_info: &redis::ConnectionInfo,
+        ip: String,
+        port: u16,
+    ) -> redis::ConnectionInfo {
+        let mut addr = sentinel_info.addr().clone();
+        if let redis::ConnectionAddr::Tcp(host, p)
+        | redis::ConnectionAddr::TcpTls { host, port: p, .. } = &mut addr
+        {
+            *host = ip;
+            *p = port;
+        }
+        sentinel_info.clone().set_addr(addr)
+    }
+
+    /// Parse a `SENTINEL MASTERS` or `SENTINEL SLAVES` array reply into key/value maps.
+    fn parse_sentinel_maps(entries: Vec<redis::Value>) -> Vec<HashMap<String, String>> {
+        entries
+            .into_iter()
+            .filter_map(|entry| entry.into_sequence().ok())
+            .map(|seq| {
+                seq.chunks_exact(2)
+                    .filter_map(|chunk| {
+                        let key = redis_value_as_string(chunk[0].clone()).ok()?;
+                        let val = redis_value_as_string(chunk[1].clone()).ok()?;
+                        Some((key, val))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Check whether a candidate node reports the expected `expected_role` (`"master"` or
+    /// `"slave"`) via `ROLE`, with both connection establishment and the role query
+    /// bounded by `connect_timeout`.
+    fn node_matches_role(
+        node_info: &redis::ConnectionInfo,
+        expected_role: &str,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> FalkorResult<bool> {
+        let mut conn = Self::open_probe_connection(node_info, connect_timeout)?;
+        let items: Vec<redis::Value> = redis::cmd("ROLE")
+            .query(&mut conn)
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        let role = items
+            .into_iter()
+            .next()
+            .ok_or_else(|| FalkorDBError::RedisError("Empty ROLE reply".to_string()))
+            .and_then(redis_value_as_string)?;
+        Ok(role == expected_role)
+    }
+
+    /// Resolve a `redis::Client` for the current Sentinel master (`is_replica == false`)
+    /// or replica (`is_replica == true`) while bounding every Sentinel query and
+    /// candidate-node `ROLE` validation by `connect_timeout`.
+    fn resolve_sentinel_client_with_timeout(
+        sentinel_info: &redis::ConnectionInfo,
+        is_replica: bool,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> FalkorResult<redis::Client> {
+        let mut sentinel_conn = Self::open_probe_connection(sentinel_info, connect_timeout)?;
+        let role_items: Vec<redis::Value> = redis::cmd("ROLE")
+            .query(&mut sentinel_conn)
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        if role_items
+            .into_iter()
+            .next()
+            .and_then(|v| redis_value_as_string(v).ok())
+            .as_deref()
+            != Some("sentinel")
+        {
+            return Err(FalkorDBError::RedisError(
+                "Address does not point to a sentinel node".to_string(),
+            ));
+        }
+
+        let raw_masters: Vec<redis::Value> = redis::cmd("SENTINEL")
+            .arg("MASTERS")
+            .query(&mut sentinel_conn)
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        let masters = Self::parse_sentinel_maps(raw_masters);
+
+        let (candidates, expected_role, not_found_msg) = if is_replica {
+            let service_name = masters
+                .first()
+                .and_then(|m| m.get("name"))
+                .cloned()
+                .ok_or_else(|| {
+                    FalkorDBError::RedisError(
+                        "No valid master found in sentinel for replica lookup".to_string(),
+                    )
+                })?;
+            let raw_replicas: Vec<redis::Value> = redis::cmd("SENTINEL")
+                .arg("SLAVES")
+                .arg(&service_name)
+                .query(&mut sentinel_conn)
+                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+            (
+                Self::parse_sentinel_maps(raw_replicas),
+                "slave",
+                "No valid replica found in sentinel for given name",
+            )
+        } else {
+            (
+                masters,
+                "master",
+                "Master with given name not found in sentinel",
+            )
+        };
+
+        for candidate in candidates {
+            let flags_ok = candidate
+                .get("flags")
+                .is_none_or(|flags| !flags.contains("s_down") && !flags.contains("o_down"));
+            let Some((ip, port)) = candidate
+                .get("ip")
+                .cloned()
+                .zip(candidate.get("port").and_then(|p| p.parse::<u16>().ok()))
+            else {
+                continue;
+            };
+            if !flags_ok {
+                continue;
+            }
+            let node_info = Self::sentinel_node_connection_info(sentinel_info, ip, port);
+            if Self::node_matches_role(&node_info, expected_role, connect_timeout)? {
+                return redis::Client::open(node_info)
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()));
+            }
+        }
+        Err(FalkorDBError::RedisError(not_found_msg.to_string()))
     }
 
     pub(crate) fn get_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
@@ -198,11 +371,14 @@ impl FalkorClientProvider {
     ) -> FalkorResult<FalkorSyncConnection> {
         let client = match self {
             FalkorClientProvider::Redis {
-                sentinel: Some(sentinel),
+                client: sentinel_client,
+                sentinel: Some(_),
                 ..
-            } => sentinel
-                .get_client()
-                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
+            } => Self::resolve_sentinel_client_with_timeout(
+                sentinel_client.get_connection_info(),
+                false,
+                connect_timeout,
+            )?,
             FalkorClientProvider::Redis { client, .. } => client.clone(),
             #[cfg(test)]
             FalkorClientProvider::None => return Err(FalkorDBError::UnavailableProvider),
@@ -275,12 +451,15 @@ impl FalkorClientProvider {
         let connect_timeout = self.connect_timeout();
         match self {
             FalkorClientProvider::Redis {
-                sentinel_replica: Some(replica),
+                client: sentinel_client,
+                sentinel_replica: Some(_),
                 ..
             } => {
-                let client = replica
-                    .get_client()
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+                let client = Self::resolve_sentinel_client_with_timeout(
+                    sentinel_client.get_connection_info(),
+                    true,
+                    connect_timeout,
+                )?;
                 Self::open_sync_connection(&client, response_timeout, connect_timeout)
             }
             _ => Err(FalkorDBError::UnavailableProvider),
@@ -1004,9 +1183,8 @@ mod tests {
             .expect("sentinel client should build")
             .expect("single master yields a client");
 
-        // Primary client points to port 1 (unroutable), so only the Sentinel arm can succeed.
         let mut provider = FalkorClientProvider::Redis {
-            client: redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            client: redis::Client::open(connection_info).unwrap(),
             sentinel: Some(sentinel),
             sentinel_replica: None,
             #[cfg(feature = "embedded-core")]
@@ -1015,12 +1193,359 @@ mod tests {
             connect_timeout: None,
         };
 
-        // Note: the fake master accepts two connections (one for SentinelClient::get_client's
-        // ROLE check and one for open_sync_connection), so get_connection() succeeds via Sentinel.
+        // Note: the fake master accepts two connections (one for Sentinel ROLE check and one
+        // for open_sync_connection), so get_connection() succeeds via Sentinel.
         assert!(
             provider.get_connection().is_ok(),
             "sync get_connection should resolve the master via Sentinel and open a connection"
         );
+    }
+
+    #[test]
+    fn test_sync_sentinel_resolution_stalled_sentinel_is_bounded_by_connect_timeout() {
+        use std::net::TcpListener;
+
+        // A listener that accepts the TCP handshake and never sends a byte.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent sentinel");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept silent sentinel");
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+
+        let sentinel_url = format!("redis://127.0.0.1:{port}");
+        let connection_info = redis::ConnectionInfo::from_str(&sentinel_url).unwrap();
+        let sentinel = FalkorClientProvider::None
+            .get_sentinel_client_common(&connection_info, single_master_reply("mymaster"))
+            .unwrap()
+            .unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info.clone()],
+            "mymaster".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(connection_info).unwrap(),
+            sentinel: Some(sentinel),
+            sentinel_replica: Some(replica),
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: None,
+            connect_timeout: Some(std::time::Duration::from_millis(60)),
+        };
+
+        let start = std::time::Instant::now();
+        assert!(
+            provider.get_connection().is_err(),
+            "stalled Sentinel must fail within connect_timeout"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "Sentinel resolution must not hang when Sentinel stalls after TCP accept"
+        );
+    }
+
+    #[test]
+    fn test_sync_sentinel_resolution_stalled_node_role_is_bounded_by_connect_timeout() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        // Candidate master accepts TCP but stalls on ROLE.
+        let master_listener = TcpListener::bind("127.0.0.1:0").expect("bind silent master");
+        let master_port = master_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (_stream, _) = master_listener.accept().expect("accept silent master");
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+
+        // Sentinel answers ROLE and SENTINEL MASTERS pointing at the stalled master.
+        let sentinel_listener = TcpListener::bind("127.0.0.1:0").expect("bind sentinel");
+        let sentinel_port = sentinel_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = sentinel_listener.accept().expect("accept sentinel");
+            let mut pending = String::new();
+            let mut chunk = [0u8; 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                for command in take_commands(&mut pending) {
+                    let upper = command.to_ascii_uppercase();
+                    let reply = if upper.contains("\r\nSENTINEL\r\n")
+                        && upper.contains("\r\nMASTERS\r\n")
+                    {
+                        let port_str = master_port.to_string();
+                        format!(
+                            "*1\r\n*8\r\n$4\r\nname\r\n$8\r\nmymaster\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{port_str}\r\n$5\r\nflags\r\n$6\r\nmaster\r\n",
+                            port_str.len()
+                        )
+                    } else if upper.contains("\r\nROLE\r\n") {
+                        "*2\r\n$8\r\nsentinel\r\n*1\r\n$8\r\nmymaster\r\n".to_string()
+                    } else {
+                        "+OK\r\n".to_string()
+                    };
+                    let _ = stream.write_all(reply.as_bytes());
+                }
+            }
+        });
+
+        let sentinel_url = format!("redis://127.0.0.1:{sentinel_port}");
+        let connection_info = redis::ConnectionInfo::from_str(&sentinel_url).unwrap();
+        let sentinel = FalkorClientProvider::None
+            .get_sentinel_client_common(&connection_info, single_master_reply("mymaster"))
+            .unwrap()
+            .unwrap();
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(connection_info).unwrap(),
+            sentinel: Some(sentinel),
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: None,
+            connect_timeout: Some(std::time::Duration::from_millis(60)),
+        };
+
+        let start = std::time::Instant::now();
+        assert!(
+            provider.get_connection().is_err(),
+            "stalled node ROLE check must fail within connect_timeout"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "node ROLE validation must not hang when candidate node stalls"
+        );
+    }
+
+    #[test]
+    fn test_sync_get_replica_connection_routes_through_sentinel() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let replica_listener = TcpListener::bind("127.0.0.1:0").expect("bind replica");
+        let replica_port = replica_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in replica_listener.incoming().take(2).flatten() {
+                let mut stream = stream;
+                let mut pending = String::new();
+                let mut chunk = [0u8; 1024];
+                while let Ok(read) = stream.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let reply = if command.to_ascii_uppercase().contains("\r\nROLE\r\n") {
+                            "*5\r\n$5\r\nslave\r\n$9\r\n127.0.0.1\r\n:6379\r\n$9\r\nconnected\r\n:0\r\n"
+                        } else {
+                            "+OK\r\n"
+                        };
+                        let _ = stream.write_all(reply.as_bytes());
+                    }
+                }
+            }
+        });
+
+        let sentinel_listener = TcpListener::bind("127.0.0.1:0").expect("bind sentinel");
+        let sentinel_port = sentinel_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = sentinel_listener.accept().expect("accept sentinel");
+            let mut pending = String::new();
+            let mut chunk = [0u8; 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                for command in take_commands(&mut pending) {
+                    let upper = command.to_ascii_uppercase();
+                    let reply = if upper.contains("\r\nSENTINEL\r\n")
+                        && upper.contains("\r\nMASTERS\r\n")
+                    {
+                        "*1\r\n*2\r\n$4\r\nname\r\n$8\r\nmymaster\r\n".to_string()
+                    } else if upper.contains("\r\nSENTINEL\r\n") && upper.contains("\r\nSLAVES\r\n")
+                    {
+                        let port_str = replica_port.to_string();
+                        format!(
+                            "*1\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{port_str}\r\n$5\r\nflags\r\n$5\r\nslave\r\n",
+                            port_str.len()
+                        )
+                    } else if upper.contains("\r\nROLE\r\n") {
+                        "*2\r\n$8\r\nsentinel\r\n*1\r\n$8\r\nmymaster\r\n".to_string()
+                    } else {
+                        "+OK\r\n".to_string()
+                    };
+                    let _ = stream.write_all(reply.as_bytes());
+                }
+            }
+        });
+
+        let sentinel_url = format!("redis://127.0.0.1:{sentinel_port}");
+        let connection_info = redis::ConnectionInfo::from_str(&sentinel_url).unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info.clone()],
+            "mymaster".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(connection_info).unwrap(),
+            sentinel: None,
+            sentinel_replica: Some(replica),
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: Some(std::time::Duration::from_millis(200)),
+            connect_timeout: Some(std::time::Duration::from_secs(2)),
+        };
+
+        assert!(
+            provider.get_replica_connection().is_ok(),
+            "sync get_replica_connection should resolve a replica via Sentinel with timeouts"
+        );
+    }
+
+    #[test]
+    fn test_sync_sentinel_resolution_edge_cases() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let tcp_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
+        assert!(FalkorClientProvider::connect_redis_client(
+            &redis::Client::open(tcp_info).unwrap(),
+            None
+        )
+        .is_err());
+
+        let non_sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+        let non_sentinel_port = non_sentinel.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = non_sentinel.accept() {
+                let mut buf = [0u8; 256];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n");
+            }
+        });
+        let info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{non_sentinel_port}"))
+                .unwrap();
+        assert!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &info,
+                false,
+                Some(std::time::Duration::from_millis(500)),
+            )
+            .is_err(),
+            "non-sentinel ROLE should return an error"
+        );
+
+        let no_master_sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+        let no_master_port = no_master_sentinel.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = no_master_sentinel.accept() {
+                let mut pending = String::new();
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = stream.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let upper = command.to_ascii_uppercase();
+                        let reply = if upper.contains("\r\nROLE\r\n") {
+                            "*2\r\n$8\r\nsentinel\r\n*0\r\n"
+                        } else {
+                            "*0\r\n"
+                        };
+                        let _ = stream.write_all(reply.as_bytes());
+                    }
+                }
+            }
+        });
+        let no_master_info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{no_master_port}"))
+                .unwrap();
+        assert!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &no_master_info,
+                true,
+                Some(std::time::Duration::from_millis(500)),
+            )
+            .is_err(),
+            "replica resolution without any master in SENTINEL MASTERS should return an error"
+        );
+
+        let empty_sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+        let empty_port = empty_sentinel.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in empty_sentinel.incoming().take(2).flatten() {
+                let mut stream = stream;
+                let mut pending = String::new();
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = stream.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let upper = command.to_ascii_uppercase();
+                        let reply = if upper.contains("\r\nROLE\r\n") {
+                            "*2\r\n$8\r\nsentinel\r\n*0\r\n"
+                        } else {
+                            // Return one s_down candidate and one missing-port candidate
+                            "*2\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n$4\r\n6379\r\n$5\r\nflags\r\n$6\r\ns_down\r\n*2\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n"
+                        };
+                        let _ = stream.write_all(reply.as_bytes());
+                    }
+                }
+            }
+        });
+        let empty_info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{empty_port}")).unwrap();
+        assert!(FalkorClientProvider::resolve_sentinel_client_with_timeout(
+            &empty_info,
+            false,
+            Some(std::time::Duration::from_millis(500)),
+        )
+        .is_err());
+        assert!(FalkorClientProvider::resolve_sentinel_client_with_timeout(
+            &empty_info,
+            true,
+            Some(std::time::Duration::from_millis(500)),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_tls_handshake_failure_against_plain_tcp_returns_err_without_panicking() {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind plain tcp server");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.write_all(b"-ERR plain tcp\r\n");
+            }
+        });
+
+        let tls_url = format!("rediss://127.0.0.1:{port}");
+        if let Ok(client) = redis::Client::open(tls_url.as_str()) {
+            let res = FalkorClientProvider::open_sync_connection(
+                &client,
+                Some(std::time::Duration::from_millis(200)),
+                Some(std::time::Duration::from_millis(500)),
+            );
+            assert!(
+                res.is_err(),
+                "failed TLS handshake with finite connect_timeout must return Err, never panic"
+            );
+        }
     }
 
     #[test]
@@ -1244,8 +1769,8 @@ mod tests {
         // When a replica SentinelClient exists but the replica is unreachable, the
         // implementation must propagate the error rather than fall back to the
         // primary, so the read-only pool never receives primary connections.
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
         // Port 1 is reliably unroutable in test environments.
+        let client = redis::Client::open("redis://127.0.0.1:1").unwrap();
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
             vec![connection_info],

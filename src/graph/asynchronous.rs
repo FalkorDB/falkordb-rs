@@ -537,7 +537,7 @@ mod tests {
         ConstraintType, FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_parse_with_schema_refreshes_once_then_surfaces_unknown_id() {
         // An id the server has never issued: the schema is refreshed once, and the still-missing id
         // is returned as the parse error rather than looping.

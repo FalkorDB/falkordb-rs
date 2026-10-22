@@ -134,44 +134,83 @@ static REPLICA_ROTATION: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
     not(any(feature = "rustls", feature = "tokio-rustls"))
 ))]
 mod native_tls_connect {
-    use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-    use std::sync::{mpsc, Arc};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc, Mutex, OnceLock};
     use std::time::Duration;
 
-    /// Most attempts left blocked on a helper thread after their caller timed out. Each holds a
-    /// thread and a socket until its peer answers or closes, so past this, new attempts fail
-    /// fast instead of piling up more.
-    pub(super) const MAX_ABANDONED: usize = 16;
-    pub(super) static ABANDONED: AtomicUsize = AtomicUsize::new(0);
+    /// Most in-flight or abandoned attempts per `(host, port)` target. Each stalled attempt
+    /// holds a helper thread and a socket until its peer answers or closes, so past this per-peer
+    /// limit, new attempts to that peer fail fast without affecting healthy peers.
+    pub(super) const MAX_IN_FLIGHT_PER_TARGET: usize = 16;
 
-    const RUNNING: u8 = 0;
-    const FINISHED: u8 = 1;
-    const GAVE_UP: u8 = 2;
+    static TARGET_COUNTS: OnceLock<Mutex<HashMap<(String, u16), Arc<AtomicUsize>>>> =
+        OnceLock::new();
+
+    pub(super) fn counter_for(client: &redis::Client) -> Arc<AtomicUsize> {
+        let key = match client.get_connection_info().addr() {
+            redis::ConnectionAddr::Tcp(host, port)
+            | redis::ConnectionAddr::TcpTls { host, port, .. } => (host.clone(), *port),
+            other => (other.to_string(), 0),
+        };
+        let mut map = TARGET_COUNTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            map.entry(key)
+                .or_insert_with(|| Arc::new(AtomicUsize::new(0))),
+        )
+    }
+
+    struct SlotGuard(Arc<AtomicUsize>);
+
+    impl Drop for SlotGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    fn try_reserve(
+        counter: &Arc<AtomicUsize>,
+        max_in_flight: usize,
+    ) -> Option<SlotGuard> {
+        let mut cur = counter.load(Ordering::Acquire);
+        loop {
+            if cur >= max_in_flight {
+                return None;
+            }
+            match counter.compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(SlotGuard(Arc::clone(counter))),
+                Err(actual) => cur = actual,
+            }
+        }
+    }
 
     fn timed_out(msg: &str) -> redis::RedisError {
         std::io::Error::new(std::io::ErrorKind::TimedOut, msg.to_string()).into()
     }
 
     /// Connect `client` on a helper thread and return within `timeout`, turning the handshake
-    /// panic into an error. An attempt still running at the deadline is counted in `abandoned`
-    /// until it finishes; while `max_abandoned` are outstanding, no new thread is spawned.
+    /// panic into an error. Capacity is reserved atomically in `in_flight` before spawning and
+    /// released when the worker exits; while `max_in_flight` workers for the target are running
+    /// or stalled, no new thread is spawned.
     pub(super) fn connect(
         client: &redis::Client,
         timeout: Duration,
-        abandoned: &'static AtomicUsize,
-        max_abandoned: usize,
+        in_flight: &Arc<AtomicUsize>,
+        max_in_flight: usize,
     ) -> redis::RedisResult<redis::Connection> {
-        if abandoned.load(Ordering::Acquire) >= max_abandoned {
+        let Some(slot) = try_reserve(in_flight, max_in_flight) else {
             return Err(timed_out(
                 "too many earlier TLS connection attempts are still stalled",
             ));
-        }
+        };
 
         let client = client.clone();
-        let state = Arc::new(AtomicU8::new(RUNNING));
-        let worker_state = Arc::clone(&state);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
+            let _slot = slot;
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 client.get_connection_with_timeout(timeout)
             }))
@@ -190,30 +229,10 @@ mod native_tls_connect {
             });
             // If the caller already gave up, the send fails and the connection is dropped here.
             let _ = tx.send(res);
-            if worker_state.swap(FINISHED, Ordering::AcqRel) == GAVE_UP {
-                abandoned.fetch_sub(1, Ordering::AcqRel);
-            }
         });
 
-        match rx.recv_timeout(timeout) {
-            Ok(res) => res,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if state
-                    .compare_exchange(RUNNING, GAVE_UP, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    abandoned.fetch_add(1, Ordering::AcqRel);
-                    Err(timed_out("TLS connection setup timed out"))
-                } else {
-                    // The worker finished right at the deadline; its result is already queued.
-                    rx.try_recv()
-                        .unwrap_or_else(|_| Err(timed_out("TLS connection setup timed out")))
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Err(timed_out("TLS connection setup thread exited"))
-            }
-        }
+        rx.recv_timeout(timeout)
+            .unwrap_or_else(|_| Err(timed_out("TLS connection setup timed out")))
     }
 }
 
@@ -292,11 +311,12 @@ impl FalkorClientProvider {
                     redis::ConnectionAddr::TcpTls { .. }
                 ) =>
             {
+                let counter = native_tls_connect::counter_for(client);
                 native_tls_connect::connect(
                     client,
                     timeout,
-                    &native_tls_connect::ABANDONED,
-                    native_tls_connect::MAX_ABANDONED,
+                    &counter,
+                    native_tls_connect::MAX_IN_FLIGHT_PER_TARGET,
                 )
             }
             Some(timeout) => client.get_connection_with_timeout(timeout),
@@ -413,29 +433,11 @@ impl FalkorClientProvider {
         connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<redis::Client> {
         let mut sentinel_conn = Self::open_probe_connection(sentinel_info, connect_timeout)?;
-        let role_items: Vec<redis::Value> =
-            Self::query_cmd(&redis::cmd("ROLE"), &mut sentinel_conn)?;
-        let mut role_iter = role_items.into_iter();
-        if role_iter
-            .next()
-            .and_then(|v| redis_value_as_string(v).ok())
-            .as_deref()
-            != Some("sentinel")
-        {
-            return Err(FalkorDBError::RedisError(
-                "Address does not point to a sentinel node".to_string(),
-            ));
-        }
-        if role_iter
-            .next()
-            .and_then(|v| v.into_sequence().ok())
-            .is_some_and(|services| services.len() > 1)
-        {
-            return Err(FalkorDBError::SentinelMastersCount);
-        }
-
         let raw_masters: Vec<redis::Value> =
             Self::query_cmd(redis::cmd("SENTINEL").arg("MASTERS"), &mut sentinel_conn)?;
+        if raw_masters.len() > 1 {
+            return Err(FalkorDBError::SentinelMastersCount);
+        }
         let masters = Self::parse_sentinel_maps(raw_masters);
 
         let (candidates, expected_role, not_found_msg) = if is_replica {
@@ -1624,9 +1626,9 @@ mod tests {
                     pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
                     for command in take_commands(&mut pending) {
                         let reply = if command.to_ascii_uppercase().contains("\r\nROLE\r\n") {
-                            "*2\r\n$8\r\nsentinel\r\n*2\r\n$2\r\nm1\r\n$2\r\nm2\r\n"
+                            "-NOPERM this user has no permissions to run the 'role' command\r\n"
                         } else {
-                            "+OK\r\n"
+                            "*2\r\n*2\r\n$4\r\nname\r\n$2\r\nm1\r\n*2\r\n$4\r\nname\r\n$2\r\nm2\r\n"
                         };
                         let _ = s.write_all(reply.as_bytes());
                     }
@@ -1656,8 +1658,8 @@ mod tests {
                     }
                     pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
                     for command in take_commands(&mut pending) {
-                        let reply = if command.to_ascii_uppercase().contains("\r\nROLE\r\n") {
-                            "*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n"
+                        let reply = if command.to_ascii_uppercase().contains("\r\nSENTINEL\r\n") {
+                            "-ERR unknown command 'SENTINEL'\r\n"
                         } else {
                             "+OK\r\n"
                         };
@@ -1690,14 +1692,8 @@ mod tests {
                         break;
                     }
                     pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
-                    for command in take_commands(&mut pending) {
-                        let upper = command.to_ascii_uppercase();
-                        let reply = if upper.contains("\r\nROLE\r\n") {
-                            "*2\r\n$8\r\nsentinel\r\n*0\r\n"
-                        } else {
-                            "*0\r\n"
-                        };
-                        let _ = stream.write_all(reply.as_bytes());
+                    for _ in take_commands(&mut pending) {
+                        let _ = stream.write_all(b"*0\r\n");
                     }
                 }
             }
@@ -1718,7 +1714,7 @@ mod tests {
         let empty_sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
         let empty_port = empty_sentinel.local_addr().unwrap().port();
         std::thread::spawn(move || {
-            for stream in empty_sentinel.incoming().take(4).flatten() {
+            for stream in empty_sentinel.incoming().take(3).flatten() {
                 let mut stream = stream;
                 let mut pending = String::new();
                 let mut chunk = [0u8; 512];
@@ -1731,11 +1727,13 @@ mod tests {
                         let upper = command.to_ascii_uppercase();
                         let reply = if upper.contains("\r\nROLE\r\n") {
                             "*2\r\n$8\r\nsentinel\r\n*0\r\n".to_string()
+                        } else if upper.contains("\r\nSLAVES\r\n") {
+                            "*0\r\n".to_string()
                         } else {
-                            // Return one s_down candidate, one missing-port candidate, and one candidate whose ROLE is sentinel (not master/slave)
+                            // Single master entry whose candidate port is the sentinel itself (so ROLE returns "sentinel", not "master")
                             let self_port = empty_port.to_string();
                             format!(
-                                "*3\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n$4\r\n6379\r\n$5\r\nflags\r\n$6\r\ns_down\r\n*2\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{self_port}\r\n$4\r\nname\r\n$8\r\nmymaster\r\n",
+                                "*1\r\n*8\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{self_port}\r\n$4\r\nname\r\n$8\r\nmymaster\r\n$5\r\nflags\r\n$6\r\nmaster\r\n",
                                 self_port.len()
                             )
                         };
@@ -1857,7 +1855,8 @@ mod tests {
     }
 
     /// A fake Sentinel monitoring `mymaster`, answering `SENTINEL MASTERS` / `SENTINEL SLAVES`
-    /// with the given pre-encoded RESP replies.
+    /// with the given pre-encoded RESP replies and rejecting any other command (such as `ROLE`)
+    /// with `-NOPERM`.
     fn spawn_fake_sentinel(
         masters: String,
         replicas: String,
@@ -1867,10 +1866,8 @@ mod tests {
                 masters.clone()
             } else if command.contains("\r\nSLAVES\r\n") {
                 replicas.clone()
-            } else if command.contains("\r\nROLE\r\n") {
-                "*2\r\n$8\r\nsentinel\r\n*1\r\n$8\r\nmymaster\r\n".to_string()
             } else {
-                "+OK\r\n".to_string()
+                "-NOPERM this user has no permissions to run this command\r\n".to_string()
             }
         });
         redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{port}")).unwrap()
@@ -1890,10 +1887,10 @@ mod tests {
     }
 
     fn resolved_port(client: &redis::Client) -> u16 {
-        match client.get_connection_info().addr() {
-            redis::ConnectionAddr::Tcp(_, port) => *port,
-            other => panic!("expected a TCP node address, got {other:?}"),
-        }
+        let redis::ConnectionAddr::Tcp(_, port) = client.get_connection_info().addr() else {
+            unreachable!()
+        };
+        *port
     }
 
     #[test]
@@ -1943,14 +1940,6 @@ mod tests {
 
     #[test]
     fn test_sync_master_resolution_checks_flags_and_falls_back_to_info_replication() {
-        // Claims to be a master, but Sentinel lists it without flags: not eligible.
-        let unflagged = spawn_fake_resp_server(|command| {
-            if command.contains("\r\nROLE\r\n") {
-                "*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n".to_string()
-            } else {
-                "+OK\r\n".to_string()
-            }
-        });
         // Rejects `ROLE` but reports its role through `INFO REPLICATION`.
         let info_only = |role: &'static str| {
             spawn_fake_resp_server(move |command| {
@@ -1967,12 +1956,7 @@ mod tests {
         let master = info_only("master");
         let masters = |port: u16| {
             format!(
-                "*2\r\n{}{}",
-                sentinel_entry(&[
-                    ("name", "mymaster"),
-                    ("ip", "127.0.0.1"),
-                    ("port", &unflagged.to_string()),
-                ]),
+                "*1\r\n{}",
                 sentinel_entry(&[
                     ("name", "mymaster"),
                     ("ip", "127.0.0.1"),
@@ -1981,6 +1965,27 @@ mod tests {
                 ]),
             )
         };
+
+        let unflagged_sentinel = spawn_fake_sentinel(
+            format!(
+                "*1\r\n{}",
+                sentinel_entry(&[
+                    ("name", "mymaster"),
+                    ("ip", "127.0.0.1"),
+                    ("port", &master.to_string()),
+                ]),
+            ),
+            "*0\r\n".to_string(),
+        );
+        assert!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &unflagged_sentinel,
+                false,
+                Some(std::time::Duration::from_secs(2)),
+            )
+            .is_err(),
+            "a master entry without the master flag is not eligible"
+        );
 
         let sentinel = spawn_fake_sentinel(masters(master), "*0\r\n".to_string());
         let client = FalkorClientProvider::resolve_sentinel_client_with_timeout(
@@ -2030,9 +2035,7 @@ mod tests {
     ))]
     fn test_native_tls_abandoned_handshake_is_released_when_the_peer_closes() {
         use std::net::TcpListener;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        static ABANDONED: AtomicUsize = AtomicUsize::new(0);
+        use std::sync::atomic::Ordering;
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent tls peer");
         let port = listener.local_addr().unwrap().port();
@@ -2042,22 +2045,24 @@ mod tests {
             let _ = close_rx.recv();
         });
 
+        let client = silent_tls_client(port);
+        let in_flight = native_tls_connect::counter_for(&client);
         assert!(native_tls_connect::connect(
-            &silent_tls_client(port),
+            &client,
             std::time::Duration::from_millis(60),
-            &ABANDONED,
+            &in_flight,
             16,
         )
         .is_err());
         assert_eq!(
-            ABANDONED.load(Ordering::Acquire),
+            in_flight.load(Ordering::Acquire),
             1,
             "the stalled attempt is tracked"
         );
 
         close_tx.send(()).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while ABANDONED.load(Ordering::Acquire) != 0 {
+        while in_flight.load(Ordering::Acquire) != 0 {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the helper thread must finish once the peer closes"
@@ -2073,26 +2078,83 @@ mod tests {
     ))]
     fn test_native_tls_connect_fails_fast_once_too_many_attempts_are_stalled() {
         use std::net::TcpListener;
-        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
 
-        static ABANDONED: AtomicUsize = AtomicUsize::new(2);
+        // 1. Concurrent admission: 4 callers race against a cap of 2; at most 2 are admitted.
+        let stalled_listener = TcpListener::bind("127.0.0.1:0").expect("bind stalled tls peer");
+        let stalled_port = stalled_listener.local_addr().unwrap().port();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let mut accepted = Vec::new();
+            for stream in stalled_listener.incoming().take(2).flatten() {
+                accepted.push(stream);
+            }
+            let _ = release_rx.recv();
+        });
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind tls peer");
-        listener.set_nonblocking(true).unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let stalled_client = silent_tls_client(stalled_port);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let c = stalled_client.clone();
+                let counter = Arc::clone(&in_flight);
+                let b = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    b.wait();
+                    native_tls_connect::connect(
+                        &c,
+                        std::time::Duration::from_millis(60),
+                        &counter,
+                        2,
+                    )
+                })
+            })
+            .collect();
+        for h in handles {
+            assert!(h.join().unwrap().is_err());
+        }
+        assert!(
+            in_flight.load(Ordering::Acquire) <= 2,
+            "concurrent callers must never exceed max_in_flight"
+        );
 
+        // 2. While the stalled target is at capacity, a new attempt to that target does not even
+        //    open a TCP socket, whereas a different target gets its own independent counter.
+        let unaccepted = TcpListener::bind("127.0.0.1:0").expect("bind tls peer");
+        unaccepted.set_nonblocking(true).unwrap();
+        let unaccepted_port = unaccepted.local_addr().unwrap().port();
+        let saturated = Arc::new(AtomicUsize::new(2));
         assert!(native_tls_connect::connect(
-            &silent_tls_client(port),
+            &silent_tls_client(unaccepted_port),
             std::time::Duration::from_secs(5),
-            &ABANDONED,
+            &saturated,
             2,
         )
         .is_err());
         assert_eq!(
-            listener.accept().map_err(|err| err.kind()).err(),
+            unaccepted.accept().map_err(|err| err.kind()).err(),
             Some(std::io::ErrorKind::WouldBlock),
-            "no connection is attempted while the cap is reached"
+            "no connection is attempted while the target cap is reached"
         );
+        assert_eq!(
+            native_tls_connect::counter_for(&silent_tls_client(unaccepted_port))
+                .load(Ordering::Acquire),
+            0,
+            "an unrelated target has its own counter and is not blocked by another peer"
+        );
+
+        // 3. Releasing the stalled peers returns the counter to 0 without underflow.
+        let _ = release_tx.send(());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while in_flight.load(Ordering::Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stalled workers must release their reservations without wrapping"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

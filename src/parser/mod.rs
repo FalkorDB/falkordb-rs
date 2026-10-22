@@ -135,9 +135,9 @@ pub(crate) fn parse_config_hashmap(
             .and_then(|key| ConfigValue::try_from(val).map(|val| HashMap::from([(key, val)])));
     }
 
-    Ok(config
+    config
         .into_iter()
-        .flat_map(|config| {
+        .map(|config| {
             redis_value_as_vec(config).and_then(|as_vec| {
                 let [key, val]: [redis::Value; 2] = as_vec.try_into().map_err(|_| {
                     FalkorDBError::ParsingArrayToStructElementCount(
@@ -145,13 +145,11 @@ pub(crate) fn parse_config_hashmap(
                     )
                 })?;
 
-                Result::<_, FalkorDBError>::Ok((
-                    redis_value_as_string(key)?,
-                    ConfigValue::try_from(val)?,
-                ))
+                redis_value_as_string(key)
+                    .and_then(|key| ConfigValue::try_from(val).map(|val| (key, val)))
             })
         })
-        .collect::<HashMap<String, ConfigValue>>())
+        .collect()
 }
 
 #[cfg_attr(
@@ -199,7 +197,7 @@ pub(crate) fn redis_value_as_typed_string(value: redis::Value) -> FalkorResult<S
 )]
 pub(crate) fn redis_value_as_untyped_string_vec(value: redis::Value) -> FalkorResult<Vec<String>> {
     redis_value_as_vec(value)
-        .map(|as_vec| as_vec.into_iter().flat_map(redis_value_as_string).collect())
+        .and_then(|as_vec| as_vec.into_iter().map(redis_value_as_string).collect())
 }
 
 #[cfg_attr(
@@ -351,6 +349,107 @@ mod tests {
         client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,
         graph_schema::tests::open_readonly_graph_with_modified_schema, FalkorDBError,
     };
+
+    #[test]
+    fn test_redis_value_as_untyped_string_vec() {
+        assert_eq!(
+            redis_value_as_untyped_string_vec(redis::Value::Array(vec![
+                redis::Value::SimpleString("a".to_string()),
+                redis::Value::BulkString(b"b".to_vec()),
+            ]))
+            .unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_redis_value_as_untyped_string_vec_rejects_non_string() {
+        // A non-string element is an error, not silently dropped.
+        assert_eq!(
+            redis_value_as_untyped_string_vec(redis::Value::Array(vec![
+                redis::Value::SimpleString("ok".to_string()),
+                redis::Value::Int(42),
+            ]))
+            .unwrap_err(),
+            FalkorDBError::ParsingString
+        );
+    }
+
+    #[test]
+    fn test_parse_config_hashmap() {
+        let config = parse_config_hashmap(redis::Value::Array(vec![
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("K1".to_string()),
+                redis::Value::Int(1),
+            ]),
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("K2".to_string()),
+                redis::Value::SimpleString("v".to_string()),
+            ]),
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("K3".to_string()),
+                redis::Value::Int(3),
+            ]),
+        ]))
+        .unwrap();
+        assert_eq!(config.len(), 3);
+        assert_eq!(config["K1"], ConfigValue::Int64(1));
+    }
+
+    #[test]
+    fn test_parse_config_hashmap_propagates_malformed_entry_error() {
+        let entry = |key: &str| {
+            redis::Value::Array(vec![
+                redis::Value::SimpleString(key.to_string()),
+                redis::Value::Int(1),
+            ])
+        };
+        // An entry that is not an array.
+        assert_eq!(
+            parse_config_hashmap(redis::Value::Array(vec![
+                entry("K1"),
+                redis::Value::Int(999),
+                entry("K3"),
+            ]))
+            .unwrap_err(),
+            FalkorDBError::ParsingArray
+        );
+        // An entry with the wrong element count.
+        assert_eq!(
+            parse_config_hashmap(redis::Value::Array(vec![
+                entry("K1"),
+                redis::Value::Array(vec![redis::Value::Int(1)]),
+                entry("K3"),
+            ]))
+            .unwrap_err(),
+            FalkorDBError::ParsingArrayToStructElementCount(
+                "Expected exactly 2 elements for configuration option",
+            )
+        );
+        // An entry whose key is not a string.
+        assert_eq!(
+            parse_config_hashmap(redis::Value::Array(vec![
+                entry("K1"),
+                redis::Value::Array(vec![redis::Value::Int(7), redis::Value::Int(1)]),
+                entry("K3"),
+            ]))
+            .unwrap_err(),
+            FalkorDBError::ParsingString
+        );
+        // An entry whose value is not a supported ConfigValue.
+        assert_eq!(
+            parse_config_hashmap(redis::Value::Array(vec![
+                entry("K1"),
+                redis::Value::Array(vec![
+                    redis::Value::SimpleString("K2".to_string()),
+                    redis::Value::Nil,
+                ]),
+                entry("K3"),
+            ]))
+            .unwrap_err(),
+            FalkorDBError::InvalidDataReceived
+        );
+    }
 
     #[test]
     fn test_parse_header_valid_single_key() {

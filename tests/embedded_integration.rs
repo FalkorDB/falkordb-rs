@@ -346,3 +346,51 @@ fn test_embedded_server_lifecycle() {
         "socket should be removed after the server is dropped"
     );
 }
+
+#[test]
+fn test_embedded_server_starts_with_spaces_in_paths() {
+    let Some(config) = embedded_config() else {
+        return;
+    };
+    let base = PathBuf::from(format!("/tmp/fdb emb {}", std::process::id()));
+    let db_dir = base.join("db dir");
+    let socket_path = base.join("falkor db.sock");
+    std::fs::create_dir_all(&base).unwrap();
+    {
+        let server = EmbeddedServer::start(EmbeddedConfig {
+            db_dir: Some(db_dir.clone()),
+            db_filename: "my db.rdb".to_string(),
+            socket_path: Some(socket_path.clone()),
+            ..config
+        })
+        .expect("embedded server should start with spaces in its paths");
+        assert_eq!(server.socket_path(), socket_path);
+
+        let client = FalkorClientBuilder::new()
+            .with_connection_info(
+                FalkorConnectionInfo::try_from(server.connection_string().as_str())
+                    .expect("connection info from the embedded socket"),
+            )
+            .build()
+            .expect("client connects over a socket path with spaces");
+        let mut graph = client.select_graph("spaces");
+        let mut result = graph
+            .query("RETURN 1")
+            .execute()
+            .expect("query over the embedded server");
+        let one = result
+            .data
+            .next()
+            .expect("one row")
+            .expect("row should parse")
+            .try_get_at::<i64>(0)
+            .expect("column 0 should be an i64");
+        assert_eq!(one, 1);
+    }
+    assert!(
+        !socket_path.exists(),
+        "socket should be removed after the server is dropped"
+    );
+    assert!(db_dir.exists(), "a caller-provided db_dir must be kept");
+    let _ = std::fs::remove_dir_all(&base);
+}

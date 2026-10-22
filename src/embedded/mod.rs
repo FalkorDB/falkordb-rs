@@ -720,7 +720,6 @@ impl EmbeddedServer {
         // failure cannot leave an unremoved temp directory behind.
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new()
-            .recursive(true)
             .mode(0o700)
             .create(&temp_dir)
             .map_err(|e| {

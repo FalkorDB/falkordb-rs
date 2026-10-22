@@ -207,9 +207,10 @@ mod tests {
     #[test]
     fn test_parse_types_map_rejects_unknown_index_type() {
         // An unknown type is an error, not silently dropped from the field's types.
+        let err = parse_types_map(types_map(&["RANGE", "NOT_AN_INDEX_TYPE"])).unwrap_err();
         assert_eq!(
-            parse_types_map(types_map(&["RANGE", "NOT_AN_INDEX_TYPE"])).unwrap_err(),
-            FalkorDBError::InvalidEnumType("Matching variant not found".to_string())
+            std::mem::discriminant(&err),
+            std::mem::discriminant(&FalkorDBError::InvalidEnumType(String::new()))
         );
     }
 

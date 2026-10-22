@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Sentinel-resolved primary, Sentinel-resolved replica, and the synchronous Sentinel topology
   probe during `build`) instead of ignoring both deadlines on sync clients, and forward
   `with_tcp_settings` / `with_tcp_keepalive` onto `SentinelNodeConnectionInfo` so Sentinel-resolved
-  master and replica TCP connections inherit the configured socket options
+  master and replica TCP connections inherit the configured socket options. With `native-tls`
+  and no `rustls`, a TLS handshake still stalled at the connect timeout is left to finish on a
+  helper thread; while 16 such handshakes are outstanding, new native-TLS connects fail fast
   ([#399](https://github.com/FalkorDB/falkordb-rs/pull/399))
 - Quote `unixsocket`, `dir`, and `dbfilename` directives in the `EmbeddedServer` Redis
   configuration so paths containing spaces, quotes, backslashes, or non-ASCII bytes do not fail

@@ -122,6 +122,101 @@ pub enum ReadPreference {
     PreferReplica,
 }
 
+/// Where the next Sentinel replica lookup starts in the list of eligible replicas.
+static REPLICA_ROTATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// redis-rs 1.7.1's timed native-TLS connect runs the handshake on a socket with no deadline and
+/// `unwrap`s its result, so a failing peer panics and a silent one blocks forever. Rustls
+/// handshakes lazily under the read timeout redis-rs sets during setup, so only native-TLS-only
+/// builds need this.
+#[cfg(all(
+    any(feature = "native-tls", feature = "tokio-native-tls"),
+    not(any(feature = "rustls", feature = "tokio-rustls"))
+))]
+mod native_tls_connect {
+    use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    /// Most attempts left blocked on a helper thread after their caller timed out. Each holds a
+    /// thread and a socket until its peer answers or closes, so past this, new attempts fail
+    /// fast instead of piling up more.
+    pub(super) const MAX_ABANDONED: usize = 16;
+    pub(super) static ABANDONED: AtomicUsize = AtomicUsize::new(0);
+
+    const RUNNING: u8 = 0;
+    const FINISHED: u8 = 1;
+    const GAVE_UP: u8 = 2;
+
+    fn timed_out(msg: &str) -> redis::RedisError {
+        std::io::Error::new(std::io::ErrorKind::TimedOut, msg.to_string()).into()
+    }
+
+    /// Connect `client` on a helper thread and return within `timeout`, turning the handshake
+    /// panic into an error. An attempt still running at the deadline is counted in `abandoned`
+    /// until it finishes; while `max_abandoned` are outstanding, no new thread is spawned.
+    pub(super) fn connect(
+        client: &redis::Client,
+        timeout: Duration,
+        abandoned: &'static AtomicUsize,
+        max_abandoned: usize,
+    ) -> redis::RedisResult<redis::Connection> {
+        if abandoned.load(Ordering::Acquire) >= max_abandoned {
+            return Err(timed_out(
+                "too many earlier TLS connection attempts are still stalled",
+            ));
+        }
+
+        let client = client.clone();
+        let state = Arc::new(AtomicU8::new(RUNNING));
+        let worker_state = Arc::clone(&state);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                client.get_connection_with_timeout(timeout)
+            }))
+            .unwrap_or_else(|payload| {
+                let detail = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("TLS handshake failed")
+                    .to_string();
+                Err(redis::RedisError::from((
+                    redis::ErrorKind::Io,
+                    "SSL Handshake error",
+                    detail,
+                )))
+            });
+            // If the caller already gave up, the send fails and the connection is dropped here.
+            let _ = tx.send(res);
+            if worker_state.swap(FINISHED, Ordering::AcqRel) == GAVE_UP {
+                abandoned.fetch_sub(1, Ordering::AcqRel);
+            }
+        });
+
+        match rx.recv_timeout(timeout) {
+            Ok(res) => res,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if state
+                    .compare_exchange(RUNNING, GAVE_UP, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    abandoned.fetch_add(1, Ordering::AcqRel);
+                    Err(timed_out("TLS connection setup timed out"))
+                } else {
+                    // The worker finished right at the deadline; its result is already queued.
+                    rx.try_recv()
+                        .unwrap_or_else(|_| Err(timed_out("TLS connection setup timed out")))
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(timed_out("TLS connection setup thread exited"))
+            }
+        }
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum FalkorClientProvider {
     #[cfg(test)]
@@ -197,33 +292,12 @@ impl FalkorClientProvider {
                     redis::ConnectionAddr::TcpTls { .. }
                 ) =>
             {
-                let client = client.clone();
-                let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        client.get_connection_with_timeout(timeout)
-                    }))
-                    .unwrap_or_else(|payload| {
-                        let detail = payload
-                            .downcast_ref::<String>()
-                            .map(String::as_str)
-                            .or_else(|| payload.downcast_ref::<&str>().copied())
-                            .unwrap_or("TLS handshake failed")
-                            .to_string();
-                        Err(redis::RedisError::from((
-                            redis::ErrorKind::Io,
-                            "SSL Handshake error",
-                            detail,
-                        )))
-                    });
-                    let _ = tx.send(res);
-                });
-                rx.recv_timeout(timeout).map_err(|_| {
-                    redis::RedisError::from(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "TLS connection setup timed out",
-                    ))
-                })?
+                native_tls_connect::connect(
+                    client,
+                    timeout,
+                    &native_tls_connect::ABANDONED,
+                    native_tls_connect::MAX_ABANDONED,
+                )
             }
             Some(timeout) => client.get_connection_with_timeout(timeout),
             None => client.get_connection(),
@@ -294,23 +368,40 @@ impl FalkorClientProvider {
     /// Check whether a candidate node reports the expected `expected_role` (`"master"` or
     /// `"slave"`) via `ROLE`, with both connection establishment and the role query
     /// bounded by `connect_timeout`.
+    ///
+    /// Like redis-rs's own resolver, a node whose server rejects `ROLE` (renamed, or denied by
+    /// an ACL) is asked for the `role:` field of `INFO REPLICATION` instead. Transport failures
+    /// do not fall back, since the connection may be left mid-reply.
     fn node_matches_role(
         node_info: &redis::ConnectionInfo,
         expected_role: &str,
         connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<bool> {
-        Self::open_probe_connection(node_info, connect_timeout)
-            .and_then(|mut conn| {
-                Self::query_cmd::<Vec<redis::Value>>(&redis::cmd("ROLE"), &mut conn)
-            })
-            .map(|items| {
-                items
-                    .into_iter()
-                    .next()
-                    .and_then(|v| redis_value_as_string(v).ok())
-                    .as_deref()
-                    == Some(expected_role)
-            })
+        let mut conn = Self::open_probe_connection(node_info, connect_timeout)?;
+        match redis::cmd("ROLE").query::<Vec<redis::Value>>(&mut conn) {
+            Ok(items) => Ok(items
+                .into_iter()
+                .next()
+                .and_then(|v| redis_value_as_string(v).ok())
+                .as_deref()
+                == Some(expected_role)),
+            Err(role_err)
+                if matches!(
+                    role_err.kind(),
+                    redis::ErrorKind::Server(_) | redis::ErrorKind::Extension
+                ) =>
+            {
+                let info: String = redis::cmd("INFO")
+                    .arg("REPLICATION")
+                    .query(&mut conn)
+                    .map_err(|_| FalkorDBError::RedisError(role_err.to_string()))?;
+                Ok(info
+                    .lines()
+                    .find_map(|line| line.trim_end().strip_prefix("role:"))
+                    == Some(expected_role))
+            }
+            Err(err) => Err(FalkorDBError::RedisError(err.to_string())),
+        }
     }
 
     /// Resolve a `redis::Client` for the current Sentinel master (`is_replica == false`)
@@ -374,21 +465,34 @@ impl FalkorClientProvider {
             )
         };
 
+        // Same eligibility as redis-rs: flags must be present and not down, and an advertised
+        // master must also carry the `master` flag.
+        let mut addresses: Vec<(String, u16)> = candidates
+            .into_iter()
+            .filter(|candidate| {
+                candidate.get("flags").is_some_and(|flags| {
+                    (is_replica || flags.contains("master"))
+                        && !flags.contains("s_down")
+                        && !flags.contains("o_down")
+                })
+            })
+            .filter_map(|candidate| {
+                candidate
+                    .get("ip")
+                    .cloned()
+                    .zip(candidate.get("port").and_then(|p| p.parse::<u16>().ok()))
+            })
+            .collect();
+        // Start each replica lookup one further along the list, so a read-only pool that
+        // resolves once per connection spreads across replicas instead of piling onto the first.
+        if is_replica && !addresses.is_empty() {
+            let start = REPLICA_ROTATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let len = addresses.len();
+            addresses.rotate_left(start % len);
+        }
+
         let mut last_probe_err = None;
-        for candidate in candidates {
-            let flags_ok = candidate
-                .get("flags")
-                .is_none_or(|flags| !flags.contains("s_down") && !flags.contains("o_down"));
-            let Some((ip, port)) = candidate
-                .get("ip")
-                .cloned()
-                .zip(candidate.get("port").and_then(|p| p.parse::<u16>().ok()))
-            else {
-                continue;
-            };
-            if !flags_ok {
-                continue;
-            }
+        for (ip, port) in addresses {
             let node_info = Self::sentinel_node_connection_info(sentinel_info, ip, port);
             match Self::node_matches_role(&node_info, expected_role, connect_timeout) {
                 Ok(true) => {
@@ -1716,8 +1820,278 @@ mod tests {
             "stalled TLS peer must fail within connect_timeout"
         );
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(5),
+            start.elapsed() < std::time::Duration::from_secs(1),
             "stalled TLS peer must not hang indefinitely"
+        );
+    }
+
+    /// Serve every connection to an ephemeral port on its own thread, answering each command
+    /// with `reply(command)`, and return the port.
+    fn spawn_fake_resp_server(reply: impl Fn(&str) -> String + Send + Sync + 'static) -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake server");
+        let port = listener.local_addr().unwrap().port();
+        let reply = std::sync::Arc::new(reply);
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let reply = std::sync::Arc::clone(&reply);
+                std::thread::spawn(move || {
+                    let mut pending = String::new();
+                    let mut chunk = [0u8; 1024];
+                    while let Ok(read) = stream.read(&mut chunk) {
+                        if read == 0 {
+                            break;
+                        }
+                        pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                        for command in take_commands(&mut pending) {
+                            let _ =
+                                stream.write_all(reply(&command.to_ascii_uppercase()).as_bytes());
+                        }
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    /// A fake Sentinel monitoring `mymaster`, answering `SENTINEL MASTERS` / `SENTINEL SLAVES`
+    /// with the given pre-encoded RESP replies.
+    fn spawn_fake_sentinel(
+        masters: String,
+        replicas: String,
+    ) -> redis::ConnectionInfo {
+        let port = spawn_fake_resp_server(move |command| {
+            if command.contains("\r\nMASTERS\r\n") {
+                masters.clone()
+            } else if command.contains("\r\nSLAVES\r\n") {
+                replicas.clone()
+            } else if command.contains("\r\nROLE\r\n") {
+                "*2\r\n$8\r\nsentinel\r\n*1\r\n$8\r\nmymaster\r\n".to_string()
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{port}")).unwrap()
+    }
+
+    /// RESP encoding of one `SENTINEL MASTERS`/`SLAVES` entry.
+    fn sentinel_entry(fields: &[(&str, &str)]) -> String {
+        let mut out = format!("*{}\r\n", fields.len() * 2);
+        for (key, val) in fields {
+            out.push_str(&format!(
+                "${}\r\n{key}\r\n${}\r\n{val}\r\n",
+                key.len(),
+                val.len()
+            ));
+        }
+        out
+    }
+
+    fn resolved_port(client: &redis::Client) -> u16 {
+        match client.get_connection_info().addr() {
+            redis::ConnectionAddr::Tcp(_, port) => *port,
+            other => panic!("expected a TCP node address, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sync_replica_resolution_spreads_across_healthy_replicas() {
+        let replica_role = |command: &str| {
+            if command.contains("\r\nROLE\r\n") {
+                "*5\r\n$5\r\nslave\r\n$9\r\n127.0.0.1\r\n:6379\r\n$9\r\nconnected\r\n:0\r\n"
+                    .to_string()
+            } else {
+                "+OK\r\n".to_string()
+            }
+        };
+        let first = spawn_fake_resp_server(replica_role);
+        let second = spawn_fake_resp_server(replica_role);
+        let replicas = [first, second]
+            .iter()
+            .map(|port| {
+                sentinel_entry(&[
+                    ("ip", "127.0.0.1"),
+                    ("port", &port.to_string()),
+                    ("flags", "slave"),
+                ])
+            })
+            .collect::<String>();
+        let sentinel = spawn_fake_sentinel(
+            format!("*1\r\n{}", sentinel_entry(&[("name", "mymaster")])),
+            format!("*2\r\n{replicas}"),
+        );
+
+        let chosen: std::collections::HashSet<u16> = (0..6)
+            .map(|_| {
+                let client = FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                    &sentinel,
+                    true,
+                    Some(std::time::Duration::from_secs(2)),
+                )
+                .expect("a healthy replica resolves");
+                resolved_port(&client)
+            })
+            .collect();
+        assert_eq!(
+            chosen,
+            [first, second].into_iter().collect(),
+            "repeated replica lookups must not all land on the first healthy replica"
+        );
+    }
+
+    #[test]
+    fn test_sync_master_resolution_checks_flags_and_falls_back_to_info_replication() {
+        // Claims to be a master, but Sentinel lists it without flags: not eligible.
+        let unflagged = spawn_fake_resp_server(|command| {
+            if command.contains("\r\nROLE\r\n") {
+                "*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n".to_string()
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        // Rejects `ROLE` but reports its role through `INFO REPLICATION`.
+        let info_only = |role: &'static str| {
+            spawn_fake_resp_server(move |command| {
+                if command.contains("\r\nROLE\r\n") {
+                    "-NOPERM this user has no permissions to run the 'role' command\r\n".to_string()
+                } else if command.contains("\r\nINFO\r\n") {
+                    let body = format!("# Replication\r\nrole:{role}\r\nconnected_slaves:0\r\n");
+                    format!("${}\r\n{body}\r\n", body.len())
+                } else {
+                    "+OK\r\n".to_string()
+                }
+            })
+        };
+        let master = info_only("master");
+        let masters = |port: u16| {
+            format!(
+                "*2\r\n{}{}",
+                sentinel_entry(&[
+                    ("name", "mymaster"),
+                    ("ip", "127.0.0.1"),
+                    ("port", &unflagged.to_string()),
+                ]),
+                sentinel_entry(&[
+                    ("name", "mymaster"),
+                    ("ip", "127.0.0.1"),
+                    ("port", &port.to_string()),
+                    ("flags", "master"),
+                ]),
+            )
+        };
+
+        let sentinel = spawn_fake_sentinel(masters(master), "*0\r\n".to_string());
+        let client = FalkorClientProvider::resolve_sentinel_client_with_timeout(
+            &sentinel,
+            false,
+            Some(std::time::Duration::from_secs(2)),
+        )
+        .expect("a master that rejects ROLE resolves through INFO REPLICATION");
+        assert_eq!(resolved_port(&client), master);
+
+        let demoted = spawn_fake_sentinel(masters(info_only("slave")), "*0\r\n".to_string());
+        assert!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &demoted,
+                false,
+                Some(std::time::Duration::from_secs(2)),
+            )
+            .is_err(),
+            "a node whose INFO REPLICATION says slave is not accepted as the master"
+        );
+    }
+
+    #[cfg(all(
+        any(feature = "native-tls", feature = "tokio-native-tls"),
+        not(any(feature = "rustls", feature = "tokio-rustls"))
+    ))]
+    fn silent_tls_client(port: u16) -> redis::Client {
+        use redis::IntoConnectionInfo;
+
+        redis::Client::open(
+            redis::ConnectionAddr::TcpTls {
+                host: "127.0.0.1".to_string(),
+                port,
+                insecure: false,
+                tls_params: None,
+            }
+            .into_connection_info()
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    #[cfg(all(
+        any(feature = "native-tls", feature = "tokio-native-tls"),
+        not(any(feature = "rustls", feature = "tokio-rustls"))
+    ))]
+    fn test_native_tls_abandoned_handshake_is_released_when_the_peer_closes() {
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static ABANDONED: AtomicUsize = AtomicUsize::new(0);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent tls peer");
+        let port = listener.local_addr().unwrap().port();
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept the handshake");
+            let _ = close_rx.recv();
+        });
+
+        assert!(native_tls_connect::connect(
+            &silent_tls_client(port),
+            std::time::Duration::from_millis(60),
+            &ABANDONED,
+            16,
+        )
+        .is_err());
+        assert_eq!(
+            ABANDONED.load(Ordering::Acquire),
+            1,
+            "the stalled attempt is tracked"
+        );
+
+        close_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ABANDONED.load(Ordering::Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the helper thread must finish once the peer closes"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    #[cfg(all(
+        any(feature = "native-tls", feature = "tokio-native-tls"),
+        not(any(feature = "rustls", feature = "tokio-rustls"))
+    ))]
+    fn test_native_tls_connect_fails_fast_once_too_many_attempts_are_stalled() {
+        use std::net::TcpListener;
+        use std::sync::atomic::AtomicUsize;
+
+        static ABANDONED: AtomicUsize = AtomicUsize::new(2);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind tls peer");
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        assert!(native_tls_connect::connect(
+            &silent_tls_client(port),
+            std::time::Duration::from_secs(5),
+            &ABANDONED,
+            2,
+        )
+        .is_err());
+        assert_eq!(
+            listener.accept().map_err(|err| err.kind()).err(),
+            Some(std::io::ErrorKind::WouldBlock),
+            "no connection is attempted while the cap is reached"
         );
     }
 

@@ -576,7 +576,7 @@ A runnable example is provided in [`examples/tls.rs`](https://github.com/FalkorD
 
 #### Connection deadlines
 
-Two independent deadlines govern an async client, and collapsing them into one is a
+Two independent deadlines govern a client, and collapsing them into one is a
 classic way to end up with a client that cannot be constructed at all — a tight query
 deadline should never mean "the handshake must also finish that fast":
 
@@ -603,7 +603,7 @@ let client = FalkorClientBuilder::new_async()
             .expect("Failed to build client");
 ```
 
-> **Note:** both deadlines apply to async connections. Passing `None` to
+> **Note:** both deadlines apply to sync and async connections. Passing `None` to
 > `with_connect_timeout` restores the unbounded setup of earlier releases.
 
 #### TCP keepalive
@@ -635,9 +635,8 @@ let client = FalkorClientBuilder::new()
     .expect("Failed to build client");
 ```
 
-> **Note:** TCP settings apply to direct Redis TCP connections only.
-> Unix-domain socket / embedded connections and the Sentinel connection path are
-> not affected.
+> **Note:** TCP settings apply to Redis TCP connections (both direct and
+> Sentinel-resolved). Unix-domain socket / embedded connections are not affected.
 
 #### Read-only queries and replica routing
 

@@ -221,13 +221,19 @@ impl GraphSchema {
                     }
                 }
             }
-            ParserTypeMarker::Map => {
-                if let redis::Value::Array(items) = val {
+            ParserTypeMarker::Map => match val {
+                redis::Value::Array(items) => {
                     for pair in items.chunks_exact(2) {
                         self.scan_typed_value(&pair[1]);
                     }
                 }
-            }
+                redis::Value::Map(items) => {
+                    for (_, value) in items {
+                        self.scan_typed_value(value);
+                    }
+                }
+                _ => {}
+            },
             ParserTypeMarker::Node => self.scan_node(val),
             ParserTypeMarker::Edge => self.scan_edge(val),
             ParserTypeMarker::Path => {
@@ -248,6 +254,22 @@ impl GraphSchema {
         }
     }
 
+    /// Looks up `raw_id` only on a cache miss, so a warm pre-scan does not clone a cached name per
+    /// occurrence.
+    #[cfg(feature = "tokio")]
+    fn touch_id(
+        &mut self,
+        raw_id: i64,
+        schema_type: SchemaType,
+    ) {
+        if !self
+            .get_id_map_by_schema_type(schema_type)
+            .contains_key(&raw_id)
+        {
+            let _ = self.parse_single_id(raw_id, schema_type);
+        }
+    }
+
     #[cfg(feature = "tokio")]
     fn scan_node(
         &mut self,
@@ -257,7 +279,7 @@ impl GraphSchema {
             if let [_, redis::Value::Array(labels), properties] = parts.as_slice() {
                 for label in labels {
                     if let redis::Value::Int(id) = label {
-                        let _ = self.parse_single_id(*id, SchemaType::Labels);
+                        self.touch_id(*id, SchemaType::Labels);
                     }
                 }
                 self.scan_properties(properties);
@@ -272,7 +294,7 @@ impl GraphSchema {
     ) {
         if let redis::Value::Array(parts) = val {
             if let [_, redis::Value::Int(rel_id), _, _, properties] = parts.as_slice() {
-                let _ = self.parse_single_id(*rel_id, SchemaType::Relationships);
+                self.touch_id(*rel_id, SchemaType::Relationships);
                 self.scan_properties(properties);
             }
         }
@@ -289,7 +311,7 @@ impl GraphSchema {
                     if let [redis::Value::Int(key_id), redis::Value::Int(marker), prop_val] =
                         triple.as_slice()
                     {
-                        let _ = self.parse_single_id(*key_id, SchemaType::Properties);
+                        self.touch_id(*key_id, SchemaType::Properties);
                         if let Ok(type_marker) = ParserTypeMarker::try_from(*marker) {
                             self.scan_value_by_type(type_marker, prop_val);
                         }
@@ -839,5 +861,28 @@ pub(crate) mod tests {
                 SchemaType::Relationships
             ]
         );
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_scan_rows_for_missing_ids_covers_resp3_maps() {
+        let mut schema = GraphSchema::new_in_memory("graph_name");
+        let edge = redis::Value::Array(vec![
+            redis::Value::Int(1),
+            redis::Value::Int(30),
+            redis::Value::Int(1),
+            redis::Value::Int(2),
+            redis::Value::Array(vec![]),
+        ]);
+        let rows = vec![redis::Value::Array(vec![redis::Value::Array(vec![
+            redis::Value::Int(10),
+            redis::Value::Map(vec![(
+                redis::Value::SimpleString("k".to_string()),
+                redis::Value::Array(vec![redis::Value::Int(7), edge]),
+            )]),
+        ])])];
+
+        schema.scan_rows_for_missing_ids(&rows);
+        assert_eq!(schema.take_missing(), vec![SchemaType::Relationships]);
     }
 }

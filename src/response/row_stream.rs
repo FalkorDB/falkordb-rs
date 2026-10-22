@@ -6,7 +6,6 @@
 //! An owned, `Send + 'static` async result set implementing [`futures_core::Stream`], available
 //! with the `tokio` feature.
 
-use crate::parser::{parse_type, ParserTypeMarker};
 use crate::response::row::parse_row;
 use crate::{FalkorResult, FalkorValue, GraphSchema, Row};
 use std::collections::VecDeque;
@@ -86,8 +85,8 @@ impl RowStream {
     pub fn into_values_lossy(mut self) -> impl Iterator<Item = Vec<FalkorValue>> {
         std::iter::from_fn(move || {
             self.raw_rows.pop_front().map(|raw| {
-                parse_type(ParserTypeMarker::Array, raw, &mut self.graph_schema)
-                    .and_then(FalkorValue::into_vec)
+                parse_row(&self.header, raw, &mut self.graph_schema)
+                    .map(Row::into_values)
                     .unwrap_or_else(|err| vec![FalkorValue::Unparseable(err.to_string())])
             })
         })
@@ -220,6 +219,23 @@ mod tests {
         let header: Arc<[String]> = Arc::from(vec!["n".to_string()]);
         let mut schema = GraphSchema::new("test", create_empty_inner_sync_client());
         let stream = RowStream::parse(header, vec![bad_row], &mut schema);
+
+        let rows: Vec<Vec<FalkorValue>> = stream.into_values_lossy().collect();
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0].as_slice(), [FalkorValue::Unparseable(_)]));
+    }
+
+    #[test]
+    fn into_values_lossy_collapses_shape_mismatch() {
+        // A row wider than the header must collapse to a single `Unparseable`, matching the
+        // `RowShapeMismatch` error `poll_next` yields for the same reply.
+        let two_value_row = redis::Value::Array(vec![
+            redis::Value::Array(vec![redis::Value::Int(3), redis::Value::Int(1)]),
+            redis::Value::Array(vec![redis::Value::Int(3), redis::Value::Int(2)]),
+        ]);
+        let header: Arc<[String]> = Arc::from(vec!["n".to_string()]);
+        let mut schema = GraphSchema::new("test", create_empty_inner_sync_client());
+        let stream = RowStream::parse(header, vec![two_value_row], &mut schema);
 
         let rows: Vec<Vec<FalkorValue>> = stream.into_values_lossy().collect();
         assert_eq!(rows.len(), 1);

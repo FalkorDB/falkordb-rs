@@ -22,8 +22,8 @@ async fn main() -> FalkorResult<()> {
     assert_eq!(res.data.len(), 1317);
 
     // `res.data` is a `futures::Stream` that decodes rows lazily on demand (any cold schema
-    // refresh is awaited during `execute().await` on a pooled async connection). Take one row
-    // with `StreamExt::next`, then collect the rest.
+    // refresh is awaited during `execute().await`). Take one row with `StreamExt::next`, then
+    // collect the rest.
     assert!(res.data.next().await.is_some());
     let collected: Vec<_> = res.data.collect().await;
     assert_eq!(collected.len(), 1316);

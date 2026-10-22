@@ -77,11 +77,12 @@ impl AsyncGraph {
 
     /// Parses `raw` against the shared schema cache, refreshing the cache asynchronously on a miss.
     ///
-    /// The schema lock is only ever held for the synchronous, CPU-bound `parse`, never across an
-    /// await. When `parse` reports ids the cache does not know, the lock is released, the affected
-    /// schema maps are re-fetched over a pooled async connection, and `parse` runs again on a copy
-    /// of `raw`. A kind is fetched at most once per call, so ids the server really does not know
-    /// surface as the parse error instead of looping.
+    /// Only a shared read lock is taken, and only long enough to clone an `Arc`-backed snapshot of
+    /// the schema; `parse` then runs on that snapshot without holding any lock. When `parse`
+    /// reports ids the cache does not know, the affected schema maps are re-fetched over a pooled
+    /// async connection, and `parse` runs again on a copy of `raw`. A kind is fetched at most once
+    /// per call, so ids the server really does not know surface as the parse error instead of
+    /// looping.
     ///
     /// A task queued behind another task's refresh of the same kind skips its own fetch, but that
     /// does not count as its refresh: the other fetch may have started before this task's reply was
@@ -846,18 +847,27 @@ mod tests {
         });
         locked_rx.recv().unwrap();
 
-        let resolved = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            graph.parse_with_schema((), |_, schema| {
-                schema.parse_single_id(0, SchemaType::Labels)
-            }),
-        )
-        .await
-        .expect("parse_with_schema must not block on a held read guard")
-        .unwrap();
-        assert_eq!(resolved, "CachedSeed");
+        // Run the parse on its own task: a regression to a write lock would block that worker
+        // synchronously inside `parking_lot`, which a timeout around an inline await could never
+        // interrupt. Release the reader before asserting so a blocked task can still finish.
+        let mut task = tokio::spawn(async move {
+            graph
+                .parse_with_schema((), |_, schema| {
+                    schema.parse_single_id(0, SchemaType::Labels)
+                })
+                .await
+        });
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), &mut task).await;
         release_tx.send(()).unwrap();
         holder.join().unwrap();
+        let resolved = match outcome {
+            Ok(joined) => joined.unwrap().unwrap(),
+            Err(_) => {
+                let _ = task.await;
+                panic!("parse_with_schema must not block on a held read guard");
+            }
+        };
+        assert_eq!(resolved, "CachedSeed");
         let _ = handle.inner.delete().await;
     }
 

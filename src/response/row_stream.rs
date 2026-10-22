@@ -254,26 +254,45 @@ mod tests {
     fn test_row_stream_decodes_lazily_on_poll_next() {
         use futures::StreamExt;
 
-        // Row 0 is a valid scalar row; row 1 has an unknown type marker (`9999`) and only fails
-        // when `poll_next` decodes that row.
+        // Each decoded `Row` clones `header: Arc<[String]>`. Retaining a reference to `header`
+        // lets us observe whether `Row`s were eagerly constructed inside `RowStream::parse`
+        // (which would bump `Arc::strong_count` by the number of valid rows immediately) or
+        // deferred until each `poll_next` call.
         let malformed_row = redis::Value::Array(vec![redis::Value::Array(vec![
             redis::Value::Int(9999),
             redis::Value::Int(1),
         ])]);
         let header: Arc<[String]> = Arc::from(vec!["n".to_string()]);
         let mut schema = GraphSchema::new_in_memory("test");
-        let mut stream = RowStream::parse(header, vec![scalar_row(42), malformed_row], &mut schema);
+        let mut stream = RowStream::parse(
+            Arc::clone(&header),
+            vec![scalar_row(42), scalar_row(99), malformed_row],
+            &mut schema,
+        );
 
-        // Constructing `RowStream` and polling only row 0 succeeds without evaluating row 1.
+        // Before polling, only `header` and `stream.header` hold strong references (count == 2);
+        // no `Row` has been constructed yet.
+        assert_eq!(Arc::strong_count(&header), 2);
+
+        // Polling row 0 constructs the first `Row`, bumping the refcount to 3.
         let first = futures::executor::block_on(stream.next()).unwrap().unwrap();
         assert_eq!(first.try_get_at::<i64>(0).unwrap(), 42);
+        assert_eq!(Arc::strong_count(&header), 3);
+        assert_eq!(stream.len(), 2);
+
+        // Polling row 1 constructs the second `Row`, bumping the refcount to 4.
+        let second = futures::executor::block_on(stream.next()).unwrap().unwrap();
+        assert_eq!(second.try_get_at::<i64>(0).unwrap(), 99);
+        assert_eq!(Arc::strong_count(&header), 4);
         assert_eq!(stream.len(), 1);
 
-        // Polling the second item now decodes row 1 and surfaces its parse error.
-        let second_err = futures::executor::block_on(stream.next())
+        // Polling the third item decodes row 2 and surfaces its parse error without allocating a
+        // `Row`.
+        let third_err = futures::executor::block_on(stream.next())
             .unwrap()
             .unwrap_err();
-        assert_eq!(second_err, FalkorDBError::ParsingUnknownType);
+        assert_eq!(third_err, FalkorDBError::ParsingUnknownType);
+        assert_eq!(Arc::strong_count(&header), 4);
         assert!(stream.is_empty());
     }
 

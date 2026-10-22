@@ -9,7 +9,7 @@ use falkordb::{FalkorClientBuilder, FalkorResult};
 use futures::{StreamExt, TryStreamExt};
 use tokio::task::JoinSet;
 
-// Usage of the asynchronous client REQUIRES the multi-threaded rt
+// The asynchronous client works on both the multi-thread and the current-thread rt
 #[tokio::main]
 async fn main() -> FalkorResult<()> {
     let client = FalkorClientBuilder::new_async()
@@ -22,8 +22,8 @@ async fn main() -> FalkorResult<()> {
     assert_eq!(res.data.len(), 1317);
 
     // `res.data` is a `futures::Stream`. Take one row with `StreamExt::next`, then collect the
-    // rest. (Parsing is synchronous; if a cold schema refresh is needed it happens in a blocking
-    // fashion — see the `RowStream` docs. The alternative is async parsing all the way down.)
+    // rest. (The reply is already fully parsed by `execute().await`; a cold schema refresh is
+    // awaited there too, on a pooled async connection.)
     assert!(res.data.next().await.is_some());
     let collected: Vec<_> = res.data.collect().await;
     assert_eq!(collected.len(), 1316);

@@ -478,20 +478,19 @@ impl<'a, Out, T: Display> QueryBuilder<'a, Out, T, AsyncGraph> {
         result
     }
 
-    /// Eagerly parses the reply into an owned [`RowStream`] under the schema write lock, so the
-    /// result outlives the borrow of the graph, is `Send + 'static`, and is decoupled from any
-    /// later change to the graph's schema.
-    fn generate_async_result_set(
+    /// Eagerly parses the reply into an owned [`RowStream`], so the result outlives the borrow of
+    /// the graph, is `Send + 'static`, and is decoupled from any later change to the graph's
+    /// schema. Unknown schema ids are resolved by an async refresh, see
+    /// [`AsyncGraph::parse_with_schema`].
+    async fn generate_async_result_set(
         self,
         value: redis::Value,
     ) -> FalkorResult<QueryResult<RowStream>> {
-        let schema = self.graph.schema_handle();
-        let mut guard = schema.write();
-        dispatch_query_response(
-            unwrap_query_response(value)?,
-            &mut *guard,
-            build_row_stream_result,
-        )
+        self.graph
+            .parse_with_schema(unwrap_query_response(value)?, |res, schema| {
+                dispatch_query_response(res, schema, build_row_stream_result)
+            })
+            .await
     }
 }
 
@@ -539,10 +538,8 @@ impl<'a, T: Display> QueryBuilder<'a, QueryResult<RowStream>, T, AsyncGraph> {
         )
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<RowStream>> {
-        let result = self
-            .common_execute_steps()
-            .await
-            .and_then(|res| self.generate_async_result_set(res))?;
+        let res = self.common_execute_steps().await?;
+        let result = self.generate_async_result_set(res).await?;
         #[cfg(feature = "tracing")]
         crate::observability::record_result(
             result.data.len(),
@@ -662,11 +659,8 @@ where
         )
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<TypedRowStream<U>>> {
-        let result = self
-            .common_execute_steps()
-            .await
-            .and_then(|res| self.generate_async_result_set(res))
-            .map(|result| result.into_typed::<U>())?;
+        let res = self.common_execute_steps().await?;
+        let result = self.generate_async_result_set(res).await?.into_typed::<U>();
         #[cfg(feature = "tracing")]
         crate::observability::record_result(
             result.data.len(),
@@ -1081,11 +1075,10 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<FalkorIndex>>, AsyncGraph> {
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<FalkorIndex>>> {
         let res = self.common_execute_steps().await?;
-        let result = {
-            let schema = self.graph.schema_handle();
-            let mut guard = schema.write();
-            parse_procedure_result(res, &mut guard)?
-        };
+        let result = self
+            .graph
+            .parse_with_schema(res, parse_procedure_result)
+            .await?;
         #[cfg(feature = "tracing")]
         crate::observability::record_result(
             result.data.len(),
@@ -1141,11 +1134,10 @@ impl<'a> ProcedureQueryBuilder<'a, QueryResult<Vec<Constraint>>, AsyncGraph> {
     )]
     pub async fn execute(mut self) -> FalkorResult<QueryResult<Vec<Constraint>>> {
         let res = self.common_execute_steps().await?;
-        let result = {
-            let schema = self.graph.schema_handle();
-            let mut guard = schema.write();
-            parse_procedure_result(res, &mut guard)?
-        };
+        let result = self
+            .graph
+            .parse_with_schema(res, parse_procedure_result)
+            .await?;
         #[cfg(feature = "tracing")]
         crate::observability::record_result(
             result.data.len(),

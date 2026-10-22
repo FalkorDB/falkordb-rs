@@ -10,10 +10,18 @@ use crate::{
         VectorSimilarity,
     },
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
-    IndexType, ProcedureQueryBuilder, QueryBuilder, QueryResult, RowStream, SlowlogEntry,
+    IndexType, ProcedureQueryBuilder, QueryBuilder, QueryResult, RowStream, SchemaType,
+    SlowlogEntry,
 };
 use parking_lot::RwLock;
-use std::{collections::HashMap, fmt::Display, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 /// The main graph API, this allows the user to perform graph operations while exposing as little details as possible.
 /// # Cloning &amp; sharing
@@ -25,6 +33,20 @@ pub struct AsyncGraph {
     client: Arc<FalkorAsyncClientInner>,
     graph_name: String,
     graph_schema: Arc<RwLock<GraphSchema>>,
+    /// Serializes schema fetch-and-apply across clones, so an older reply can never overwrite the
+    /// map from a newer one.
+    refresh_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Bumped per schema kind after each applied refresh, so tasks that queued behind a refresh
+    /// of the same kind can tell it already happened and skip their own round-trip.
+    refresh_generations: Arc<[AtomicU64; 3]>,
+}
+
+fn generation_index(schema_type: SchemaType) -> usize {
+    match schema_type {
+        SchemaType::Labels => 0,
+        SchemaType::Properties => 1,
+        SchemaType::Relationships => 2,
+    }
 }
 
 impl AsyncGraph {
@@ -34,7 +56,9 @@ impl AsyncGraph {
     ) -> Self {
         Self {
             graph_name: graph_name.to_string(),
-            graph_schema: Arc::new(RwLock::new(GraphSchema::new(graph_name, client.clone()))), // Required for requesting refreshes
+            graph_schema: Arc::new(RwLock::new(GraphSchema::new_in_memory(graph_name))),
+            refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
+            refresh_generations: Arc::new(Default::default()),
             client,
         }
     }
@@ -51,10 +75,111 @@ impl AsyncGraph {
         &self.client
     }
 
-    /// A cheap clone of the shared schema-cache handle. Cloned `AsyncGraph`s share one cache, and
-    /// each query takes the write lock to parse its reply (and refresh the schema on a cache miss).
-    pub(crate) fn schema_handle(&self) -> Arc<RwLock<GraphSchema>> {
-        self.graph_schema.clone()
+    /// Parses `raw` against the shared schema cache, refreshing the cache asynchronously on a miss.
+    ///
+    /// The schema lock is only ever held for the synchronous, CPU-bound `parse`, never across an
+    /// await. When `parse` reports ids the cache does not know, the lock is released, the affected
+    /// schema maps are re-fetched over a pooled async connection, and `parse` runs again on a copy
+    /// of `raw`. A kind is fetched at most once per call, so ids the server really does not know
+    /// surface as the parse error instead of looping.
+    ///
+    /// A task queued behind another task's refresh of the same kind skips its own fetch, but that
+    /// does not count as its refresh: the other fetch may have started before this task's reply was
+    /// produced and so may not know its ids. It re-parses, and fetches itself if ids are still
+    /// missing (forced after a few skips, so churn can't starve it).
+    ///
+    /// A failed refresh does not discard what is already parsable: `parse` runs one last time, so
+    /// rows and batch items that needed no unknown id keep their results, and only the ones that
+    /// did carry the missing-id error. If that leaves nothing but an error, the refresh error is
+    /// returned instead, as the more useful cause.
+    pub(crate) async fn parse_with_schema<I: Clone, R>(
+        &self,
+        raw: I,
+        parse: impl Fn(I, &mut GraphSchema) -> FalkorResult<R>,
+    ) -> FalkorResult<R> {
+        const MAX_SKIPS: usize = 8;
+        let mut refreshed: Vec<SchemaType> = Vec::new();
+        let mut skips = 0;
+        loop {
+            let seen = self.generations();
+            let attempt = raw.clone();
+            let (result, missing) = {
+                let mut schema = self.graph_schema.write();
+                schema.take_missing();
+                let result = parse(attempt, &mut schema);
+                (result, schema.take_missing())
+            };
+
+            let to_refresh: Vec<_> = missing
+                .into_iter()
+                .filter(|schema_type| !refreshed.contains(schema_type))
+                .collect();
+            if to_refresh.is_empty() {
+                return result;
+            }
+
+            for schema_type in to_refresh {
+                let seen = (skips < MAX_SKIPS).then(|| seen[generation_index(schema_type)]);
+                let fetched = match self.refresh_schema(schema_type, seen).await {
+                    Ok(fetched) => fetched,
+                    Err(refresh_err) => {
+                        // Parse once more with the failure recorded, so the rows / batch items that
+                        // needed the schema carry it, while the others keep their results.
+                        let result = {
+                            let mut schema = self.graph_schema.write();
+                            schema
+                                .set_refresh_failure(Some((schema_type, refresh_err.to_string())));
+                            let result = parse(raw, &mut schema);
+                            schema.set_refresh_failure(None);
+                            result
+                        };
+                        return result.map_err(|_| refresh_err);
+                    }
+                };
+                if fetched {
+                    refreshed.push(schema_type);
+                } else {
+                    skips += 1;
+                }
+            }
+        }
+    }
+
+    fn generations(&self) -> [u64; 3] {
+        std::array::from_fn(|i| self.refresh_generations[i].load(Ordering::Acquire))
+    }
+
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Refresh Schema Type", skip_all, level = "info")
+    )]
+    async fn refresh_schema(
+        &self,
+        schema_type: SchemaType,
+        seen_generation: Option<u64>,
+    ) -> FalkorResult<bool> {
+        let _serialized = self.refresh_lock.lock().await;
+        let generation = &self.refresh_generations[generation_index(schema_type)];
+        if seen_generation.is_some_and(|seen| generation.load(Ordering::Acquire) != seen) {
+            // Another task refreshed this kind while we waited for the lock.
+            return Ok(false);
+        }
+        let res = self
+            .client
+            .borrow_connection(self.client.clone())
+            .await?
+            .execute_command(
+                Some(self.graph_name.as_str()),
+                "GRAPH.RO_QUERY",
+                None,
+                Some(&[GraphSchema::refresh_query(schema_type).as_str()]),
+            )
+            .await?;
+        self.graph_schema
+            .write()
+            .apply_refresh_reply(schema_type, res)?;
+        generation.fetch_add(1, Ordering::Release);
+        Ok(true)
     }
 
     #[cfg_attr(
@@ -81,6 +206,9 @@ impl AsyncGraph {
         tracing::instrument(name = "Delete Graph", skip_all, level = "info")
     )]
     pub async fn delete(&mut self) -> FalkorResult<()> {
+        // Held through the delete and the cache clear, so a refresh that fetched the old names
+        // can't be applied after the clear and resurrect them.
+        let _serialized = self.refresh_lock.lock().await;
         self.execute_command("GRAPH.DELETE", None, None).await?;
         self.graph_schema.write().clear();
         Ok(())
@@ -481,6 +609,211 @@ mod tests {
         },
         ConstraintType, FalkorDBError, IndexStatus, IndexType, WaitOptions,
     };
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_parse_with_schema_refreshes_once_then_surfaces_unknown_id() {
+        // An id the server has never issued: the schema is refreshed once, and the still-missing id
+        // is returned as the parse error rather than looping.
+        let mut handle = open_empty_async_test_graph("parse_with_schema_unknown_id").await;
+        let graph = &mut handle.inner;
+        graph
+            .query("CREATE (:Seed)")
+            .execute()
+            .await
+            .expect("seed the graph so it exists");
+
+        let attempts = std::cell::Cell::new(0);
+        let result = graph
+            .parse_with_schema((), |_, schema| {
+                attempts.set(attempts.get() + 1);
+                schema.parse_single_id(i64::MAX, SchemaType::Labels)
+            })
+            .await;
+        assert!(matches!(
+            result,
+            Err(FalkorDBError::MissingSchemaId(SchemaType::Labels))
+        ));
+        assert_eq!(attempts.get(), 2);
+        let _ = graph.delete().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_parse_with_schema_refresh_failure_is_reported_per_item() {
+        // A graph that does not exist makes the read-only refresh fail. Items that need an unknown
+        // id carry that failure, the ones that do not keep their results.
+        let handle = open_empty_async_test_graph("parse_with_schema_refresh_failure").await;
+        let graph = &handle.inner;
+
+        let items = graph
+            .parse_with_schema((), |_, schema| {
+                Ok(vec![
+                    schema.parse_single_id(7, SchemaType::Labels),
+                    Ok("unaffected".to_string()),
+                ])
+            })
+            .await
+            .expect("per-item failures do not fail the whole parse");
+        assert!(items[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("schema refresh failed"));
+        assert_eq!(items[1].as_ref().unwrap(), "unaffected");
+
+        // With nothing parsable left, the refresh error itself is returned.
+        let result = graph
+            .parse_with_schema((), |_, schema| {
+                schema.parse_single_id(7, SchemaType::Labels)
+            })
+            .await;
+        assert!(!matches!(
+            result,
+            Err(FalkorDBError::MissingSchemaId(_)) | Ok(_)
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_refresh_schema_skips_when_generation_changed() {
+        // On a graph that does not exist the read-only refresh fails, so whether a call reached the
+        // server is observable: a stale generation must skip the round-trip and succeed, a current
+        // one must go to the server and fail.
+        let handle = open_empty_async_test_graph("refresh_schema_generation_skip").await;
+        let graph = &handle.inner;
+        let index = generation_index(SchemaType::Labels);
+
+        let seen = graph.generations()[index];
+        graph.refresh_generations[index].fetch_add(1, Ordering::Release);
+        assert!(!graph
+            .refresh_schema(SchemaType::Labels, Some(seen))
+            .await
+            .expect("another task already refreshed this kind, nothing to fetch"));
+
+        assert!(graph
+            .refresh_schema(SchemaType::Labels, Some(graph.generations()[index]))
+            .await
+            .is_err());
+        // A forced refresh ignores the generation.
+        assert!(graph
+            .refresh_schema(SchemaType::Labels, None)
+            .await
+            .is_err());
+        // Other kinds are unaffected by the bumped generation.
+        assert!(graph
+            .refresh_schema(
+                SchemaType::Properties,
+                Some(graph.generations()[generation_index(SchemaType::Properties)])
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_skipped_refresh_does_not_count_as_refreshed() {
+        // Another task finishes a refresh between our cache miss and our fetch, but that refresh
+        // predates the id we need. Skipping our fetch must not give up: we re-parse and fetch.
+        let mut handle = open_empty_async_test_graph("parse_with_schema_skip_not_refreshed").await;
+        let graph = &mut handle.inner;
+        graph
+            .query("CREATE (:SkipSeed)")
+            .execute()
+            .await
+            .expect("seed the graph");
+
+        let attempts = std::cell::Cell::new(0);
+        let result = graph
+            .parse_with_schema((), |_, schema| {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    // Simulate the other task's refresh landing right after this miss.
+                    graph.refresh_generations[generation_index(SchemaType::Labels)]
+                        .fetch_add(1, Ordering::Release);
+                }
+                schema.parse_single_id(0, SchemaType::Labels)
+            })
+            .await;
+        assert_eq!(result.unwrap(), "SkipSeed");
+        assert_eq!(attempts.get(), 3);
+        let _ = graph.delete().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_refresh_failure_reaches_every_item_when_all_fail() {
+        let handle = open_empty_async_test_graph("parse_with_schema_all_items_fail").await;
+        let items = handle
+            .inner
+            .parse_with_schema((), |_, schema| {
+                Ok(vec![
+                    schema.parse_single_id(1, SchemaType::Labels),
+                    schema.parse_single_id(2, SchemaType::Labels),
+                ])
+            })
+            .await
+            .expect("per-item failures do not fail the whole parse");
+        assert_eq!(items.len(), 2);
+        for item in items {
+            assert!(item
+                .unwrap_err()
+                .to_string()
+                .contains("schema refresh failed"));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_delete_waits_for_in_flight_refresh() {
+        // `delete` must not clear the cache while a refresh may still apply an older reply.
+        let handle = open_empty_async_test_graph("delete_waits_for_refresh").await;
+        let mut deleting = handle.inner.clone();
+        let guard = handle.inner.refresh_lock.lock().await;
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let delete = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            deleting.delete().await
+        });
+        started_rx.await.expect("delete task started");
+        // Give the task time to reach the lock; it must stay blocked however long it runs.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !delete.is_finished(),
+            "delete ran while a refresh held the lock"
+        );
+
+        drop(guard);
+        // The graph never existed, so the server rejects the delete; it must still have run.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), delete)
+            .await
+            .expect("delete proceeds once the refresh lock is released");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_parse_with_schema_all_resolve_missing_ids() {
+        // Many tasks on clones of one graph miss the same schema kind at once; all must end up
+        // with the resolved label whether they fetched it or skipped behind another task's fetch.
+        let mut handle = open_empty_async_test_graph("parse_with_schema_concurrent").await;
+        handle
+            .inner
+            .query("CREATE (:ConcurrentSeed)")
+            .execute()
+            .await
+            .expect("seed the graph");
+
+        let tasks: Vec<_> = (0..16)
+            .map(|_| {
+                let graph = handle.inner.clone();
+                tokio::spawn(async move {
+                    graph
+                        .parse_with_schema((), |_, schema| {
+                            schema.parse_single_id(0, SchemaType::Labels)
+                        })
+                        .await
+                })
+            })
+            .collect();
+        for task in tasks {
+            assert_eq!(task.await.unwrap().unwrap(), "ConcurrentSeed");
+        }
+        let _ = handle.inner.delete().await;
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_call_procedure_ro_routes_read_only() {

@@ -107,7 +107,7 @@ All features are **off by default** — enable only what you need:
 
 | Feature | Enables |
 |---|---|
-| `tokio` | The async client and API on the `tokio` runtime (multi-threaded scheduler). |
+| `tokio` | The async client and API on the `tokio` runtime (multi-thread or `current_thread` scheduler). |
 | `serde` | Map query results into your own `serde::Deserialize` types. |
 | `tracing` | OpenTelemetry-aligned `tracing` spans with a privacy-safe query fingerprint. |
 | `metrics` | Counters and histograms via the `metrics` facade (install any exporter). |
@@ -288,9 +288,7 @@ It can be enabled like so:
 cargo add falkordb --features tokio
 ```
 
-Currently, this API requires running within a [
-`multi_threaded tokio scheduler`](https://docs.rs/tokio/latest/tokio/runtime/index.html#multi-thread-scheduler), and
-does not support the `current_thread` one, but this will probably be supported in the future.
+The async API works on both the multi-thread and the `current_thread` tokio schedulers.
 
 The API uses an almost identical API, but the various functions need to be awaited:
 

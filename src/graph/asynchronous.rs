@@ -657,6 +657,66 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_refresh_schema_skips_when_generation_changed() {
+        // On a graph that does not exist the read-only refresh fails, so whether a call reached the
+        // server is observable: a stale generation must skip the round-trip and succeed, a current
+        // one must go to the server and fail.
+        let handle = open_empty_async_test_graph("refresh_schema_generation_skip").await;
+        let graph = &handle.inner;
+        let index = generation_index(SchemaType::Labels);
+
+        let seen = graph.generations()[index];
+        graph.refresh_generations[index].fetch_add(1, Ordering::Release);
+        graph
+            .refresh_schema(SchemaType::Labels, seen)
+            .await
+            .expect("another task already refreshed this kind, nothing to fetch");
+
+        assert!(graph
+            .refresh_schema(SchemaType::Labels, graph.generations()[index])
+            .await
+            .is_err());
+        // Other kinds are unaffected by the bumped generation.
+        assert!(graph
+            .refresh_schema(
+                SchemaType::Properties,
+                graph.generations()[generation_index(SchemaType::Properties)]
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_parse_with_schema_all_resolve_missing_ids() {
+        // Many tasks on clones of one graph miss the same schema kind at once; all must end up
+        // with the resolved label whether they fetched it or skipped behind another task's fetch.
+        let mut handle = open_empty_async_test_graph("parse_with_schema_concurrent").await;
+        handle
+            .inner
+            .query("CREATE (:ConcurrentSeed)")
+            .execute()
+            .await
+            .expect("seed the graph");
+
+        let tasks: Vec<_> = (0..16)
+            .map(|_| {
+                let graph = handle.inner.clone();
+                tokio::spawn(async move {
+                    graph
+                        .parse_with_schema((), |_, schema| {
+                            schema.parse_single_id(0, SchemaType::Labels)
+                        })
+                        .await
+                })
+            })
+            .collect();
+        for task in tasks {
+            assert_eq!(task.await.unwrap().unwrap(), "ConcurrentSeed");
+        }
+        let _ = handle.inner.delete().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_call_procedure_ro_routes_read_only() {
         // `call_procedure_ro` must build a read-only procedure call (GRAPH.RO_QUERY)
         // and borrow from the read-only connection path. DB.INDEXES is a read-only

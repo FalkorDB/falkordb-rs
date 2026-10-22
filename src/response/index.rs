@@ -9,7 +9,7 @@ use crate::{
         parse_falkor_enum, parse_raw_redis_value, redis_value_as_string,
         redis_value_as_typed_string, redis_value_as_vec, type_val_from_value, SchemaParsable,
     },
-    EntityType, FalkorDBError, FalkorValue, GraphSchema,
+    EntityType, FalkorDBError, FalkorResult, FalkorValue, GraphSchema,
 };
 use std::collections::HashMap;
 
@@ -97,11 +97,10 @@ fn parse_types_map(value: redis::Value) -> Result<HashMap<String, Vec<IndexType>
                     return Err(FalkorDBError::ParsingArray);
                 }
 
-                let val_vec = redis_value_as_vec(val)?;
-                let parsed_values = val_vec
+                let parsed_values = redis_value_as_vec(val)?
                     .into_iter()
-                    .flat_map(parse_falkor_enum::<IndexType>)
-                    .collect::<Vec<_>>();
+                    .map(parse_falkor_enum::<IndexType>)
+                    .collect::<FalkorResult<Vec<_>>>()?;
 
                 Ok((key_str, parsed_values))
             })
@@ -169,6 +168,48 @@ impl SchemaParsable for FalkorIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A compact-format `[type marker, value]` pair.
+    fn typed(
+        marker: ParserTypeMarker,
+        value: redis::Value,
+    ) -> redis::Value {
+        redis::Value::Array(vec![redis::Value::Int(marker as i64), value])
+    }
+
+    fn types_map(types: &[&str]) -> redis::Value {
+        let types = types
+            .iter()
+            .map(|t| {
+                typed(
+                    ParserTypeMarker::String,
+                    redis::Value::SimpleString(t.to_string()),
+                )
+            })
+            .collect();
+        typed(
+            ParserTypeMarker::Map,
+            redis::Value::Array(vec![
+                redis::Value::SimpleString("name".to_string()),
+                typed(ParserTypeMarker::Array, redis::Value::Array(types)),
+            ]),
+        )
+    }
+
+    #[test]
+    fn test_parse_types_map() {
+        let parsed = parse_types_map(types_map(&["RANGE", "FULLTEXT"])).unwrap();
+        assert_eq!(parsed["name"], vec![IndexType::Range, IndexType::Fulltext]);
+    }
+
+    #[test]
+    fn test_parse_types_map_rejects_unknown_index_type() {
+        // An unknown type is an error, not silently dropped from the field's types.
+        assert!(matches!(
+            parse_types_map(types_map(&["RANGE", "NOT_AN_INDEX_TYPE"])),
+            Err(FalkorDBError::InvalidEnumType(_))
+        ));
+    }
 
     #[test]
     fn test_index_status_active() {

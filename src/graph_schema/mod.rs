@@ -82,7 +82,7 @@ pub struct GraphSchema {
     missing: Vec<SchemaType>,
     /// Set by the owner of an in-memory schema when refreshing it failed, so the lookups that
     /// needed it report that failure instead of a bare missing id.
-    refresh_failure: Option<String>,
+    refresh_failure: Option<(SchemaType, String)>,
     graph_name: String,
     version: i64,
     labels: IdMap,
@@ -163,11 +163,11 @@ impl GraphSchema {
         std::mem::take(&mut self.missing)
     }
 
-    /// While set, lookups of unknown ids fail with this message rather than being recorded as
-    /// missing. Only meaningful for in-memory schemas.
+    /// While set, lookups of unknown ids of that schema type fail with this message rather than
+    /// being recorded as missing. Only meaningful for in-memory schemas.
     pub(crate) fn set_refresh_failure(
         &mut self,
-        failure: Option<String>,
+        failure: Option<(SchemaType, String)>,
     ) {
         self.refresh_failure = failure;
     }
@@ -229,7 +229,11 @@ impl GraphSchema {
         schema_type: SchemaType,
     ) -> FalkorResult<()> {
         let Some(client) = self.client.clone() else {
-            if let Some(failure) = &self.refresh_failure {
+            if let Some((_, failure)) = self
+                .refresh_failure
+                .as_ref()
+                .filter(|(failed, _)| *failed == schema_type)
+            {
                 return Err(FalkorDBError::RedisError(format!(
                     "schema refresh failed: {failure}"
                 )));
@@ -401,7 +405,7 @@ pub(crate) mod tests {
     #[test]
     fn test_in_memory_schema_reports_refresh_failure() {
         let mut schema = GraphSchema::new_in_memory("graph_name");
-        schema.set_refresh_failure(Some("timed out".to_string()));
+        schema.set_refresh_failure(Some((SchemaType::Labels, "timed out".to_string())));
 
         let err = schema
             .parse_single_id(3, SchemaType::Labels)
@@ -409,6 +413,12 @@ pub(crate) mod tests {
             .to_string();
         assert!(err.contains("schema refresh failed: timed out"));
         assert!(schema.take_missing().is_empty());
+
+        // Another kind was never fetched, so it is still just missing.
+        assert!(matches!(
+            schema.parse_single_id(3, SchemaType::Properties),
+            Err(FalkorDBError::MissingSchemaId(SchemaType::Properties))
+        ));
 
         schema.set_refresh_failure(None);
         assert!(matches!(

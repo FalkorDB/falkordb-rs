@@ -127,7 +127,8 @@ impl AsyncGraph {
                         // needed the schema carry it, while the others keep their results.
                         let result = {
                             let mut schema = self.graph_schema.write();
-                            schema.set_refresh_failure(Some(refresh_err.to_string()));
+                            schema
+                                .set_refresh_failure(Some((schema_type, refresh_err.to_string())));
                             let result = parse(raw, &mut schema);
                             schema.set_refresh_failure(None);
                             result
@@ -764,7 +765,13 @@ mod tests {
         let mut deleting = handle.inner.clone();
         let guard = handle.inner.refresh_lock.lock().await;
 
-        let delete = tokio::spawn(async move { deleting.delete().await });
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let delete = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            deleting.delete().await
+        });
+        started_rx.await.expect("delete task started");
+        // Give the task time to reach the lock; it must stay blocked however long it runs.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(
             !delete.is_finished(),

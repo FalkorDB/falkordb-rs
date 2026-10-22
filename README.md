@@ -107,7 +107,7 @@ All features are **off by default** — enable only what you need:
 
 | Feature | Enables |
 |---|---|
-| `tokio` | The async client and API on the `tokio` runtime (multi-threaded scheduler). |
+| `tokio` | The async client and API on the `tokio` runtime (multi-thread or `current_thread` scheduler). |
 | `serde` | Map query results into your own `serde::Deserialize` types. |
 | `tracing` | OpenTelemetry-aligned `tracing` spans with a privacy-safe query fingerprint. |
 | `metrics` | Counters and histograms via the `metrics` facade (install any exporter). |

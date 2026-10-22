@@ -1876,6 +1876,7 @@ mod async_schema_refresh {
         let mut batch = graph.batch();
         batch.query("CREATE (n:BatchNewLabel {k: 1}) RETURN n");
         let results = batch.execute().await.expect("batch executes");
+        assert_eq!(results.len(), 1);
         assert!(results.into_iter().all(|r| r.is_ok()));
 
         let _ = graph.delete().await;
@@ -1893,11 +1894,15 @@ mod async_schema_refresh {
             .map(|i| {
                 let mut graph = graph.clone();
                 tokio::spawn(async move {
-                    graph
+                    use futures::StreamExt;
+                    let mut result = graph
                         .query(format!("CREATE (n:ConcLabel{i} {{k{i}: {i}}}) RETURN n"))
                         .execute()
-                        .await
-                        .map(|_| ())
+                        .await?;
+                    // Row-level schema decoding errors only show up when the stream is consumed.
+                    let rows: Vec<_> = result.data.by_ref().collect().await;
+                    assert_eq!(rows.len(), 1);
+                    rows.into_iter().next().expect("one row").map(|_| ())
                 })
             })
             .collect();

@@ -18,7 +18,7 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
-// Usage of the asynchronous client REQUIRES the multi-threaded rt
+// The asynchronous client works on both the multi-thread and the current-thread rt
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> FalkorResult<()> {
     // Explicitly select the multiplexed strategy with 4 shared sockets. This is also the

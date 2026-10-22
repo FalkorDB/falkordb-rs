@@ -26,6 +26,9 @@ pub struct AsyncGraph {
     client: Arc<FalkorAsyncClientInner>,
     graph_name: String,
     graph_schema: Arc<RwLock<GraphSchema>>,
+    /// Serializes schema fetch-and-apply across clones, so an older reply can never overwrite the
+    /// map from a newer one.
+    refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AsyncGraph {
@@ -36,6 +39,7 @@ impl AsyncGraph {
         Self {
             graph_name: graph_name.to_string(),
             graph_schema: Arc::new(RwLock::new(GraphSchema::new_in_memory(graph_name))),
+            refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
             client,
         }
     }
@@ -59,6 +63,11 @@ impl AsyncGraph {
     /// schema maps are re-fetched over a pooled async connection, and `parse` runs again on a copy
     /// of `raw`. A kind is refreshed at most once per call, so ids the server really does not know
     /// surface as the parse error instead of looping.
+    ///
+    /// A failed refresh does not discard what is already parsable: `parse` runs one last time, so
+    /// rows and batch items that needed no unknown id keep their results, and only the ones that
+    /// did carry the missing-id error. If that leaves nothing but an error, the refresh error is
+    /// returned instead, as the more useful cause.
     pub(crate) async fn parse_with_schema<I: Clone, R>(
         &self,
         raw: I,
@@ -66,10 +75,11 @@ impl AsyncGraph {
     ) -> FalkorResult<R> {
         let mut refreshed: Vec<SchemaType> = Vec::new();
         loop {
+            let attempt = raw.clone();
             let (result, missing) = {
                 let mut schema = self.graph_schema.write();
                 schema.take_missing();
-                let result = parse(raw.clone(), &mut schema);
+                let result = parse(attempt, &mut schema);
                 (result, schema.take_missing())
             };
 
@@ -82,7 +92,15 @@ impl AsyncGraph {
             }
 
             for schema_type in to_refresh {
-                self.refresh_schema(schema_type).await?;
+                if let Err(refresh_err) = self.refresh_schema(schema_type).await {
+                    let result = {
+                        let mut schema = self.graph_schema.write();
+                        let result = parse(raw, &mut schema);
+                        schema.take_missing();
+                        result
+                    };
+                    return result.map_err(|_| refresh_err);
+                }
                 refreshed.push(schema_type);
             }
         }
@@ -96,6 +114,7 @@ impl AsyncGraph {
         &self,
         schema_type: SchemaType,
     ) -> FalkorResult<()> {
+        let _serialized = self.refresh_lock.lock().await;
         let res = self
             .client
             .borrow_connection(self.client.clone())

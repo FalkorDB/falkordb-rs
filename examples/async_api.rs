@@ -9,7 +9,7 @@ use falkordb::{FalkorClientBuilder, FalkorResult};
 use futures::{StreamExt, TryStreamExt};
 use tokio::task::JoinSet;
 
-// Usage of the asynchronous client REQUIRES the multi-threaded rt
+// The asynchronous client works on both the multi-thread and the current-thread rt
 #[tokio::main]
 async fn main() -> FalkorResult<()> {
     let client = FalkorClientBuilder::new_async()

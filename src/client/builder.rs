@@ -337,8 +337,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                 if let Some(settings) = tcp_settings {
                     cfg = cfg.set_tcp_settings(settings.clone());
                 }
-                let client = redis::Client::open(cfg.clone())
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+                let client = redis::Client::open(cfg.clone()).expect("valid Redis ConnectionInfo");
                 Ok((
                     FalkorClientProvider::Redis {
                         client,
@@ -662,22 +661,20 @@ mod tests {
             );
         let conn_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into().unwrap();
         let (_provider, actual_info) =
-            FalkorClientBuilder::<'S'>::get_client(conn_info, Some(&settings), None, None)
-                .expect("get_client should succeed");
-
-        #[allow(irrefutable_let_patterns)]
-        if let FalkorConnectionInfo::Redis(redis_info) = actual_info {
-            assert!(
-                redis_info.tcp_settings().nodelay(),
-                "returned FalkorConnectionInfo must carry the configured nodelay"
-            );
-            assert!(
-                redis_info.tcp_settings().keepalive().is_some(),
-                "returned FalkorConnectionInfo must carry the configured keepalive"
-            );
-        } else {
-            panic!("expected FalkorConnectionInfo::Redis");
-        }
+            FalkorClientBuilder::<'S'>::get_client(conn_info, Some(&settings), None, None).unwrap();
+        let redis_info = match actual_info {
+            FalkorConnectionInfo::Redis(info) => info,
+            #[cfg(feature = "embedded-core")]
+            FalkorConnectionInfo::Embedded(_) => unreachable!(),
+        };
+        assert!(
+            redis_info.tcp_settings().nodelay(),
+            "returned FalkorConnectionInfo must carry the configured nodelay"
+        );
+        assert!(
+            redis_info.tcp_settings().keepalive().is_some(),
+            "returned FalkorConnectionInfo must carry the configured keepalive"
+        );
     }
 
     #[test]

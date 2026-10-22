@@ -170,18 +170,18 @@ impl FalkorClientProvider {
         response_timeout: Option<std::time::Duration>,
         connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<FalkorSyncConnection> {
-        let conn = Self::connect_redis_client(client, connect_timeout)
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-        conn.set_read_timeout(response_timeout)
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-        conn.set_write_timeout(response_timeout)
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-        Ok(FalkorSyncConnection::Redis(conn))
+        Self::connect_redis_client(client, connect_timeout)
+            .and_then(|conn| {
+                conn.set_read_timeout(response_timeout)
+                    .and_then(|()| conn.set_write_timeout(response_timeout))
+                    .map(|()| FalkorSyncConnection::Redis(conn))
+            })
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
     }
 
     /// Connect `client` with an optional setup deadline while avoiding redis-rs 1.7.1's
-    /// `tls_connector.connect(...).unwrap()` panic on the timed `native-tls` (without
-    /// `rustls`) code path.
+    /// `tls_connector.connect(...).unwrap()` panic and unbounded TLS handshake on the
+    /// timed `native-tls` (without `rustls`) code path.
     fn connect_redis_client(
         client: &redis::Client,
         connect_timeout: Option<std::time::Duration>,
@@ -191,26 +191,40 @@ impl FalkorClientProvider {
                 any(feature = "native-tls", feature = "tokio-native-tls"),
                 not(any(feature = "rustls", feature = "tokio-rustls"))
             ))]
-            Some(timeout) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                client.get_connection_with_timeout(timeout)
-            }))
-            .unwrap_or_else(|payload| {
-                let detail = payload
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| payload.downcast_ref::<&str>().copied())
-                    .unwrap_or("TLS handshake failed")
-                    .to_string();
-                Err(redis::RedisError::from((
-                    redis::ErrorKind::Io,
-                    "SSL Handshake error",
-                    detail,
-                )))
-            }),
-            #[cfg(not(all(
-                any(feature = "native-tls", feature = "tokio-native-tls"),
-                not(any(feature = "rustls", feature = "tokio-rustls"))
-            )))]
+            Some(timeout)
+                if matches!(
+                    client.get_connection_info().addr(),
+                    redis::ConnectionAddr::TcpTls { .. }
+                ) =>
+            {
+                let client = client.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        client.get_connection_with_timeout(timeout)
+                    }))
+                    .unwrap_or_else(|payload| {
+                        let detail = payload
+                            .downcast_ref::<String>()
+                            .map(String::as_str)
+                            .or_else(|| payload.downcast_ref::<&str>().copied())
+                            .unwrap_or("TLS handshake failed")
+                            .to_string();
+                        Err(redis::RedisError::from((
+                            redis::ErrorKind::Io,
+                            "SSL Handshake error",
+                            detail,
+                        )))
+                    });
+                    let _ = tx.send(res);
+                });
+                rx.recv_timeout(timeout).map_err(|_| {
+                    redis::RedisError::from(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "TLS connection setup timed out",
+                    ))
+                })?
+            }
             Some(timeout) => client.get_connection_with_timeout(timeout),
             None => client.get_connection(),
         }
@@ -222,15 +236,14 @@ impl FalkorClientProvider {
         connection_info: &redis::ConnectionInfo,
         connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<redis::Connection> {
-        let client = redis::Client::open(connection_info.clone())
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-        let conn = Self::connect_redis_client(&client, connect_timeout)
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-        conn.set_read_timeout(connect_timeout)
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-        conn.set_write_timeout(connect_timeout)
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-        Ok(conn)
+        redis::Client::open(connection_info.clone())
+            .and_then(|client| Self::connect_redis_client(&client, connect_timeout))
+            .and_then(|conn| {
+                conn.set_read_timeout(connect_timeout)
+                    .and_then(|()| conn.set_write_timeout(connect_timeout))
+                    .map(|()| conn)
+            })
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
     }
 
     /// Build a node `redis::ConnectionInfo` for a Sentinel-discovered `(ip, port)` using
@@ -260,13 +273,22 @@ impl FalkorClientProvider {
             .map(|seq| {
                 seq.chunks_exact(2)
                     .filter_map(|chunk| {
-                        let key = redis_value_as_string(chunk[0].clone()).ok()?;
-                        let val = redis_value_as_string(chunk[1].clone()).ok()?;
-                        Some((key, val))
+                        redis_value_as_string(chunk[0].clone())
+                            .and_then(|k| redis_value_as_string(chunk[1].clone()).map(|v| (k, v)))
+                            .ok()
                     })
                     .collect()
             })
             .collect()
+    }
+
+    /// Query a Redis command on `conn`, mapping any error into [`FalkorDBError::RedisError`].
+    fn query_cmd<T: redis::FromRedisValue>(
+        cmd: &redis::Cmd,
+        conn: &mut redis::Connection,
+    ) -> FalkorResult<T> {
+        cmd.query(conn)
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
     }
 
     /// Check whether a candidate node reports the expected `expected_role` (`"master"` or
@@ -277,16 +299,18 @@ impl FalkorClientProvider {
         expected_role: &str,
         connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<bool> {
-        let mut conn = Self::open_probe_connection(node_info, connect_timeout)?;
-        let items: Vec<redis::Value> = redis::cmd("ROLE")
-            .query(&mut conn)
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-        let role = items
-            .into_iter()
-            .next()
-            .ok_or_else(|| FalkorDBError::RedisError("Empty ROLE reply".to_string()))
-            .and_then(redis_value_as_string)?;
-        Ok(role == expected_role)
+        Self::open_probe_connection(node_info, connect_timeout)
+            .and_then(|mut conn| {
+                Self::query_cmd::<Vec<redis::Value>>(&redis::cmd("ROLE"), &mut conn)
+            })
+            .map(|items| {
+                items
+                    .into_iter()
+                    .next()
+                    .and_then(|v| redis_value_as_string(v).ok())
+                    .as_deref()
+                    == Some(expected_role)
+            })
     }
 
     /// Resolve a `redis::Client` for the current Sentinel master (`is_replica == false`)
@@ -298,9 +322,8 @@ impl FalkorClientProvider {
         connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<redis::Client> {
         let mut sentinel_conn = Self::open_probe_connection(sentinel_info, connect_timeout)?;
-        let role_items: Vec<redis::Value> = redis::cmd("ROLE")
-            .query(&mut sentinel_conn)
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        let role_items: Vec<redis::Value> =
+            Self::query_cmd(&redis::cmd("ROLE"), &mut sentinel_conn)?;
         let mut role_iter = role_items.into_iter();
         if role_iter
             .next()
@@ -320,10 +343,8 @@ impl FalkorClientProvider {
             return Err(FalkorDBError::SentinelMastersCount);
         }
 
-        let raw_masters: Vec<redis::Value> = redis::cmd("SENTINEL")
-            .arg("MASTERS")
-            .query(&mut sentinel_conn)
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        let raw_masters: Vec<redis::Value> =
+            Self::query_cmd(redis::cmd("SENTINEL").arg("MASTERS"), &mut sentinel_conn)?;
         let masters = Self::parse_sentinel_maps(raw_masters);
 
         let (candidates, expected_role, not_found_msg) = if is_replica {
@@ -336,11 +357,10 @@ impl FalkorClientProvider {
                         "No valid master found in sentinel for replica lookup".to_string(),
                     )
                 })?;
-            let raw_replicas: Vec<redis::Value> = redis::cmd("SENTINEL")
-                .arg("SLAVES")
-                .arg(&service_name)
-                .query(&mut sentinel_conn)
-                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+            let raw_replicas: Vec<redis::Value> = Self::query_cmd(
+                redis::cmd("SENTINEL").arg("SLAVES").arg(&service_name),
+                &mut sentinel_conn,
+            )?;
             (
                 Self::parse_sentinel_maps(raw_replicas),
                 "slave",
@@ -354,6 +374,7 @@ impl FalkorClientProvider {
             )
         };
 
+        let mut last_probe_err = None;
         for candidate in candidates {
             let flags_ok = candidate
                 .get("flags")
@@ -369,15 +390,15 @@ impl FalkorClientProvider {
                 continue;
             }
             let node_info = Self::sentinel_node_connection_info(sentinel_info, ip, port);
-            if matches!(
-                Self::node_matches_role(&node_info, expected_role, connect_timeout),
-                Ok(true)
-            ) {
-                return redis::Client::open(node_info)
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()));
+            match Self::node_matches_role(&node_info, expected_role, connect_timeout) {
+                Ok(true) => {
+                    return Ok(redis::Client::open(node_info).expect("valid Redis ConnectionInfo"));
+                }
+                Ok(false) => continue,
+                Err(err) => last_probe_err = Some(err),
             }
         }
-        Err(FalkorDBError::RedisError(not_found_msg.to_string()))
+        Err(last_probe_err.unwrap_or_else(|| FalkorDBError::RedisError(not_found_msg.to_string())))
     }
 
     pub(crate) fn get_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
@@ -1437,6 +1458,7 @@ mod tests {
 
     #[test]
     fn test_sync_sentinel_resolution_edge_cases() {
+        use redis::IntoConnectionInfo;
         use std::io::{Read, Write};
         use std::net::TcpListener;
 
@@ -1460,6 +1482,29 @@ mod tests {
         assert!(matches!(
             mapped_unix.addr(),
             redis::ConnectionAddr::Tcp(host, 6380) if host == "127.0.0.1"
+        ));
+
+        let tls_sentinel_info = redis::ConnectionAddr::TcpTls {
+            host: "sentinel.local".to_string(),
+            port: 26379,
+            insecure: true,
+            tls_params: None,
+        }
+        .into_connection_info()
+        .unwrap();
+        let mapped_tls = FalkorClientProvider::sentinel_node_connection_info(
+            &tls_sentinel_info,
+            "10.0.0.2".to_string(),
+            6381,
+        );
+        assert!(matches!(
+            mapped_tls.addr(),
+            redis::ConnectionAddr::TcpTls {
+                host,
+                port: 6381,
+                insecure: true,
+                ..
+            } if host == "10.0.0.2"
         ));
 
         let multi_service = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1569,7 +1614,7 @@ mod tests {
         let empty_sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
         let empty_port = empty_sentinel.local_addr().unwrap().port();
         std::thread::spawn(move || {
-            for stream in empty_sentinel.incoming().take(2).flatten() {
+            for stream in empty_sentinel.incoming().take(4).flatten() {
                 let mut stream = stream;
                 let mut pending = String::new();
                 let mut chunk = [0u8; 512];
@@ -1581,10 +1626,14 @@ mod tests {
                     for command in take_commands(&mut pending) {
                         let upper = command.to_ascii_uppercase();
                         let reply = if upper.contains("\r\nROLE\r\n") {
-                            "*2\r\n$8\r\nsentinel\r\n*0\r\n"
+                            "*2\r\n$8\r\nsentinel\r\n*0\r\n".to_string()
                         } else {
-                            // Return one s_down candidate and one missing-port candidate
-                            "*2\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n$4\r\n6379\r\n$5\r\nflags\r\n$6\r\ns_down\r\n*2\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n"
+                            // Return one s_down candidate, one missing-port candidate, and one candidate whose ROLE is sentinel (not master/slave)
+                            let self_port = empty_port.to_string();
+                            format!(
+                                "*3\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n$4\r\n6379\r\n$5\r\nflags\r\n$6\r\ns_down\r\n*2\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{self_port}\r\n$4\r\nname\r\n$8\r\nmymaster\r\n",
+                                self_port.len()
+                            )
                         };
                         let _ = stream.write_all(reply.as_bytes());
                     }
@@ -1608,7 +1657,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tls_handshake_failure_against_plain_tcp_returns_err_without_panicking() {
+    fn test_tls_handshake_failure_and_stall_are_bounded_and_do_not_panic() {
+        use redis::IntoConnectionInfo;
         use std::io::Write;
         use std::net::TcpListener;
 
@@ -1620,18 +1670,55 @@ mod tests {
             }
         });
 
-        let tls_url = format!("rediss://127.0.0.1:{port}");
-        if let Ok(client) = redis::Client::open(tls_url.as_str()) {
-            let res = FalkorClientProvider::open_sync_connection(
-                &client,
-                Some(std::time::Duration::from_millis(200)),
-                Some(std::time::Duration::from_millis(500)),
-            );
-            assert!(
-                res.is_err(),
-                "failed TLS handshake with finite connect_timeout must return Err, never panic"
-            );
+        let tls_info = redis::ConnectionAddr::TcpTls {
+            host: "127.0.0.1".to_string(),
+            port,
+            insecure: false,
+            tls_params: None,
         }
+        .into_connection_info()
+        .unwrap();
+        let client = redis::Client::open(tls_info).unwrap();
+        let res = FalkorClientProvider::open_sync_connection(
+            &client,
+            Some(std::time::Duration::from_millis(200)),
+            Some(std::time::Duration::from_millis(500)),
+        );
+        assert!(
+            res.is_err(),
+            "failed TLS handshake with finite connect_timeout must return Err, never panic"
+        );
+
+        let silent_listener = TcpListener::bind("127.0.0.1:0").expect("bind silent tcp server");
+        let silent_port = silent_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((_stream, _)) = silent_listener.accept() {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        });
+        let silent_tls_info = redis::ConnectionAddr::TcpTls {
+            host: "127.0.0.1".to_string(),
+            port: silent_port,
+            insecure: false,
+            tls_params: None,
+        }
+        .into_connection_info()
+        .unwrap();
+        let silent_client = redis::Client::open(silent_tls_info).unwrap();
+        let start = std::time::Instant::now();
+        assert!(
+            FalkorClientProvider::open_sync_connection(
+                &silent_client,
+                None,
+                Some(std::time::Duration::from_millis(60)),
+            )
+            .is_err(),
+            "stalled TLS peer must fail within connect_timeout"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "stalled TLS peer must not hang indefinitely"
+        );
     }
 
     #[test]

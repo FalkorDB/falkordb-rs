@@ -1824,3 +1824,92 @@ mod temporal_values {
         let _ = graph.delete();
     }
 }
+
+#[cfg(feature = "tokio")]
+mod async_schema_refresh {
+    use super::*;
+
+    async fn new_client() -> Option<falkordb::FalkorAsyncClient> {
+        if skip_if_no_server() {
+            return None;
+        }
+        FalkorClientBuilder::new_async()
+            .with_connection_info(get_test_connection_info().ok()?)
+            .build()
+            .await
+            .ok()
+    }
+
+    // Default `#[tokio::test]` is a current-thread runtime, which the schema refresh used to reject.
+    #[tokio::test]
+    async fn async_query_on_current_thread_runtime() {
+        let Some(client) = new_client().await else {
+            return;
+        };
+        let mut graph = client.select_graph("async_schema_current_thread");
+        let _ = graph.delete().await;
+
+        let mut result = graph
+            .query("CREATE (n:BrandNewLabel {brand_new_key: 1}) RETURN n")
+            .execute()
+            .await
+            .expect("schema refresh must work without a multi-thread runtime");
+        use futures::StreamExt;
+        let row = result.data.next().await.expect("one row").expect("parsed");
+        let falkordb::FalkorValue::Node(node) = &row.into_values()[0] else {
+            panic!("expected a node");
+        };
+        assert_eq!(node.labels, vec!["BrandNewLabel"]);
+        assert!(node.properties.contains_key("brand_new_key"));
+
+        let _ = graph.delete().await;
+    }
+
+    #[tokio::test]
+    async fn async_batch_on_current_thread_runtime() {
+        let Some(client) = new_client().await else {
+            return;
+        };
+        let mut graph = client.select_graph("async_schema_batch_current_thread");
+        let _ = graph.delete().await;
+
+        let mut batch = graph.batch();
+        batch.query("CREATE (n:BatchNewLabel {k: 1}) RETURN n");
+        let results = batch.execute().await.expect("batch executes");
+        assert!(results.into_iter().all(|r| r.is_ok()));
+
+        let _ = graph.delete().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_schema_refresh_does_not_starve_runtime() {
+        let Some(client) = new_client().await else {
+            return;
+        };
+        let mut graph = client.select_graph("async_schema_concurrent");
+        let _ = graph.delete().await;
+
+        let tasks: Vec<_> = (0..16)
+            .map(|i| {
+                let mut graph = graph.clone();
+                tokio::spawn(async move {
+                    graph
+                        .query(format!("CREATE (n:ConcLabel{i} {{k{i}: {i}}}) RETURN n"))
+                        .execute()
+                        .await
+                        .map(|_| ())
+                })
+            })
+            .collect();
+
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            for task in tasks {
+                task.await.expect("task joined").expect("query succeeded");
+            }
+        })
+        .await
+        .expect("all tasks finish before the deadline");
+
+        let _ = graph.delete().await;
+    }
+}

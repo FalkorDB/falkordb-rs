@@ -119,9 +119,13 @@ pub enum FalkorDBError {
     /// Invalid enum string variant was encountered when parsing
     #[error("Invalid enum string variant was encountered when parsing: {0}")]
     InvalidEnumType(String),
+    /// No longer returned: the async client works on single-threaded runtimes. Kept so matches stay source-compatible.
+    ///
     /// Running in a single-threaded tokio runtime! Running async operations in a blocking context will cause a panic, aborting operation
     #[error("Running in a single-threaded tokio runtime! Running async operations in a blocking context will cause a panic, aborting operation")]
     SingleThreadedRuntime,
+    /// No longer returned by the async client. Kept so matches stay source-compatible.
+    ///
     /// No runtime detected, you are trying to run an async operation from a sync context
     #[error("No runtime detected, you are trying to run an async operation from a sync context")]
     NoRuntime,

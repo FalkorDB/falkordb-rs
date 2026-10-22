@@ -10,7 +10,8 @@ use crate::{
         VectorSimilarity,
     },
     Constraint, ConstraintType, EntityType, ExecutionPlan, FalkorIndex, FalkorResult, GraphSchema,
-    IndexType, ProcedureQueryBuilder, QueryBuilder, QueryResult, RowStream, SlowlogEntry,
+    IndexType, ProcedureQueryBuilder, QueryBuilder, QueryResult, RowStream, SchemaType,
+    SlowlogEntry,
 };
 use parking_lot::RwLock;
 use std::{collections::HashMap, fmt::Display, sync::Arc};
@@ -34,7 +35,7 @@ impl AsyncGraph {
     ) -> Self {
         Self {
             graph_name: graph_name.to_string(),
-            graph_schema: Arc::new(RwLock::new(GraphSchema::new(graph_name, client.clone()))), // Required for requesting refreshes
+            graph_schema: Arc::new(RwLock::new(GraphSchema::new_in_memory(graph_name))),
             client,
         }
     }
@@ -51,10 +52,64 @@ impl AsyncGraph {
         &self.client
     }
 
-    /// A cheap clone of the shared schema-cache handle. Cloned `AsyncGraph`s share one cache, and
-    /// each query takes the write lock to parse its reply (and refresh the schema on a cache miss).
-    pub(crate) fn schema_handle(&self) -> Arc<RwLock<GraphSchema>> {
-        self.graph_schema.clone()
+    /// Parses `raw` against the shared schema cache, refreshing the cache asynchronously on a miss.
+    ///
+    /// The schema lock is only ever held for the synchronous, CPU-bound `parse`, never across an
+    /// await. When `parse` reports ids the cache does not know, the lock is released, the affected
+    /// schema maps are re-fetched over a pooled async connection, and `parse` runs again on a copy
+    /// of `raw`. A kind is refreshed at most once per call, so ids the server really does not know
+    /// surface as the parse error instead of looping.
+    pub(crate) async fn parse_with_schema<I: Clone, R>(
+        &self,
+        raw: I,
+        parse: impl Fn(I, &mut GraphSchema) -> FalkorResult<R>,
+    ) -> FalkorResult<R> {
+        let mut refreshed: Vec<SchemaType> = Vec::new();
+        loop {
+            let (result, missing) = {
+                let mut schema = self.graph_schema.write();
+                schema.take_missing();
+                let result = parse(raw.clone(), &mut schema);
+                (result, schema.take_missing())
+            };
+
+            let to_refresh: Vec<_> = missing
+                .into_iter()
+                .filter(|schema_type| !refreshed.contains(schema_type))
+                .collect();
+            if to_refresh.is_empty() {
+                return result;
+            }
+
+            for schema_type in to_refresh {
+                self.refresh_schema(schema_type).await?;
+                refreshed.push(schema_type);
+            }
+        }
+    }
+
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Refresh Schema Type", skip_all, level = "info")
+    )]
+    async fn refresh_schema(
+        &self,
+        schema_type: SchemaType,
+    ) -> FalkorResult<()> {
+        let res = self
+            .client
+            .borrow_connection(self.client.clone())
+            .await?
+            .execute_command(
+                Some(self.graph_name.as_str()),
+                "GRAPH.QUERY",
+                None,
+                Some(&[GraphSchema::refresh_query(schema_type).as_str()]),
+            )
+            .await?;
+        self.graph_schema
+            .write()
+            .apply_refresh_reply(schema_type, res)
     }
 
     #[cfg_attr(

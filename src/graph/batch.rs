@@ -269,15 +269,12 @@ fn has_write(queries: &[BatchQuery]) -> bool {
     queries.iter().any(|query| !query.command.is_readonly())
 }
 
-/// Parses each reply (in submission order) into its original slot under the graph schema, then
-/// returns the fully-populated, in-order results. Errors if the server returned a different number
-/// of replies than commands submitted (a protocol surprise), so the contract can never panic.
-fn weave_replies(
-    mut slots: Vec<Option<BatchItemResult>>,
+/// Errors if the server returned a different number of replies than commands submitted (a protocol
+/// surprise), so the contract can never panic.
+fn check_reply_count(
     submitted: &[usize],
-    replies: Vec<redis::Value>,
-    graph_schema: &mut GraphSchema,
-) -> BatchResult {
+    replies: &[redis::Value],
+) -> FalkorResult<()> {
     if replies.len() != submitted.len() {
         return Err(FalkorDBError::RedisParsingError(format!(
             "batch expected {} replies but the server returned {}",
@@ -285,16 +282,49 @@ fn weave_replies(
             replies.len()
         )));
     }
-    for (reply, &index) in replies.into_iter().zip(submitted) {
-        slots[index] = Some(
+    Ok(())
+}
+
+/// Parses each reply, in submission order, under the graph schema.
+fn parse_replies(
+    replies: Vec<redis::Value>,
+    graph_schema: &mut GraphSchema,
+) -> Vec<BatchItemResult> {
+    replies
+        .into_iter()
+        .map(|reply| {
             unwrap_query_response(reply)
-                .and_then(|res| dispatch_query_response(res, &mut *graph_schema, build_vec_rows)),
-        );
+                .and_then(|res| dispatch_query_response(res, &mut *graph_schema, build_vec_rows))
+        })
+        .collect()
+}
+
+/// Puts the parsed replies into their original slots and returns the fully-populated, in-order
+/// results.
+fn fill_slots(
+    mut slots: Vec<Option<BatchItemResult>>,
+    submitted: &[usize],
+    parsed: Vec<BatchItemResult>,
+) -> BatchResult {
+    for (item, &index) in parsed.into_iter().zip(submitted) {
+        slots[index] = Some(item);
     }
     Ok(slots
         .into_iter()
         .map(|slot| slot.expect("every slot is filled: encode errors up front, replies by index"))
         .collect())
+}
+
+/// Parses each reply (in submission order) into its original slot under the graph schema, then
+/// returns the fully-populated, in-order results.
+fn weave_replies(
+    slots: Vec<Option<BatchItemResult>>,
+    submitted: &[usize],
+    replies: Vec<redis::Value>,
+    graph_schema: &mut GraphSchema,
+) -> BatchResult {
+    check_reply_count(submitted, &replies)?;
+    fill_slots(slots, submitted, parse_replies(replies, graph_schema))
 }
 
 impl BatchBuilder<'_, SyncGraph> {
@@ -367,9 +397,14 @@ impl BatchBuilder<'_, crate::AsyncGraph> {
         };
         let replies = conn?.execute_pipeline(&pipe).await?;
 
-        let schema = self.graph.schema_handle();
-        let mut guard = schema.write();
-        weave_replies(slots, &submitted, replies, &mut guard)
+        check_reply_count(&submitted, &replies)?;
+        let parsed = self
+            .graph
+            .parse_with_schema(replies, |replies, schema| {
+                Ok(parse_replies(replies, schema))
+            })
+            .await?;
+        fill_slots(slots, &submitted, parsed)
     }
 }
 

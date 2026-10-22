@@ -75,7 +75,11 @@ pub(crate) type IdMap = HashMap<i64, String>;
 /// A struct containing the various schema maps, allowing conversions between ids and their string representations.
 #[derive(Clone)]
 pub struct GraphSchema {
-    client: Arc<dyn ProvidesSyncConnections>,
+    /// Source for synchronous refreshes on a cache miss. `None` makes the schema a pure in-memory
+    /// table: a miss is recorded and surfaced as [`FalkorDBError::MissingSchemaId`] without any I/O,
+    /// leaving the owner to refresh it (asynchronously) and parse again.
+    client: Option<Arc<dyn ProvidesSyncConnections>>,
+    missing: Vec<SchemaType>,
     graph_name: String,
     version: i64,
     labels: IdMap,
@@ -88,8 +92,21 @@ impl GraphSchema {
         graph_name: T,
         client: Arc<dyn ProvidesSyncConnections>,
     ) -> Self {
+        Self::with_client(graph_name, Some(client))
+    }
+
+    /// A schema that never performs I/O, see [`GraphSchema::client`].
+    pub(crate) fn new_in_memory<T: ToString>(graph_name: T) -> Self {
+        Self::with_client(graph_name, None)
+    }
+
+    fn with_client<T: ToString>(
+        graph_name: T,
+        client: Option<Arc<dyn ProvidesSyncConnections>>,
+    ) -> Self {
         Self {
             client,
+            missing: Vec::new(),
             graph_name: graph_name.to_string(),
             version: 0,
             labels: IdMap::new(),
@@ -136,38 +153,29 @@ impl GraphSchema {
         }
     }
 
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(name = "Refresh Schema Type", skip_all, level = "info")
-    )]
-    fn refresh(
+    /// Takes the schema types that were looked up and not found since the last call. Only
+    /// populated for in-memory schemas, which cannot refresh themselves.
+    pub(crate) fn take_missing(&mut self) -> Vec<SchemaType> {
+        std::mem::take(&mut self.missing)
+    }
+
+    /// The query that fetches the full id map of `schema_type` from the server.
+    pub(crate) fn refresh_query(schema_type: SchemaType) -> String {
+        format!("CALL {}()", get_refresh_command(schema_type))
+    }
+
+    /// Replaces the map of `schema_type` with the contents of a `DB.LABELS` / `DB.PROPERTYKEYS` /
+    /// `DB.RELATIONSHIPTYPES` reply.
+    pub(crate) fn apply_refresh_reply(
         &mut self,
         schema_type: SchemaType,
+        res: redis::Value,
     ) -> FalkorResult<()> {
-        let id_map = match schema_type {
-            SchemaType::Labels => &mut self.labels,
-            SchemaType::Properties => &mut self.properties,
-            SchemaType::Relationships => &mut self.relationships,
-        };
-
-        // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
-        let keys = self
-            .client
-            .get_connection()
-            .and_then(|mut conn| {
-                conn.execute_command(
-                    Some(self.graph_name.as_str()),
-                    "GRAPH.QUERY",
-                    None,
-                    Some(&[format!("CALL {}()", get_refresh_command(schema_type)).as_str()]),
-                )
-            })
-            .and_then(|res| {
-                redis_value_as_vec(res).and_then(|as_vec| {
-                    as_vec.into_iter().nth(1).ok_or(FalkorDBError::ParsingArrayToStructElementCount(
-            "Expected exactly 3 types for header-resultset-stats response from refresh query"
-        ))
-                })
+        let keys = redis_value_as_vec(res)
+            .and_then(|as_vec| {
+                as_vec.into_iter().nth(1).ok_or(FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected exactly 3 types for header-resultset-stats response from refresh query",
+                ))
             })
             .and_then(redis_value_as_vec)?;
 
@@ -181,9 +189,9 @@ impl GraphSchema {
                         .and_then(|item_seq| {
                             item_seq.into_iter().next().ok_or_else(|| {
                                 FalkorDBError::ParsingError(
-                            "Expected new label/property to be the first element in an array"
-                                .to_string(),
-                        )
+                                    "Expected new label/property to be the first element in an array"
+                                        .to_string(),
+                                )
                             })
                         })
                         .and_then(redis_value_as_string)?,
@@ -191,8 +199,39 @@ impl GraphSchema {
             })
             .collect::<HashMap<i64, String>>();
 
-        *id_map = new_keys;
+        *match schema_type {
+            SchemaType::Labels => &mut self.labels,
+            SchemaType::Properties => &mut self.properties,
+            SchemaType::Relationships => &mut self.relationships,
+        } = new_keys;
         Ok(())
+    }
+
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(name = "Refresh Schema Type", skip_all, level = "info")
+    )]
+    fn refresh(
+        &mut self,
+        schema_type: SchemaType,
+    ) -> FalkorResult<()> {
+        let Some(client) = self.client.clone() else {
+            if !self.missing.contains(&schema_type) {
+                self.missing.push(schema_type);
+            }
+            return Err(FalkorDBError::MissingSchemaId(schema_type));
+        };
+
+        // This is essentially the call_procedure(), but can be done here without access to the graph(which would cause ownership issues)
+        let res = client.get_connection().and_then(|mut conn| {
+            conn.execute_command(
+                Some(self.graph_name.as_str()),
+                "GRAPH.QUERY",
+                None,
+                Some(&[Self::refresh_query(schema_type).as_str()]),
+            )
+        })?;
+        self.apply_refresh_reply(schema_type, res)
     }
 
     pub(crate) fn parse_single_id(
@@ -300,6 +339,84 @@ pub(crate) mod tests {
         }
 
         graph
+    }
+
+    #[test]
+    fn test_in_memory_schema_records_missing_without_io() {
+        let mut schema = GraphSchema::new_in_memory("graph_name");
+        schema.labels = HashMap::from([(0, "known".to_string())]);
+
+        assert_eq!(
+            schema.parse_single_id(0, SchemaType::Labels).unwrap(),
+            "known"
+        );
+        assert!(schema.take_missing().is_empty());
+
+        assert!(matches!(
+            schema.parse_single_id(5, SchemaType::Labels),
+            Err(FalkorDBError::MissingSchemaId(SchemaType::Labels))
+        ));
+        assert!(matches!(
+            schema.parse_id_vec(vec![redis::Value::Int(1)], SchemaType::Relationships),
+            Err(FalkorDBError::MissingSchemaId(SchemaType::Relationships))
+        ));
+        let input = redis::Value::Array(vec![redis::Value::Array(vec![
+            redis::Value::Int(9),
+            redis::Value::Int(2),
+            redis::Value::SimpleString("v".to_string()),
+        ])]);
+        assert!(schema.parse_properties_map(input).is_err());
+
+        // Repeated misses of one kind are reported once; taking resets the record.
+        assert!(schema.parse_single_id(6, SchemaType::Labels).is_err());
+        assert_eq!(
+            schema.take_missing(),
+            vec![
+                SchemaType::Labels,
+                SchemaType::Relationships,
+                SchemaType::Properties
+            ]
+        );
+        assert!(schema.take_missing().is_empty());
+    }
+
+    #[test]
+    fn test_apply_refresh_reply_populates_ids() {
+        let mut schema = GraphSchema::new_in_memory("graph_name");
+        let reply = |names: &[&str]| {
+            redis::Value::Array(vec![
+                redis::Value::Array(vec![]),
+                redis::Value::Array(
+                    names
+                        .iter()
+                        .map(|name| {
+                            redis::Value::Array(vec![redis::Value::SimpleString(name.to_string())])
+                        })
+                        .collect(),
+                ),
+                redis::Value::Array(vec![]),
+            ])
+        };
+
+        schema
+            .apply_refresh_reply(SchemaType::Labels, reply(&["Person", "Movie"]))
+            .unwrap();
+        schema
+            .apply_refresh_reply(SchemaType::Properties, reply(&["name"]))
+            .unwrap();
+        schema
+            .apply_refresh_reply(SchemaType::Relationships, reply(&["ACTED_IN"]))
+            .unwrap();
+
+        assert_eq!(schema.labels().get(&1).map(String::as_str), Some("Movie"));
+        assert_eq!(
+            schema.properties().get(&0).map(String::as_str),
+            Some("name")
+        );
+        assert_eq!(
+            schema.relationships().get(&0).map(String::as_str),
+            Some("ACTED_IN")
+        );
     }
 
     #[test]

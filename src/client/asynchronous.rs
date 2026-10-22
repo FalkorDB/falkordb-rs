@@ -4,22 +4,15 @@
  */
 
 use crate::{
-    client::{ConnectionStrategy, FalkorClientProvider, ProvidesSyncConnections, ReadPreference},
-    connection::{
-        asynchronous::{BorrowedAsyncConnection, FalkorAsyncConnection},
-        blocking::FalkorSyncConnection,
-    },
+    client::{ConnectionStrategy, FalkorClientProvider, ReadPreference},
+    connection::asynchronous::{BorrowedAsyncConnection, FalkorAsyncConnection},
     parser::{parse_config_hashmap, redis_value_as_untyped_string_vec},
     AsyncGraph, ConfigValue, FalkorConnectionInfo, FalkorDBError, FalkorResult, RetryPolicy,
 };
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections::HashMap, sync::Arc};
-use tokio::{
-    runtime::{Handle, RuntimeFlavor},
-    sync::{mpsc, Mutex},
-    task,
-};
+use tokio::sync::{mpsc, Mutex};
 
 /// A connection pool holding a fixed number of async connections that callers
 /// borrow from and return to. Used by the [`ConnectionStrategy::Pooled`] strategy for
@@ -224,24 +217,6 @@ impl FalkorAsyncClientInner {
             .await
             .get_async_replica_connection()
             .await
-    }
-}
-
-impl ProvidesSyncConnections for FalkorAsyncClientInner {
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(
-            name = "Get New Sync Connection From Client",
-            skip_all,
-            level = "info"
-        )
-    )]
-    fn get_connection(&self) -> FalkorResult<FalkorSyncConnection> {
-        let handle = Handle::try_current().map_err(|_| FalkorDBError::NoRuntime)?;
-        match handle.runtime_flavor() {
-            RuntimeFlavor::CurrentThread => Err(FalkorDBError::SingleThreadedRuntime),
-            _ => task::block_in_place(|| handle.block_on(self._inner.lock())).get_connection(),
-        }
     }
 }
 

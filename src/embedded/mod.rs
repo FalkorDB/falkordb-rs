@@ -17,6 +17,7 @@ compile_error!(
     "The `embedded` feature is only supported on Unix-like systems \
      because it relies on Unix domain sockets. Windows is not supported."
 );
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +41,13 @@ const MAX_SOCKET_PATH_LENGTH: usize = 104;
 const MODULE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 // Counter for ensuring unique temp directories across multiple instances
+#[cfg(test)]
+use std::cell::Cell;
+#[cfg(test)]
+thread_local! {
+    static LAST_SOCKET_TEMP_DIR: Cell<Option<PathBuf>> = const { Cell::new(None) };
+}
+
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Configuration for an embedded FalkorDB server instance.
@@ -139,8 +147,9 @@ pub struct EmbeddedServer {
     process: Child,
     /// Path to the Unix socket.
     socket_path: PathBuf,
-    /// Directory containing temporary files (if created).
-    temp_dir: Option<PathBuf>,
+    /// Temporary directories created for this server (the db dir and/or the socket dir),
+    /// removed on drop.
+    temp_dirs: Vec<PathBuf>,
     /// Path to the configuration file.
     config_file: PathBuf,
 }
@@ -157,6 +166,27 @@ fn redis_version_too_old(version_text: &str) -> bool {
         .and_then(|rest| rest.split('.').next())
         .and_then(|major| major.trim().parse::<u32>().ok())
         .is_some_and(|major| major < MIN_MAJOR)
+}
+
+/// Quote a value for a redis config file directive. redis splits directives on whitespace
+/// but honours double quotes, inside which `\\`, `\"` and `\xHH` escapes are decoded. Every
+/// byte outside printable ASCII is hex-escaped, so a value can't break out of its directive
+/// (e.g. through a newline) and non-UTF-8 paths survive intact.
+fn quote_config_arg(value: &[u8]) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for &byte in value {
+        match byte {
+            b'"' | b'\\' => {
+                quoted.push('\\');
+                quoted.push(byte as char);
+            }
+            b' '..=b'~' => quoted.push(byte as char),
+            _ => quoted.push_str(&format!("\\x{byte:02x}")),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 impl EmbeddedServer {
@@ -192,12 +222,19 @@ impl EmbeddedServer {
 
         // Set up directories and paths
         let (db_dir, temp_dir) = Self::setup_db_dir(&config)?;
-        let socket_path = Self::setup_socket_path(&config, temp_dir.as_deref())?;
+        let mut temp_dirs: Vec<PathBuf> = temp_dir.clone().into_iter().collect();
 
         // Validate the resolved socket path length (covers the derived-path case).
-        Self::validate_socket_path_len(&socket_path)?;
-
-        let config_file = Self::create_config_file(&db_dir, &socket_path, &config.db_filename)?;
+        let (socket_path, config_file) = Self::setup_socket_path(&config, temp_dir.as_deref())
+            .and_then(|(socket_path, socket_temp_dir)| {
+                temp_dirs.extend(socket_temp_dir);
+                Self::validate_socket_path_len(&socket_path)
+                    .and_then(|()| {
+                        Self::create_config_file(&db_dir, &socket_path, &config.db_filename)
+                    })
+                    .map(|config_file| (socket_path, config_file))
+            })
+            .inspect_err(|_| Self::remove_temp_dirs(&temp_dirs))?;
 
         // Capture redis-server's stderr to a log file so a failed module load
         // (wrong arch, missing libomp, redis too old, …) surfaces a real cause
@@ -223,7 +260,12 @@ impl EmbeddedServer {
             .stderr(stderr);
 
         let mut process = command.spawn().map_err(|e| {
-            FalkorDBError::EmbeddedServerError(format!("Failed to start redis-server: {}", e))
+            Self::start_error(
+                &format!("Failed to start redis-server: {e}"),
+                &log_path,
+                &config_file,
+                &temp_dirs,
+            )
         })?;
 
         // Wait for the socket to be created
@@ -244,7 +286,7 @@ impl EmbeddedServer {
                     reason,
                     &log_path,
                     &config_file,
-                    temp_dir.as_deref(),
+                    &temp_dirs,
                 ));
             }
             thread::sleep(Duration::from_millis(100));
@@ -261,7 +303,7 @@ impl EmbeddedServer {
                 "redis-server exited immediately after the socket appeared",
                 &log_path,
                 &config_file,
-                temp_dir.as_deref(),
+                &temp_dirs,
             ));
         }
 
@@ -271,9 +313,15 @@ impl EmbeddedServer {
         Ok(Self {
             process,
             socket_path,
-            temp_dir,
+            temp_dirs,
             config_file,
         })
+    }
+
+    fn remove_temp_dirs(temp_dirs: &[PathBuf]) {
+        for temp_dir in temp_dirs {
+            let _ = fs::remove_dir_all(temp_dir);
+        }
     }
 
     /// Read the last few KiB of the redis-server log for inclusion in a startup
@@ -298,20 +346,18 @@ impl EmbeddedServer {
     }
 
     /// Build a startup error that includes the redis log tail, cleaning up the
-    /// config file, log file and temp dir. The caller is responsible for having
+    /// config file, log file and temp dirs. The caller is responsible for having
     /// already reaped the redis process.
     fn start_error(
         reason: &str,
         log_path: &Path,
         config_file: &Path,
-        temp_dir: Option<&Path>,
+        temp_dirs: &[PathBuf],
     ) -> FalkorDBError {
         let log_tail = Self::read_log_tail(log_path);
         let _ = fs::remove_file(config_file);
         let _ = fs::remove_file(log_path);
-        if let Some(temp_dir) = temp_dir {
-            let _ = fs::remove_dir_all(temp_dir);
-        }
+        Self::remove_temp_dirs(temp_dirs);
         FalkorDBError::EmbeddedServerError(if log_tail.is_empty() {
             reason.to_string()
         } else {
@@ -647,59 +693,50 @@ impl EmbeddedServer {
         }
     }
 
+    /// Returns the socket path, plus the directory created to hold it when neither an explicit
+    /// socket path nor a temp db dir was available; the caller owns removing that directory.
     fn setup_socket_path(
         config: &EmbeddedConfig,
         temp_dir: Option<&Path>,
-    ) -> FalkorResult<PathBuf> {
+    ) -> FalkorResult<(PathBuf, Option<PathBuf>)> {
         if let Some(ref path) = config.socket_path {
-            Ok(path.clone())
+            Ok((path.clone(), None))
         } else if let Some(temp_dir) = temp_dir {
-            Ok(temp_dir.join("falkordb.sock"))
+            Ok((temp_dir.join("falkordb.sock"), None))
         } else {
             // Use the system temp directory for the socket with unique name
             let temp_base = std::env::temp_dir();
-            let instance_id = INSTANCE_COUNTER.fetch_add(1, Ordering::SeqCst);
-            let temp_name = format!(
-                "falkordb_sock_{}_{}_{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis(),
-                instance_id
-            );
-            let temp_dir = temp_base.join(temp_name);
-
-            fs::create_dir_all(&temp_dir).map_err(|e| {
-                FalkorDBError::EmbeddedServerError(format!(
-                    "Failed to create temp directory: {}",
-                    e
-                ))
-            })?;
-
-            // Set restrictive permissions
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = fs::metadata(&temp_dir)
-                    .map_err(|e| {
-                        FalkorDBError::EmbeddedServerError(format!(
-                            "Failed to get directory metadata: {}",
-                            e
-                        ))
-                    })?
-                    .permissions();
-                perms.set_mode(0o700);
-                fs::set_permissions(&temp_dir, perms).map_err(|e| {
-                    FalkorDBError::EmbeddedServerError(format!(
-                        "Failed to set directory permissions: {}",
-                        e
-                    ))
-                })?;
-            }
-
-            Ok(temp_dir.join("falkordb.sock"))
+            Self::create_socket_temp_dir(&temp_base)
         }
+    }
+
+    fn create_socket_temp_dir(temp_base: &Path) -> FalkorResult<(PathBuf, Option<PathBuf>)> {
+        let instance_id = INSTANCE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let temp_name = format!(
+            "falkordb_sock_{}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            instance_id
+        );
+        let temp_dir = temp_base.join(temp_name);
+
+        // Create the directory with 0700 permissions in a single step so a mid-setup
+        // failure cannot leave an unremoved temp directory behind.
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&temp_dir)
+            .map_err(|e| {
+                FalkorDBError::EmbeddedServerError(format!("Failed to create temp directory: {e}"))
+            })
+            .map(|()| {
+                #[cfg(test)]
+                LAST_SOCKET_TEMP_DIR.set(Some(temp_dir.clone()));
+                (temp_dir.join("falkordb.sock"), Some(temp_dir))
+            })
     }
 
     fn create_config_file(
@@ -708,6 +745,7 @@ impl EmbeddedServer {
         db_filename: &str,
     ) -> FalkorResult<PathBuf> {
         let config_path = db_dir.join("falkordb.conf");
+        // redis splits each directive on whitespace, so every value is quoted.
         let config_content = format!(
             r#"
 # FalkorDB Embedded Server Configuration
@@ -719,9 +757,9 @@ dbfilename {}
 save ""
 appendonly no
 "#,
-            socket_path.display(),
-            db_dir.display(),
-            db_filename
+            quote_config_arg(socket_path.as_os_str().as_bytes()),
+            quote_config_arg(db_dir.as_os_str().as_bytes()),
+            quote_config_arg(db_filename.as_bytes())
         );
 
         fs::write(&config_path, config_content).map_err(|e| {
@@ -746,10 +784,8 @@ impl Drop for EmbeddedServer {
             let _ = fs::remove_file(&self.socket_path);
         }
 
-        // Finally, clean up the temporary directory (which may contain config and socket)
-        if let Some(ref temp_dir) = self.temp_dir {
-            let _ = fs::remove_dir_all(temp_dir);
-        }
+        // Finally, clean up the temporary directories (which may contain config and socket)
+        Self::remove_temp_dirs(&self.temp_dirs);
     }
 }
 
@@ -913,7 +949,7 @@ mod tests {
 
         let result = EmbeddedServer::setup_socket_path(&config, None);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), socket_path);
+        assert_eq!(result.unwrap(), (socket_path, None));
     }
 
     #[test]
@@ -929,8 +965,12 @@ mod tests {
         let result = EmbeddedServer::setup_socket_path(&config, Some(&temp_dir));
         assert!(result.is_ok());
 
-        let socket_path = result.unwrap();
+        let (socket_path, socket_dir) = result.unwrap();
         assert_eq!(socket_path, temp_dir.join("falkordb.sock"));
+        assert!(
+            socket_dir.is_none(),
+            "the db temp dir is already cleaned up"
+        );
 
         // Cleanup
         let _ = fs::remove_dir_all(&temp_dir);
@@ -946,13 +986,22 @@ mod tests {
         let result = EmbeddedServer::setup_socket_path(&config, None);
         assert!(result.is_ok());
 
-        let socket_path = result.unwrap();
+        let (socket_path, socket_dir) = result.unwrap();
         assert!(socket_path.to_string_lossy().contains("falkordb_sock_"));
+        // The created dir is handed back so the server can remove it.
+        let socket_dir = socket_dir.expect("the created socket dir is returned");
+        assert_eq!(socket_path.parent(), Some(socket_dir.as_path()));
 
         // Cleanup
-        if let Some(parent) = socket_path.parent() {
-            let _ = fs::remove_dir_all(parent);
-        }
+        let _ = fs::remove_dir_all(&socket_dir);
+
+        // Creating under a regular file must fail without leaving a directory behind.
+        let file_base = std::env::temp_dir().join(format!("test_sock_file_{}", std::process::id()));
+        fs::write(&file_base, b"not a directory").unwrap();
+        let err = EmbeddedServer::create_socket_temp_dir(&file_base)
+            .expect_err("creating a temp dir under a file should fail");
+        assert!(err.to_string().contains("Failed to create temp directory"));
+        let _ = fs::remove_file(&file_base);
     }
 
     #[test]
@@ -973,13 +1022,91 @@ mod tests {
         // Verify content
         let content = fs::read_to_string(&config_path).unwrap();
         assert!(content.contains("port 0"));
-        assert!(content.contains(&socket_path.display().to_string()));
-        assert!(content.contains(&temp_dir.display().to_string()));
-        assert!(content.contains(db_filename));
+        assert!(content.contains(&format!(
+            "unixsocket {}",
+            quote_config_arg(socket_path.as_os_str().as_bytes())
+        )));
+        assert!(content.contains(&format!(
+            "dir {}",
+            quote_config_arg(temp_dir.as_os_str().as_bytes())
+        )));
+        assert!(content.contains(&format!(
+            "dbfilename {}",
+            quote_config_arg(db_filename.as_bytes())
+        )));
         assert!(content.contains("unixsocketperm 700"));
         assert!(content.contains("appendonly no"));
 
         // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_create_socket_from_config_reads_plain_quoted_path() {
+        let dir = std::env::temp_dir().join(format!("test_sock_cfg {}", std::process::id()));
+        if !quoted_verbatim(&dir) {
+            return;
+        }
+        fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join("falkor db.sock");
+        let config = EmbeddedServer::create_config_file(&dir, &socket_path, "x.rdb").unwrap();
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(CREATE_SOCKET_FROM_CONFIG)
+            .arg("sh")
+            .arg(&config)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            socket_path.exists(),
+            "the snippet should create the socket path"
+        );
+        assert!(!quoted_verbatim(Path::new("/tmp/a\"b")));
+        assert!(!quoted_verbatim(Path::new("/tmp/caf\u{e9}")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_quote_config_arg() {
+        assert_eq!(quote_config_arg(b"plain"), r#""plain""#);
+        assert_eq!(quote_config_arg(b"with spaces"), r#""with spaces""#);
+        assert_eq!(quote_config_arg(br#"a"b\c"#), r#""a\"b\\c""#);
+        // A newline can't start a new directive, and non-UTF-8 bytes survive.
+        assert_eq!(quote_config_arg(b"x\nsave 1 1"), r#""x\x0asave 1 1""#);
+        assert_eq!(quote_config_arg(b"\xff\t"), r#""\xff\x09""#);
+    }
+
+    #[test]
+    fn test_create_config_file_quotes_paths_with_spaces() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "test_cfg falkor dir with spaces {}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let socket_path = temp_dir.join("falkor.sock");
+
+        let config_path =
+            EmbeddedServer::create_config_file(&temp_dir, &socket_path, "my db.rdb").unwrap();
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains(&format!(
+            "unixsocket {}",
+            quote_config_arg(socket_path.as_os_str().as_bytes())
+        )));
+        assert!(content.contains(&format!(
+            "dir {}",
+            quote_config_arg(temp_dir.as_os_str().as_bytes())
+        )));
+        assert!(content.contains("dbfilename \"my db.rdb\""));
+
+        // A newline in a value is escaped, so it can't inject another directive.
+        EmbeddedServer::create_config_file(&temp_dir, &socket_path, "evil\nappendonly yes")
+            .unwrap();
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains(r#"dbfilename "evil\x0aappendonly yes""#));
+        assert!(!content.lines().any(|line| line == "appendonly yes"));
+
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
@@ -1175,6 +1302,171 @@ mod tests {
         fake
     }
 
+    /// Fake-server shell snippet that creates the (quoted) `unixsocket` path from the config.
+    /// It takes the quoted value verbatim and does not decode escapes, so tests using it must
+    /// first check [`quoted_verbatim`] for the directories the socket path is built from.
+    #[cfg(unix)]
+    const CREATE_SOCKET_FROM_CONFIG: &str =
+        "sock=$(sed -n 's/^unixsocket \"\\(.*\\)\"$/\\1/p' \"$1\"); [ -n \"$sock\" ] && : > \"$sock\"";
+
+    /// Whether `quote_config_arg` writes `path` without escapes, i.e. whether
+    /// [`CREATE_SOCKET_FROM_CONFIG`] reads it back unchanged.
+    #[cfg(unix)]
+    fn quoted_verbatim(path: &Path) -> bool {
+        !quote_config_arg(path.as_os_str().as_bytes()).contains('\\')
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_start_cleans_up_temp_dirs_on_config_creation_failure() {
+        // Startup checks for libomp before accepting the fake module; skip if it is absent.
+        #[cfg(target_os = "macos")]
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("test_redis_cfgfail_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let fake_redis = write_fake_redis(&dir, "Redis server v=8.0.0 sha=0", "exit 0");
+        let fake_module = dir.join("falkordb.so");
+        fs::write(&fake_module, b"\0fake module").unwrap();
+        let db_dir = dir.join("custom db");
+        // Make `falkordb.conf` a directory so `create_config_file` fails with EISDIR.
+        fs::create_dir_all(db_dir.join("falkordb.conf")).unwrap();
+        LAST_SOCKET_TEMP_DIR.set(None);
+
+        let err = EmbeddedServer::start(EmbeddedConfig {
+            redis_server_path: Some(fake_redis),
+            falkordb_module_path: Some(fake_module),
+            auto_download: false,
+            db_dir: Some(db_dir.clone()),
+            socket_path: None,
+            start_timeout: Duration::from_secs(10),
+            ..Default::default()
+        })
+        .err()
+        .expect("start should fail when config file cannot be written");
+        assert!(
+            err.to_string().contains("Failed to write config file"),
+            "unexpected error: {err}"
+        );
+        let socket_dir = LAST_SOCKET_TEMP_DIR
+            .take()
+            .expect("create_socket_temp_dir should have recorded the socket temp dir");
+        assert!(
+            !socket_dir.exists(),
+            "the auto-created socket dir must be removed when config creation fails"
+        );
+        assert!(db_dir.exists(), "a caller-provided db_dir must be kept");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_start_cleans_up_on_spawn_failure() {
+        // Startup checks for libomp before accepting the fake module; skip if it is absent.
+        #[cfg(target_os = "macos")]
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("test_redis_spawnfail_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // When invoked with `--version`, the script prints a valid version and removes itself so
+        // the subsequent `command.spawn()` for the server fails with ENOENT.
+        let fake_redis = write_fake_redis(
+            &dir,
+            "Redis server v=8.0.0 sha=0'; rm -f \"$0\"; '",
+            "exit 0",
+        );
+        let fake_module = dir.join("falkordb.so");
+        fs::write(&fake_module, b"\0fake module").unwrap();
+        let db_dir = dir.join("custom db");
+        fs::create_dir_all(&db_dir).unwrap();
+        LAST_SOCKET_TEMP_DIR.set(None);
+
+        let err = EmbeddedServer::start(EmbeddedConfig {
+            redis_server_path: Some(fake_redis),
+            falkordb_module_path: Some(fake_module),
+            auto_download: false,
+            db_dir: Some(db_dir.clone()),
+            socket_path: None,
+            start_timeout: Duration::from_secs(10),
+            ..Default::default()
+        })
+        .err()
+        .expect("start should fail when spawn fails");
+        assert!(
+            err.to_string().contains("Failed to start redis-server"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !db_dir.join("falkordb.conf").exists(),
+            "config file should be removed when spawn fails"
+        );
+        let socket_dir = LAST_SOCKET_TEMP_DIR
+            .take()
+            .expect("create_socket_temp_dir should have recorded the socket temp dir");
+        assert!(
+            !socket_dir.exists(),
+            "the auto-created socket dir must be removed when spawn fails"
+        );
+        assert!(db_dir.exists(), "a caller-provided db_dir must be kept");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_custom_db_dir_without_socket_path_cleans_up_socket_dir_on_drop() {
+        // Startup checks for libomp before accepting the fake module; skip if it is absent.
+        #[cfg(target_os = "macos")]
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
+        // The socket goes under the system temp dir, which the fake server must read back as is.
+        if !quoted_verbatim(&std::env::temp_dir()) {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("test_redis_sockdir_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // Server mode: create the socket from the config, then stay up until killed.
+        let fake_redis = write_fake_redis(
+            &dir,
+            "Redis server v=8.0.0 sha=0",
+            &format!("{CREATE_SOCKET_FROM_CONFIG}; exec sleep 30"),
+        );
+        let fake_module = dir.join("falkordb.so");
+        fs::write(&fake_module, b"\0fake module").unwrap();
+        let db_dir = dir.join("custom db");
+
+        let server = EmbeddedServer::start(EmbeddedConfig {
+            redis_server_path: Some(fake_redis),
+            falkordb_module_path: Some(fake_module),
+            auto_download: false,
+            db_dir: Some(db_dir.clone()),
+            socket_path: None,
+            start_timeout: Duration::from_secs(10),
+            ..Default::default()
+        })
+        .expect("fake server should start");
+        let socket_dir = server.socket_path().parent().unwrap().to_path_buf();
+        assert!(socket_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("falkordb_sock_"));
+        assert!(socket_dir.exists());
+
+        drop(server);
+        assert!(
+            !socket_dir.exists(),
+            "the auto-created socket dir must be removed on drop"
+        );
+        assert!(db_dir.exists(), "a caller-provided db_dir must be kept");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     #[cfg(unix)]
     fn test_start_rejects_old_redis_version() {
@@ -1249,6 +1541,10 @@ mod tests {
         if provision::check_macos_libomp().is_err() {
             return;
         }
+        // The socket goes under the system temp dir, which the fake server must read back as is.
+        if !quoted_verbatim(&std::env::temp_dir()) {
+            return;
+        }
 
         let dir = std::env::temp_dir().join(format!("test_redis_sockdie_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -1257,7 +1553,7 @@ mod tests {
         let fake_redis = write_fake_redis(
             &dir,
             "Redis server v=8.0.0 sha=0",
-            "sock=$(awk '/^unixsocket /{print $2}' \"$1\"); [ -n \"$sock\" ] && : > \"$sock\"; exit 0",
+            &format!("{CREATE_SOCKET_FROM_CONFIG}; exit 0"),
         );
         let fake_module = dir.join("falkordb.so");
         fs::write(&fake_module, b"\0fake module").unwrap();
@@ -1383,11 +1679,11 @@ mod tests {
             "Config should set socket permissions"
         );
         assert!(
-            content.contains(&temp_dir.display().to_string()),
+            content.contains(&quote_config_arg(temp_dir.as_os_str().as_bytes())),
             "Config should contain db dir"
         );
         assert!(
-            content.contains(db_filename),
+            content.contains(&quote_config_arg(db_filename.as_bytes())),
             "Config should contain db filename"
         );
         assert!(
@@ -1472,13 +1768,12 @@ mod tests {
 
         let result = EmbeddedServer::setup_socket_path(&config, None);
         assert!(result.is_ok());
-        let path = result.unwrap();
+        let (path, socket_dir) = result.unwrap();
         assert!(path.to_string_lossy().contains("falkordb_sock_"));
 
         // Cleanup
-        if let Some(parent) = path.parent() {
-            let _ = fs::remove_dir_all(parent);
-        }
+        let socket_dir = socket_dir.expect("the created socket dir is returned");
+        let _ = fs::remove_dir_all(socket_dir);
     }
 
     #[test]

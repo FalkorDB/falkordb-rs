@@ -41,6 +41,13 @@ const MAX_SOCKET_PATH_LENGTH: usize = 104;
 const MODULE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 // Counter for ensuring unique temp directories across multiple instances
+#[cfg(test)]
+use std::cell::Cell;
+#[cfg(test)]
+thread_local! {
+    static LAST_SOCKET_TEMP_DIR: Cell<Option<PathBuf>> = const { Cell::new(None) };
+}
+
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Configuration for an embedded FalkorDB server instance.
@@ -725,7 +732,11 @@ impl EmbeddedServer {
             .map_err(|e| {
                 FalkorDBError::EmbeddedServerError(format!("Failed to create temp directory: {e}"))
             })
-            .map(|()| (temp_dir.join("falkordb.sock"), Some(temp_dir)))
+            .map(|()| {
+                #[cfg(test)]
+                LAST_SOCKET_TEMP_DIR.set(Some(temp_dir.clone()));
+                (temp_dir.join("falkordb.sock"), Some(temp_dir))
+            })
     }
 
     fn create_config_file(
@@ -1322,12 +1333,13 @@ mod tests {
         let db_dir = dir.join("custom db");
         // Make `falkordb.conf` a directory so `create_config_file` fails with EISDIR.
         fs::create_dir_all(db_dir.join("falkordb.conf")).unwrap();
+        LAST_SOCKET_TEMP_DIR.set(None);
 
         let err = EmbeddedServer::start(EmbeddedConfig {
             redis_server_path: Some(fake_redis),
             falkordb_module_path: Some(fake_module),
             auto_download: false,
-            db_dir: Some(db_dir),
+            db_dir: Some(db_dir.clone()),
             socket_path: None,
             start_timeout: Duration::from_secs(10),
             ..Default::default()
@@ -1338,6 +1350,14 @@ mod tests {
             err.to_string().contains("Failed to write config file"),
             "unexpected error: {err}"
         );
+        let socket_dir = LAST_SOCKET_TEMP_DIR
+            .take()
+            .expect("create_socket_temp_dir should have recorded the socket temp dir");
+        assert!(
+            !socket_dir.exists(),
+            "the auto-created socket dir must be removed when config creation fails"
+        );
+        assert!(db_dir.exists(), "a caller-provided db_dir must be kept");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1363,6 +1383,7 @@ mod tests {
         fs::write(&fake_module, b"\0fake module").unwrap();
         let db_dir = dir.join("custom db");
         fs::create_dir_all(&db_dir).unwrap();
+        LAST_SOCKET_TEMP_DIR.set(None);
 
         let err = EmbeddedServer::start(EmbeddedConfig {
             redis_server_path: Some(fake_redis),
@@ -1383,6 +1404,14 @@ mod tests {
             !db_dir.join("falkordb.conf").exists(),
             "config file should be removed when spawn fails"
         );
+        let socket_dir = LAST_SOCKET_TEMP_DIR
+            .take()
+            .expect("create_socket_temp_dir should have recorded the socket temp dir");
+        assert!(
+            !socket_dir.exists(),
+            "the auto-created socket dir must be removed when spawn fails"
+        );
+        assert!(db_dir.exists(), "a caller-provided db_dir must be kept");
         let _ = fs::remove_dir_all(&dir);
     }
 

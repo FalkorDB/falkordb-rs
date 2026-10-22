@@ -104,8 +104,9 @@ impl AsyncGraph {
             let seen = self.generations();
             let attempt = raw.clone();
             let (result, missing) = {
-                let mut schema = self.graph_schema.write();
-                schema.take_missing();
+                // Acquire only a shared read lock and clone the Arc-backed schema snapshot so
+                // concurrent readers never serialize behind an exclusive write lock.
+                let mut schema = self.graph_schema.read().snapshot();
                 let result = parse(attempt, &mut schema);
                 (result, schema.take_missing())
             };
@@ -123,15 +124,14 @@ impl AsyncGraph {
                 let fetched = match self.refresh_schema(schema_type, seen).await {
                     Ok(fetched) => fetched,
                     Err(refresh_err) => {
-                        // Parse once more with the failure recorded, so the rows / batch items that
-                        // needed the schema carry it, while the others keep their results.
+                        // Parse once more with the failure recorded on a local snapshot, so the
+                        // rows / batch items that needed the schema carry it, while the others
+                        // keep their results.
                         let result = {
-                            let mut schema = self.graph_schema.write();
+                            let mut schema = self.graph_schema.read().snapshot();
                             schema
                                 .set_refresh_failure(Some((schema_type, refresh_err.to_string())));
-                            let result = parse(raw, &mut schema);
-                            schema.set_refresh_failure(None);
-                            result
+                            parse(raw, &mut schema)
                         };
                         return result.map_err(|_| refresh_err);
                     }
@@ -812,6 +812,52 @@ mod tests {
         for task in tasks {
             assert_eq!(task.await.unwrap().unwrap(), "ConcurrentSeed");
         }
+        let _ = handle.inner.delete().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_parse_with_schema_uses_read_lock_when_cached() {
+        // When all schema ids are already cached, `parse_with_schema` must only acquire a read
+        // lock so concurrent readers never block each other.
+        let mut handle = open_empty_async_test_graph("parse_with_schema_read_lock").await;
+        handle
+            .inner
+            .query("CREATE (:CachedSeed)")
+            .execute()
+            .await
+            .expect("seed the graph");
+        // Warm the schema cache for label 0.
+        let _ = handle
+            .inner
+            .parse_with_schema((), |_, schema| {
+                schema.parse_single_id(0, SchemaType::Labels)
+            })
+            .await
+            .unwrap();
+
+        let graph = handle.inner.clone();
+        let schema_lock = Arc::clone(&handle.inner.graph_schema);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _read_guard = schema_lock.read();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        locked_rx.recv().unwrap();
+
+        let resolved = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            graph.parse_with_schema((), |_, schema| {
+                schema.parse_single_id(0, SchemaType::Labels)
+            }),
+        )
+        .await
+        .expect("parse_with_schema must not block on a held read guard")
+        .unwrap();
+        assert_eq!(resolved, "CachedSeed");
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
         let _ = handle.inner.delete().await;
     }
 

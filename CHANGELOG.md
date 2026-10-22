@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to start or inject extra directives, and clean up the auto-created `falkordb_sock_*` temporary
   directory on startup failure and on drop when a custom `db_dir` is used without an explicit
   `socket_path` ([#396](https://github.com/FalkorDB/falkordb-rs/pull/396))
+- Decode `RowStream` rows lazily on demand inside `poll_next` (and `into_values_lossy`) instead
+  of eagerly parsing every row into a `Row` during `execute().await`, and snapshot `GraphSchema`
+  under a shared read lock in `AsyncGraph::parse_with_schema` so concurrent async queries no
+  longer serialize behind an exclusive write lock when the schema cache is warm
+  ([#398](https://github.com/FalkorDB/falkordb-rs/pull/398))
 - Propagate element parse errors in `parse_config_hashmap`, `redis_value_as_untyped_string_vec`,
   and index field-type parsing (`parse_types_map`) instead of silently dropping malformed entries
   via `Iterator::flat_map` over `Result`

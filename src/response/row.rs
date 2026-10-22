@@ -212,32 +212,42 @@ impl FromIterator<(String, FalkorValue)> for Row {
     }
 }
 
-/// Parses every raw row of a query reply into a [`Row`], resolving compact ids against
-/// `graph_schema` (refreshing it once on a cache miss). Per-row parse failures are surfaced as `Err`
-/// items rather than aborting the whole set, so callers choose whether to keep going
-/// ([`RowStream`](crate::RowStream)) or collapse to the first error (the batch API).
+/// Parses a single raw row of a query reply into a [`Row`], resolving compact ids against
+/// `graph_schema` (refreshing it once on a cache miss).
 ///
-/// Shared by [`RowStream::parse`](crate::RowStream) (async, lazy-yielding) and the batch builder
-/// (eager `Vec<Row>`), so the row-decoding logic lives in exactly one place.
-pub(crate) fn parse_rows(
-    header: Arc<[String]>,
-    raw_rows: Vec<redis::Value>,
+/// Shared by [`LazyResultSet`](crate::LazyResultSet), [`RowStream`](crate::RowStream), and
+/// [`parse_rows`] (the batch API), so the row-decoding logic lives in one place.
+pub(crate) fn parse_row(
+    header: &Arc<[String]>,
+    raw: redis::Value,
     graph_schema: &mut crate::GraphSchema,
-) -> Vec<FalkorResult<Row>> {
+) -> FalkorResult<Row> {
     use crate::parser::{parse_type, ParserTypeMarker};
-    raw_rows
-        .into_iter()
-        .map(|raw| {
-            let values = parse_type(ParserTypeMarker::Array, raw, graph_schema)
-                .and_then(FalkorValue::into_vec)?;
+    parse_type(ParserTypeMarker::Array, raw, graph_schema)
+        .and_then(FalkorValue::into_vec)
+        .and_then(|values| {
             if values.len() != header.len() {
                 return Err(FalkorDBError::RowShapeMismatch {
                     header_len: header.len(),
                     value_len: values.len(),
                 });
             }
-            Ok(Row::new(Arc::clone(&header), values))
+            Ok(Row::new(Arc::clone(header), values))
         })
+}
+
+/// Parses every raw row of a query reply into a [`Row`], resolving compact ids against
+/// `graph_schema` (refreshing it once on a cache miss). Per-row parse failures are surfaced as `Err`
+/// items rather than aborting the whole set, so the batch builder can collapse to the first error
+/// after resolving any schema misses.
+pub(crate) fn parse_rows(
+    header: Arc<[String]>,
+    raw_rows: Vec<redis::Value>,
+    graph_schema: &mut crate::GraphSchema,
+) -> Vec<FalkorResult<Row>> {
+    raw_rows
+        .into_iter()
+        .map(|raw| parse_row(&header, raw, graph_schema))
         .collect()
 }
 

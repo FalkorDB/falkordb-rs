@@ -85,9 +85,9 @@ pub struct GraphSchema {
     refresh_failure: Option<(SchemaType, String)>,
     graph_name: String,
     version: i64,
-    labels: IdMap,
-    properties: IdMap,
-    relationships: IdMap,
+    labels: Arc<IdMap>,
+    properties: Arc<IdMap>,
+    relationships: Arc<IdMap>,
 }
 
 impl GraphSchema {
@@ -113,18 +113,18 @@ impl GraphSchema {
             refresh_failure: None,
             graph_name: graph_name.to_string(),
             version: 0,
-            labels: IdMap::new(),
-            properties: IdMap::new(),
-            relationships: IdMap::new(),
+            labels: Arc::new(IdMap::new()),
+            properties: Arc::new(IdMap::new()),
+            relationships: Arc::new(IdMap::new()),
         }
     }
 
     /// Clears all cached schemas, this will cause a refresh when next attempting to parse a compact query.
     pub fn clear(&mut self) {
         self.version = 0;
-        self.labels.clear();
-        self.properties.clear();
-        self.relationships.clear();
+        self.labels = Arc::new(IdMap::new());
+        self.properties = Arc::new(IdMap::new());
+        self.relationships = Arc::new(IdMap::new());
     }
 
     /// Returns a read-write-locked map, of the relationship ids to their respective string representations.
@@ -154,6 +154,148 @@ impl GraphSchema {
             SchemaType::Labels => &self.labels,
             SchemaType::Properties => &self.properties,
             SchemaType::Relationships => &self.relationships,
+        }
+    }
+
+    /// Returns a cheap, isolated in-memory clone of the current id maps (`Arc` refcount bumps)
+    /// with fresh `missing` / `refresh_failure` state, suitable for read-lock parsing or storing
+    /// inside an owned [`RowStream`](crate::RowStream).
+    #[cfg(feature = "tokio")]
+    pub(crate) fn snapshot(&self) -> Self {
+        Self {
+            client: None,
+            missing: Vec::new(),
+            refresh_failure: self.refresh_failure.clone(),
+            graph_name: self.graph_name.clone(),
+            version: self.version,
+            labels: Arc::clone(&self.labels),
+            properties: Arc::clone(&self.properties),
+            relationships: Arc::clone(&self.relationships),
+        }
+    }
+
+    /// Pre-scans `raw_rows` and touches every compact schema id (node labels, edge relationship
+    /// types, and entity property keys) so any missing schema type is recorded (or refreshed on a
+    /// sync schema) without allocating decoded [`FalkorValue`]s or [`Row`](crate::Row)s.
+    ///
+    /// Malformed values are skipped here so they surface lazily when the individual row is decoded.
+    #[cfg(feature = "tokio")]
+    pub(crate) fn scan_rows_for_missing_ids(
+        &mut self,
+        raw_rows: &[redis::Value],
+    ) {
+        for row in raw_rows {
+            if let redis::Value::Array(cells) = row {
+                for cell in cells {
+                    self.scan_typed_value(cell);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    fn scan_typed_value(
+        &mut self,
+        value: &redis::Value,
+    ) {
+        if let redis::Value::Array(pair) = value {
+            if let [redis::Value::Int(marker), val] = pair.as_slice() {
+                if let Ok(type_marker) = ParserTypeMarker::try_from(*marker) {
+                    self.scan_value_by_type(type_marker, val);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    fn scan_value_by_type(
+        &mut self,
+        type_marker: ParserTypeMarker,
+        val: &redis::Value,
+    ) {
+        match type_marker {
+            ParserTypeMarker::Array => {
+                if let redis::Value::Array(items) = val {
+                    for item in items {
+                        self.scan_typed_value(item);
+                    }
+                }
+            }
+            ParserTypeMarker::Map => {
+                if let redis::Value::Array(items) = val {
+                    for pair in items.chunks_exact(2) {
+                        self.scan_typed_value(&pair[1]);
+                    }
+                }
+            }
+            ParserTypeMarker::Node => self.scan_node(val),
+            ParserTypeMarker::Edge => self.scan_edge(val),
+            ParserTypeMarker::Path => {
+                if let redis::Value::Array(parts) = val {
+                    if let [redis::Value::Array(nodes), redis::Value::Array(edges)] =
+                        parts.as_slice()
+                    {
+                        for node in nodes {
+                            self.scan_node(node);
+                        }
+                        for edge in edges {
+                            self.scan_edge(edge);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    fn scan_node(
+        &mut self,
+        val: &redis::Value,
+    ) {
+        if let redis::Value::Array(parts) = val {
+            if let [_, redis::Value::Array(labels), properties] = parts.as_slice() {
+                for label in labels {
+                    if let redis::Value::Int(id) = label {
+                        let _ = self.parse_single_id(*id, SchemaType::Labels);
+                    }
+                }
+                self.scan_properties(properties);
+            }
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    fn scan_edge(
+        &mut self,
+        val: &redis::Value,
+    ) {
+        if let redis::Value::Array(parts) = val {
+            if let [_, redis::Value::Int(rel_id), _, _, properties] = parts.as_slice() {
+                let _ = self.parse_single_id(*rel_id, SchemaType::Relationships);
+                self.scan_properties(properties);
+            }
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    fn scan_properties(
+        &mut self,
+        val: &redis::Value,
+    ) {
+        if let redis::Value::Array(props) = val {
+            for prop in props {
+                if let redis::Value::Array(triple) = prop {
+                    if let [redis::Value::Int(key_id), redis::Value::Int(marker), prop_val] =
+                        triple.as_slice()
+                    {
+                        let _ = self.parse_single_id(*key_id, SchemaType::Properties);
+                        if let Ok(type_marker) = ParserTypeMarker::try_from(*marker) {
+                            self.scan_value_by_type(type_marker, prop_val);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -216,7 +358,7 @@ impl GraphSchema {
             SchemaType::Labels => &mut self.labels,
             SchemaType::Properties => &mut self.properties,
             SchemaType::Relationships => &mut self.relationships,
-        } = new_keys;
+        } = Arc::new(new_keys);
         Ok(())
     }
 
@@ -348,16 +490,22 @@ pub(crate) mod tests {
 
         {
             let schema = graph.get_graph_schema_mut();
-            schema.properties = HashMap::from([
+            schema.properties = Arc::new(HashMap::from([
                 (0, "age".to_string()),
                 (1, "is_boring".to_string()),
                 (2, "something_else".to_string()),
                 (3, "secs_since_login".to_string()),
-            ]);
+            ]));
 
-            schema.labels = HashMap::from([(0, "much".to_string()), (1, "actor".to_string())]);
+            schema.labels = Arc::new(HashMap::from([
+                (0, "much".to_string()),
+                (1, "actor".to_string()),
+            ]));
 
-            schema.relationships = HashMap::from([(0, "very".to_string()), (1, "wow".to_string())]);
+            schema.relationships = Arc::new(HashMap::from([
+                (0, "very".to_string()),
+                (1, "wow".to_string()),
+            ]));
         }
 
         graph
@@ -366,7 +514,7 @@ pub(crate) mod tests {
     #[test]
     fn test_in_memory_schema_records_missing_without_io() {
         let mut schema = GraphSchema::new_in_memory("graph_name");
-        schema.labels = HashMap::from([(0, "known".to_string())]);
+        schema.labels = Arc::new(HashMap::from([(0, "known".to_string())]));
 
         assert_eq!(
             schema.parse_single_id(0, SchemaType::Labels).unwrap(),
@@ -506,11 +654,11 @@ pub(crate) mod tests {
     fn test_parse_properties_map() {
         let mut parser =
             GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());
-        parser.properties = HashMap::from([
+        parser.properties = Arc::new(HashMap::from([
             (1, "property1".to_string()),
             (2, "property2".to_string()),
             (3, "property3".to_string()),
-        ]);
+        ]));
 
         // Create a FalkorValue to test
         let input_value = redis::Value::Array(vec![
@@ -549,11 +697,11 @@ pub(crate) mod tests {
         let mut parser =
             GraphSchema::new("graph_name".to_string(), create_empty_inner_sync_client());
 
-        parser.labels = HashMap::from([
+        parser.labels = Arc::new(HashMap::from([
             (1, "property1".to_string()),
             (2, "property2".to_string()),
             (3, "property3".to_string()),
-        ]);
+        ]));
 
         let labels_ok_res = parser.parse_id_vec(
             vec![
@@ -582,11 +730,11 @@ pub(crate) mod tests {
 
         parser.clear();
 
-        parser.relationships = HashMap::from([
+        parser.relationships = Arc::new(HashMap::from([
             (1, "property4".to_string()),
             (2, "property5".to_string()),
             (3, "property6".to_string()),
-        ]);
+        ]));
 
         let rels_ok_res = parser.parse_id_vec(
             vec![
@@ -605,5 +753,91 @@ pub(crate) mod tests {
                 "property5".to_string()
             ]
         )
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_scan_rows_for_missing_ids_covers_nested_shapes_and_ignores_malformed() {
+        let mut schema = GraphSchema::new_in_memory("graph_name");
+        let node = redis::Value::Array(vec![
+            redis::Value::Int(1),
+            redis::Value::Array(vec![redis::Value::Int(10), redis::Value::Nil]),
+            redis::Value::Array(vec![
+                redis::Value::Array(vec![
+                    redis::Value::Int(20),
+                    redis::Value::Int(8),
+                    redis::Value::Array(vec![
+                        redis::Value::Int(2),
+                        redis::Value::Array(vec![redis::Value::Int(11)]),
+                        redis::Value::Array(vec![]),
+                    ]),
+                ]),
+                redis::Value::Array(vec![
+                    redis::Value::Int(21),
+                    redis::Value::Int(999),
+                    redis::Value::Nil,
+                ]),
+                redis::Value::Array(vec![redis::Value::Int(1)]),
+                redis::Value::Nil,
+            ]),
+        ]);
+        let edge = redis::Value::Array(vec![
+            redis::Value::Int(1),
+            redis::Value::Int(30),
+            redis::Value::Int(1),
+            redis::Value::Int(2),
+            redis::Value::Nil,
+        ]);
+        let path = redis::Value::Array(vec![
+            redis::Value::Array(vec![node.clone(), redis::Value::Nil]),
+            redis::Value::Array(vec![edge.clone(), redis::Value::Array(vec![])]),
+        ]);
+        let rows = vec![
+            redis::Value::Nil,
+            redis::Value::Array(vec![
+                redis::Value::Nil,
+                redis::Value::Array(vec![redis::Value::Int(1)]),
+                redis::Value::Array(vec![redis::Value::Int(999), redis::Value::Nil]),
+                redis::Value::Array(vec![redis::Value::Int(3), redis::Value::Int(42)]),
+                redis::Value::Array(vec![redis::Value::Int(6), redis::Value::Nil]),
+                redis::Value::Array(vec![
+                    redis::Value::Int(6),
+                    redis::Value::Array(vec![redis::Value::Array(vec![
+                        redis::Value::Int(8),
+                        node,
+                    ])]),
+                ]),
+                redis::Value::Array(vec![redis::Value::Int(10), redis::Value::Nil]),
+                redis::Value::Array(vec![
+                    redis::Value::Int(10),
+                    redis::Value::Array(vec![
+                        redis::Value::SimpleString("k".to_string()),
+                        redis::Value::Array(vec![redis::Value::Int(7), edge]),
+                    ]),
+                ]),
+                redis::Value::Array(vec![redis::Value::Int(9), redis::Value::Nil]),
+                redis::Value::Array(vec![
+                    redis::Value::Int(9),
+                    redis::Value::Array(vec![redis::Value::Nil]),
+                ]),
+                redis::Value::Array(vec![redis::Value::Int(9), path]),
+                redis::Value::Array(vec![
+                    redis::Value::Int(8),
+                    redis::Value::Array(vec![redis::Value::Int(1)]),
+                ]),
+                redis::Value::Array(vec![redis::Value::Int(8), redis::Value::Nil]),
+                redis::Value::Array(vec![redis::Value::Int(7), redis::Value::Nil]),
+            ]),
+        ];
+
+        schema.scan_rows_for_missing_ids(&rows);
+        assert_eq!(
+            schema.take_missing(),
+            vec![
+                SchemaType::Labels,
+                SchemaType::Properties,
+                SchemaType::Relationships
+            ]
+        );
     }
 }

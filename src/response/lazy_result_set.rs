@@ -4,7 +4,7 @@
  */
 
 use crate::parser::ParserTypeMarker;
-use crate::{parser::parse_type, FalkorDBError, FalkorResult, FalkorValue, GraphSchema, Row};
+use crate::{parser::parse_type, FalkorResult, FalkorValue, GraphSchema, Row};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -69,19 +69,11 @@ impl Iterator for LazyResultSet<'_> {
     )]
     fn next(&mut self) -> Option<Self::Item> {
         let current_result = self.data.pop_front()?;
-        let parsed = parse_type(ParserTypeMarker::Array, current_result, self.graph_schema)
-            .and_then(FalkorValue::into_vec);
-        Some(parsed.and_then(|values| {
-            // The server returns exactly one value per header column; a mismatch means a malformed
-            // result, so reject it loudly rather than silently zipping to the shorter length.
-            if values.len() != self.header.len() {
-                return Err(FalkorDBError::RowShapeMismatch {
-                    header_len: self.header.len(),
-                    value_len: values.len(),
-                });
-            }
-            Ok(Row::new(Arc::clone(&self.header), values))
-        }))
+        Some(crate::response::row::parse_row(
+            &self.header,
+            current_result,
+            self.graph_schema,
+        ))
     }
 }
 

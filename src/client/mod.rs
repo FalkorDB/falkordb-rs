@@ -187,17 +187,30 @@ impl FalkorClientProvider {
         connect_timeout: Option<std::time::Duration>,
     ) -> redis::RedisResult<redis::Connection> {
         match connect_timeout {
-            #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+            #[cfg(all(
+                any(feature = "native-tls", feature = "tokio-native-tls"),
+                not(any(feature = "rustls", feature = "tokio-rustls"))
+            ))]
             Some(timeout) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 client.get_connection_with_timeout(timeout)
             }))
-            .unwrap_or_else(|_| {
+            .unwrap_or_else(|payload| {
+                let detail = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("TLS handshake failed")
+                    .to_string();
                 Err(redis::RedisError::from((
                     redis::ErrorKind::Io,
                     "SSL Handshake error",
+                    detail,
                 )))
             }),
-            #[cfg(not(all(feature = "native-tls", not(feature = "rustls"))))]
+            #[cfg(not(all(
+                any(feature = "native-tls", feature = "tokio-native-tls"),
+                not(any(feature = "rustls", feature = "tokio-rustls"))
+            )))]
             Some(timeout) => client.get_connection_with_timeout(timeout),
             None => client.get_connection(),
         }
@@ -228,11 +241,13 @@ impl FalkorClientProvider {
         port: u16,
     ) -> redis::ConnectionInfo {
         let mut addr = sentinel_info.addr().clone();
-        if let redis::ConnectionAddr::Tcp(host, p)
-        | redis::ConnectionAddr::TcpTls { host, port: p, .. } = &mut addr
-        {
-            *host = ip;
-            *p = port;
+        match &mut addr {
+            redis::ConnectionAddr::Tcp(host, p)
+            | redis::ConnectionAddr::TcpTls { host, port: p, .. } => {
+                *host = ip;
+                *p = port;
+            }
+            _ => addr = redis::ConnectionAddr::Tcp(ip, port),
         }
         sentinel_info.clone().set_addr(addr)
     }
@@ -286,8 +301,8 @@ impl FalkorClientProvider {
         let role_items: Vec<redis::Value> = redis::cmd("ROLE")
             .query(&mut sentinel_conn)
             .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
-        if role_items
-            .into_iter()
+        let mut role_iter = role_items.into_iter();
+        if role_iter
             .next()
             .and_then(|v| redis_value_as_string(v).ok())
             .as_deref()
@@ -296,6 +311,13 @@ impl FalkorClientProvider {
             return Err(FalkorDBError::RedisError(
                 "Address does not point to a sentinel node".to_string(),
             ));
+        }
+        if role_iter
+            .next()
+            .and_then(|v| v.into_sequence().ok())
+            .is_some_and(|services| services.len() > 1)
+        {
+            return Err(FalkorDBError::SentinelMastersCount);
         }
 
         let raw_masters: Vec<redis::Value> = redis::cmd("SENTINEL")
@@ -347,7 +369,10 @@ impl FalkorClientProvider {
                 continue;
             }
             let node_info = Self::sentinel_node_connection_info(sentinel_info, ip, port);
-            if Self::node_matches_role(&node_info, expected_role, connect_timeout)? {
+            if matches!(
+                Self::node_matches_role(&node_info, expected_role, connect_timeout),
+                Ok(true)
+            ) {
                 return redis::Client::open(node_info)
                     .map_err(|err| FalkorDBError::RedisError(err.to_string()));
             }
@@ -1371,7 +1396,7 @@ mod tests {
                     {
                         let port_str = replica_port.to_string();
                         format!(
-                            "*1\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{port_str}\r\n$5\r\nflags\r\n$5\r\nslave\r\n",
+                            "*2\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n$1\r\n0\r\n$5\r\nflags\r\n$5\r\nslave\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{port_str}\r\n$5\r\nflags\r\n$5\r\nslave\r\n",
                             port_str.len()
                         )
                     } else if upper.contains("\r\nROLE\r\n") {
@@ -1415,20 +1440,81 @@ mod tests {
         use std::io::{Read, Write};
         use std::net::TcpListener;
 
-        let tcp_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:26379").unwrap();
+        let closed_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_port = closed_listener.local_addr().unwrap().port();
+        drop(closed_listener);
+        let tcp_info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{closed_port}")).unwrap();
         assert!(FalkorClientProvider::connect_redis_client(
             &redis::Client::open(tcp_info).unwrap(),
             None
         )
         .is_err());
 
+        let unix_info = redis::ConnectionInfo::from_str("redis+unix:///tmp/sentinel.sock").unwrap();
+        let mapped_unix = FalkorClientProvider::sentinel_node_connection_info(
+            &unix_info,
+            "127.0.0.1".to_string(),
+            6380,
+        );
+        assert!(matches!(
+            mapped_unix.addr(),
+            redis::ConnectionAddr::Tcp(host, 6380) if host == "127.0.0.1"
+        ));
+
+        let multi_service = TcpListener::bind("127.0.0.1:0").unwrap();
+        let multi_port = multi_service.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = multi_service.accept() {
+                let mut pending = String::new();
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = s.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let reply = if command.to_ascii_uppercase().contains("\r\nROLE\r\n") {
+                            "*2\r\n$8\r\nsentinel\r\n*2\r\n$2\r\nm1\r\n$2\r\nm2\r\n"
+                        } else {
+                            "+OK\r\n"
+                        };
+                        let _ = s.write_all(reply.as_bytes());
+                    }
+                }
+            }
+        });
+        let multi_info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{multi_port}")).unwrap();
+        assert!(matches!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &multi_info,
+                false,
+                Some(std::time::Duration::from_millis(500)),
+            ),
+            Err(FalkorDBError::SentinelMastersCount)
+        ));
+
         let non_sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
         let non_sentinel_port = non_sentinel.local_addr().unwrap().port();
         std::thread::spawn(move || {
             if let Ok((mut s, _)) = non_sentinel.accept() {
-                let mut buf = [0u8; 256];
-                let _ = s.read(&mut buf);
-                let _ = s.write_all(b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n");
+                let mut pending = String::new();
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = s.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let reply = if command.to_ascii_uppercase().contains("\r\nROLE\r\n") {
+                            "*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n"
+                        } else {
+                            "+OK\r\n"
+                        };
+                        let _ = s.write_all(reply.as_bytes());
+                    }
+                }
             }
         });
         let info =

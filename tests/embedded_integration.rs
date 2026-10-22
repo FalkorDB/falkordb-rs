@@ -349,10 +349,22 @@ fn test_embedded_server_lifecycle() {
 
 #[test]
 fn test_embedded_server_starts_with_spaces_in_paths() {
+    struct TempDirGuard(PathBuf);
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     let Some(config) = embedded_config() else {
         return;
     };
-    let base = PathBuf::from(format!("/tmp/fdb emb {}", std::process::id()));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let base = PathBuf::from(format!("/tmp/fdb emb {} {nonce}", std::process::id()));
+    let _guard = TempDirGuard(base.clone());
     let db_dir = base.join("db dir");
     let socket_path = base.join("falkor db.sock");
     std::fs::create_dir_all(&base).unwrap();
@@ -392,5 +404,4 @@ fn test_embedded_server_starts_with_spaces_in_paths() {
         "socket should be removed after the server is dropped"
     );
     assert!(db_dir.exists(), "a caller-provided db_dir must be kept");
-    let _ = std::fs::remove_dir_all(&base);
 }

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Quote `unixsocket`, `dir`, and `dbfilename` directives in the `EmbeddedServer` Redis
+  configuration so paths containing spaces, quotes, backslashes, or non-ASCII bytes do not fail
+  to start or inject extra directives, and clean up the auto-created `falkordb_sock_*` temporary
+  directory on startup failure and on drop when a custom `db_dir` is used without an explicit
+  `socket_path` ([#396](https://github.com/FalkorDB/falkordb-rs/pull/396))
 - Refresh the `AsyncGraph` schema cache asynchronously over a pooled connection instead of
   blocking a Tokio worker with `block_in_place` over a fresh synchronous connection while
   holding the `GraphSchema` write lock. `FalkorAsyncClient` and `AsyncGraph` now work on the

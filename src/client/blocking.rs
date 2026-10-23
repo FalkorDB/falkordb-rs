@@ -15,12 +15,13 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-/// A connection pool holding a fixed number of connections that callers borrow
-/// from and return to. Used both for the primary pool and the optional
-/// replica-routed read-only pool.
+/// A connection pool holding a fixed number of slots that callers borrow from and
+/// return to. A slot holds a live connection, or `None` once its connection died and
+/// no replacement could be opened, in which case the next borrower opens one. Used
+/// both for the primary pool and the optional replica-routed read-only pool.
 pub(crate) struct SyncConnectionPool {
-    tx: mpsc::SyncSender<FalkorSyncConnection>,
-    rx: Mutex<mpsc::Receiver<FalkorSyncConnection>>,
+    tx: mpsc::SyncSender<Option<FalkorSyncConnection>>,
+    rx: Mutex<mpsc::Receiver<Option<FalkorSyncConnection>>>,
 }
 
 /// A user-opaque inner struct, containing the actual implementation of the blocking client
@@ -30,8 +31,9 @@ pub(crate) struct FalkorSyncClientInner {
     _inner: Mutex<FalkorClientProvider>,
 
     connection_pool_size: u8,
-    connection_pool_tx: mpsc::SyncSender<FalkorSyncConnection>,
-    connection_pool_rx: Mutex<mpsc::Receiver<FalkorSyncConnection>>,
+    /// Slots of the primary pool, as in [`SyncConnectionPool`].
+    connection_pool_tx: mpsc::SyncSender<Option<FalkorSyncConnection>>,
+    connection_pool_rx: Mutex<mpsc::Receiver<Option<FalkorSyncConnection>>>,
     /// Dedicated pool serving read-only queries from replica nodes. `None` when the
     /// deployment has no readable replicas, in which case read-only queries reuse
     /// the primary pool (preserving the previous behavior).
@@ -192,7 +194,7 @@ impl FalkorSyncClient {
                 .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
 
             connection_pool_tx
-                .send(new_conn)
+                .send(Some(new_conn))
                 .map_err(|_| FalkorDBError::EmptyConnection)?;
         }
 
@@ -237,7 +239,7 @@ impl FalkorSyncClient {
     fn pool_from_connections(connections: Vec<FalkorSyncConnection>) -> Option<SyncConnectionPool> {
         let (tx, rx) = mpsc::sync_channel(connections.len().max(1));
         for conn in connections {
-            if tx.send(conn).is_err() {
+            if tx.send(Some(conn)).is_err() {
                 return None;
             }
         }
@@ -398,9 +400,7 @@ impl FalkorSyncClient {
         &self,
         section: Option<&str>,
     ) -> FalkorResult<HashMap<String, String>> {
-        self.borrow_connection()?
-            .as_inner()?
-            .get_redis_info(section)
+        self.borrow_connection()?.get_redis_info(section)
     }
 
     /// Load a User Defined Function (UDF) library.
@@ -502,7 +502,7 @@ impl FalkorSyncClient {
 #[cfg(test)]
 pub(crate) fn create_empty_inner_sync_client() -> Arc<FalkorSyncClientInner> {
     let (tx, rx) = mpsc::sync_channel(1);
-    tx.send(FalkorSyncConnection::None).ok();
+    tx.send(Some(FalkorSyncConnection::None)).ok();
     Arc::new(FalkorSyncClientInner {
         _inner: Mutex::new(FalkorClientProvider::None),
         connection_pool_size: 0,
@@ -551,6 +551,14 @@ mod tests {
         let Err(TryRecvError::Empty) = non_existing_conn else {
             panic!("Got error, but not a TryRecvError::Empty, as expected");
         };
+    }
+
+    #[test]
+    fn test_redis_info() {
+        let info = create_test_client()
+            .redis_info(Some("server"))
+            .expect("INFO server");
+        assert!(info.contains_key("redis_version"), "{info:?}");
     }
 
     #[test]
@@ -695,7 +703,7 @@ mod tests {
         .expect("pool should build from connections");
 
         let (tx, rx) = mpsc::sync_channel(1);
-        tx.send(FalkorSyncConnection::None).ok();
+        tx.send(Some(FalkorSyncConnection::None)).ok();
         let inner = Arc::new(FalkorSyncClientInner {
             _inner: Mutex::new(FalkorClientProvider::None),
             connection_pool_size: 0,

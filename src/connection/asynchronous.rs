@@ -110,18 +110,20 @@ impl FalkorAsyncConnection {
 
 /// How a [`BorrowedAsyncConnection`] returns its connection once it is done with it.
 enum ConnReturn {
-    /// Send the connection back to a bounded pool (the `Pooled` strategy).
-    Pool(mpsc::Sender<FalkorAsyncConnection>),
+    /// Send the pool slot back to a bounded pool (the `Pooled` strategy).
+    Pool(mpsc::Sender<Option<FalkorAsyncConnection>>),
     /// Drop the connection. Multiplexed connections are cheap `Arc` clones over a
     /// shared socket, so there is nothing to return.
     Discard,
 }
 
 /// A container for a connection that is borrowed from the pool.
-/// Upon going out of scope, it will return the connection to the pool.
+/// Upon going out of scope, it returns its pool slot: the live connection, or an empty slot if
+/// the connection died and could not be replaced, so a dead connection is never handed out again.
 ///
 /// This is publicly exposed for user-implementations of [`FalkorParsable`](crate::FalkorParsable)
 pub struct BorrowedAsyncConnection {
+    /// `None` while a pooled slot has no live connection; the next command opens one.
     conn: Option<FalkorAsyncConnection>,
     return_to: ConnReturn,
     client: Arc<FalkorAsyncClientInner>,
@@ -129,17 +131,17 @@ pub struct BorrowedAsyncConnection {
 }
 
 impl BorrowedAsyncConnection {
-    /// Create a borrowed connection that returns to a bounded pool on drop.
+    /// Create a borrowed connection that returns its slot to a bounded pool on drop.
     pub(crate) fn new(
-        conn: FalkorAsyncConnection,
-        return_tx: mpsc::Sender<FalkorAsyncConnection>,
+        conn: Option<FalkorAsyncConnection>,
+        return_tx: mpsc::Sender<Option<FalkorAsyncConnection>>,
         client: Arc<FalkorAsyncClientInner>,
         readonly: bool,
     ) -> Self {
         #[cfg(feature = "metrics")]
         crate::observability::connection_borrow_started(readonly);
         Self {
-            conn: Some(conn),
+            conn,
             return_to: ConnReturn::Pool(return_tx),
             client,
             readonly,
@@ -163,8 +165,24 @@ impl BorrowedAsyncConnection {
         }
     }
 
-    pub(crate) fn as_inner(&mut self) -> FalkorResult<&mut FalkorAsyncConnection> {
-        self.conn.as_mut().ok_or(FalkorDBError::EmptyConnection)
+    /// The slot's connection, opening a fresh one first if the slot is empty.
+    async fn as_inner(&mut self) -> FalkorResult<&mut FalkorAsyncConnection> {
+        let conn = match self.conn.take() {
+            Some(conn) => conn,
+            None => self.open_replacement().await?,
+        };
+        Ok(self.conn.insert(conn))
+    }
+
+    /// Open a connection to replace a dead pooled one, routed like the pool this slot belongs to
+    /// (a replica for the read-only pool), reporting any failure as `NoConnection`.
+    async fn open_replacement(&self) -> FalkorResult<FalkorAsyncConnection> {
+        if self.readonly {
+            self.client.get_async_replica_connection().await
+        } else {
+            self.client.get_async_connection().await
+        }
+        .map_err(|_| FalkorDBError::NoConnection)
     }
 
     #[cfg_attr(
@@ -183,7 +201,8 @@ impl BorrowedAsyncConnection {
         params: Option<&[&str]>,
     ) -> FalkorResult<redis::Value> {
         let result = self
-            .as_inner()?
+            .as_inner()
+            .await?
             .execute_command(graph_name, command, subcommand, params)
             .await;
         self.recover_on_connection_down(result).await
@@ -204,24 +223,36 @@ impl BorrowedAsyncConnection {
         mut self,
         pipeline: &redis::Pipeline,
     ) -> FalkorResult<Vec<redis::Value>> {
-        let result = self.as_inner()?.execute_pipeline(pipeline).await;
+        let result = self.as_inner().await?.execute_pipeline(pipeline).await;
         self.recover_on_connection_down(result).await
     }
 
-    /// On a dead-connection error, swap in a fresh connection so a live one is returned to the pool
-    /// on drop, then re-surface `ConnectionDown` (or `NoConnection` if none is available); other
-    /// results pass through unchanged.
+    /// Fetch `INFO` for `section`, with the same dead-connection recovery as
+    /// [`execute_command`](Self::execute_command).
+    pub(crate) async fn get_redis_info(
+        self,
+        section: Option<&str>,
+    ) -> FalkorResult<HashMap<String, String>> {
+        self.execute_command(None, "INFO", section, None)
+            .await
+            .and_then(parse_redis_info)
+    }
+
+    /// On a dead pooled connection, drop it and swap in a fresh one so a live one is returned to the
+    /// pool, then re-surface `ConnectionDown`. If no replacement can be opened, the slot is left
+    /// empty for the next command to reconnect and `NoConnection` is returned. A multiplexed
+    /// clone is left alone: its `ConnectionManager` reconnects on its own, and the clone is
+    /// discarded on drop anyway. Other results pass through unchanged.
     async fn recover_on_connection_down<T>(
         &mut self,
         result: FalkorResult<T>,
     ) -> FalkorResult<T> {
         match result {
-            Err(FalkorDBError::ConnectionDown) => {
-                if let Ok(new_conn) = self.client.fresh_connection(self.readonly).await {
-                    self.conn = Some(new_conn);
-                    return Err(FalkorDBError::ConnectionDown);
-                }
-                Err(FalkorDBError::NoConnection)
+            Err(FalkorDBError::ConnectionDown) if matches!(self.return_to, ConnReturn::Pool(_)) => {
+                // Drop the dead connection first, so it is gone even if no replacement opens.
+                self.conn = None;
+                self.conn = Some(self.open_replacement().await?);
+                Err(FalkorDBError::ConnectionDown)
             }
             res => res,
         }
@@ -229,14 +260,14 @@ impl BorrowedAsyncConnection {
 }
 
 impl Drop for BorrowedAsyncConnection {
-    /// Return the connection to its origin. Pooled connections are handed back through the
-    /// bounded channel, which always has a free slot because this borrow consumed one;
-    /// multiplexed clones are cheap shared handles and are simply dropped.
+    /// Return the connection to its origin. Pooled borrows hand their slot back through the
+    /// bounded channel (empty if the connection died), which always has room because this
+    /// borrow consumed one; multiplexed clones are cheap shared handles and are simply dropped.
     fn drop(&mut self) {
         #[cfg(feature = "metrics")]
         crate::observability::connection_borrow_finished(self.readonly);
-        if let (Some(conn), ConnReturn::Pool(return_tx)) = (self.conn.take(), &self.return_to) {
-            match return_tx.try_send(conn) {
+        if let ConnReturn::Pool(return_tx) = &self.return_to {
+            match return_tx.try_send(self.conn.take()) {
                 Ok(()) => {}
                 // The pool was dropped before this connection returned; nothing to reclaim.
                 Err(mpsc::error::TrySendError::Closed(_)) => {}
@@ -251,5 +282,152 @@ impl Drop for BorrowedAsyncConnection {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::asynchronous::create_empty_inner_async_client;
+    use crate::test_utils::create_async_test_client;
+    use crate::{ConnectionStrategy, FalkorAsyncClient, FalkorClientBuilder};
+    use std::num::NonZeroU8;
+
+    /// A live connection, standing in for one that has just died.
+    async fn stand_in_connection() -> FalkorAsyncConnection {
+        create_async_test_client()
+            .await
+            .borrow_connection()
+            .await
+            .expect("borrow from the test client")
+            .conn
+            .take()
+            .expect("a multiplexed borrow holds a connection")
+    }
+
+    /// A borrow from a one-slot pool whose client cannot open connections, so any reconnect
+    /// attempt fails, along with the pool's receiving end.
+    fn borrowed_from_unreachable(
+        conn: Option<FalkorAsyncConnection>,
+        readonly: bool,
+    ) -> (
+        BorrowedAsyncConnection,
+        mpsc::Receiver<Option<FalkorAsyncConnection>>,
+    ) {
+        let (tx, rx) = mpsc::channel(1);
+        let borrowed =
+            BorrowedAsyncConnection::new(conn, tx, create_empty_inner_async_client(), readonly);
+        (borrowed, rx)
+    }
+
+    async fn one_connection_client() -> FalkorAsyncClient {
+        FalkorClientBuilder::new_async()
+            .with_connection_strategy(ConnectionStrategy::Pooled {
+                size: NonZeroU8::MIN,
+            })
+            .build()
+            .await
+            .expect("Could not build a pooled client")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_recovery_returns_an_empty_slot_instead_of_the_dead_connection() {
+        let (mut conn, mut rx) =
+            borrowed_from_unreachable(Some(stand_in_connection().await), false);
+        let result: FalkorResult<()> = conn
+            .recover_on_connection_down(Err(FalkorDBError::ConnectionDown))
+            .await;
+        assert_eq!(result, Err(FalkorDBError::NoConnection));
+
+        drop(conn);
+        assert_eq!(
+            rx.try_recv().map(|slot| slot.is_none()),
+            Ok(true),
+            "the slot must come back empty, not holding the dead connection"
+        );
+        assert!(rx.try_recv().is_err(), "exactly one slot comes back");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_slot_stays_in_the_pool_when_reconnecting_fails() {
+        for readonly in [false, true] {
+            let (conn, mut rx) = borrowed_from_unreachable(None, readonly);
+            assert_eq!(
+                conn.execute_command(None, "PING", None, None).await,
+                Err(FalkorDBError::NoConnection)
+            );
+            assert_eq!(
+                rx.try_recv().map(|slot| slot.is_none()),
+                Ok(true),
+                "the slot must not be lost"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_slot_reconnects_on_next_use() {
+        let client = one_connection_client().await;
+        let mut borrowed = client
+            .borrow_connection()
+            .await
+            .expect("borrow the only slot");
+        borrowed.conn = None;
+        drop(borrowed);
+
+        let pong = client
+            .borrow_connection()
+            .await
+            .expect("borrow the empty slot")
+            .execute_command(None, "PING", None, None)
+            .await;
+        assert!(
+            pong.is_ok(),
+            "the next command opens a fresh connection: {pong:?}"
+        );
+        assert!(
+            client
+                .borrow_connection()
+                .await
+                .expect("borrow the slot again")
+                .conn
+                .is_some(),
+            "the fresh connection goes back into the slot"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn successful_recovery_swaps_in_a_live_connection() {
+        let client = one_connection_client().await;
+        let mut borrowed = client
+            .borrow_connection()
+            .await
+            .expect("borrow the only slot");
+        let result: FalkorResult<()> = borrowed
+            .recover_on_connection_down(Err(FalkorDBError::ConnectionDown))
+            .await;
+        assert_eq!(result, Err(FalkorDBError::ConnectionDown));
+        assert!(
+            borrowed
+                .execute_command(None, "PING", None, None)
+                .await
+                .is_ok(),
+            "the replacement connection is live"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multiplexed_borrow_does_not_reconnect_on_connection_down() {
+        // The client cannot open connections, so a reconnect attempt would surface as
+        // `NoConnection` rather than the original `ConnectionDown`.
+        let mut conn = BorrowedAsyncConnection::new_multiplexed(
+            stand_in_connection().await,
+            create_empty_inner_async_client(),
+            false,
+        );
+        let result: FalkorResult<()> = conn
+            .recover_on_connection_down(Err(FalkorDBError::ConnectionDown))
+            .await;
+        assert_eq!(result, Err(FalkorDBError::ConnectionDown));
+        assert!(conn.conn.is_some(), "the multiplexed clone is left as is");
     }
 }

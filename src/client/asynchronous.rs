@@ -14,12 +14,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, Mutex};
 
-/// A connection pool holding a fixed number of async connections that callers
-/// borrow from and return to. Used by the [`ConnectionStrategy::Pooled`] strategy for
-/// both the primary pool and the optional replica-routed read-only pool.
+/// A connection pool holding a fixed number of slots that callers borrow from and
+/// return to. A slot holds a live async connection, or `None` once its connection died
+/// and no replacement could be opened, in which case the next borrower opens one. Used
+/// by the [`ConnectionStrategy::Pooled`] strategy for both the primary pool and the
+/// optional replica-routed read-only pool.
 pub(crate) struct AsyncConnectionPool {
-    tx: mpsc::Sender<FalkorAsyncConnection>,
-    rx: Mutex<mpsc::Receiver<FalkorAsyncConnection>>,
+    tx: mpsc::Sender<Option<FalkorAsyncConnection>>,
+    rx: Mutex<mpsc::Receiver<Option<FalkorAsyncConnection>>>,
 }
 
 /// Holds a fixed number of independent, shared multiplexed connections and hands out
@@ -172,30 +174,6 @@ impl FalkorAsyncClientInner {
         self.readonly.is_some()
     }
 
-    /// Obtain a replacement connection after a [`ConnectionDown`](FalkorDBError::ConnectionDown),
-    /// honoring the active strategy and read-only routing. Multiplexed executors hand
-    /// out a fresh clone (the underlying manager reconnects on its own); pooled
-    /// executors open a brand new connection.
-    pub(crate) async fn fresh_connection(
-        &self,
-        readonly: bool,
-    ) -> FalkorResult<FalkorAsyncConnection> {
-        let executor = match (&self.readonly, readonly) {
-            (Some(executor), true) => executor,
-            _ => &self.primary,
-        };
-        match executor {
-            AsyncExecutor::Multiplexed(executor) => Ok(executor.pick()),
-            AsyncExecutor::Pooled(_) => {
-                if readonly && self.readonly.is_some() {
-                    self.get_async_replica_connection().await
-                } else {
-                    self.get_async_connection().await
-                }
-            }
-        }
-    }
-
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
@@ -344,7 +322,7 @@ impl FalkorAsyncClient {
     ) -> Option<AsyncConnectionPool> {
         let (tx, rx) = mpsc::channel(connections.len().max(1));
         for conn in connections {
-            if tx.try_send(conn).is_err() {
+            if tx.try_send(Some(conn)).is_err() {
                 return None;
             }
         }
@@ -519,7 +497,6 @@ impl FalkorAsyncClient {
     ) -> FalkorResult<HashMap<String, String>> {
         self.borrow_connection()
             .await?
-            .as_inner()?
             .get_redis_info(section)
             .await
     }
@@ -628,6 +605,25 @@ impl FalkorAsyncClient {
     }
 }
 
+/// An inner client whose provider cannot open connections, for tests that need any reconnect
+/// attempt to fail.
+#[cfg(test)]
+pub(crate) fn create_empty_inner_async_client() -> Arc<FalkorAsyncClientInner> {
+    Arc::new(FalkorAsyncClientInner {
+        _inner: Mutex::new(FalkorClientProvider::None),
+        strategy: ConnectionStrategy::Pooled {
+            size: std::num::NonZeroU8::MIN,
+        },
+        primary: AsyncExecutor::Pooled(
+            FalkorAsyncClient::pool_from_connections(Vec::new()).expect("an empty pool builds"),
+        ),
+        readonly: None,
+        retry_policy: RetryPolicy::disabled(),
+        query_logging: false,
+        read_preference: ReadPreference::Primary,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,41 +700,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_multiplexed_fresh_connection() {
-        // `fresh_connection` on a multiplexed client hands out a managed clone for both
-        // primary and (replica-less) read-only routing, without falling back to a pool.
-        let client = FalkorClientBuilder::new_async()
-            .with_connection_strategy(ConnectionStrategy::Multiplexed {
-                connections: NonZeroU8::new(1).expect("Could not create a perfectly valid u8"),
-            })
-            .build()
-            .await
-            .expect("Could not build a single-socket multiplexed client");
-
-        let primary = client
-            .inner
-            .fresh_connection(false)
-            .await
-            .expect("Could not obtain a fresh primary multiplexed connection");
-        assert!(
-            matches!(primary, FalkorAsyncConnection::Managed(_)),
-            "A multiplexed primary must hand out a managed connection"
-        );
-
-        // No readable replica on a single node: read-only routing transparently falls
-        // back to the primary multiplexed manager.
-        let readonly = client
-            .inner
-            .fresh_connection(true)
-            .await
-            .expect("Read-only routing must fall back to the primary manager");
-        assert!(
-            matches!(readonly, FalkorAsyncConnection::Managed(_)),
-            "Read-only fallback must also be a managed connection"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_async_with_num_connections_preserves_multiplexed() {
         // `with_num_connections` updates the count of the builder's active strategy; on
         // the async builder the default strategy is multiplexed, so the multiplexed arm
@@ -754,36 +715,6 @@ mod tests {
             ConnectionStrategy::Multiplexed { .. }
         ));
         assert_eq!(client.connection_pool_size(), 3);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_pooled_fresh_connection() {
-        // On a pooled client `fresh_connection` opens a brand new connection; with no
-        // replica configured, read-only routing also falls through to a primary-pool
-        // connection rather than a replica.
-        let client = FalkorClientBuilder::new_async()
-            .with_connection_strategy(ConnectionStrategy::Pooled {
-                size: NonZeroU8::new(2).expect("Could not create a perfectly valid u8"),
-            })
-            .build()
-            .await
-            .expect("Could not build a pooled client");
-
-        assert!(matches!(&client.inner.primary, AsyncExecutor::Pooled(_)));
-
-        let primary = client
-            .inner
-            .fresh_connection(false)
-            .await
-            .expect("Could not open a fresh pooled connection");
-        assert!(matches!(primary, FalkorAsyncConnection::Redis(_)));
-
-        let readonly = client
-            .inner
-            .fresh_connection(true)
-            .await
-            .expect("Read-only routing must fall back to a primary-pool connection");
-        assert!(matches!(readonly, FalkorAsyncConnection::Redis(_)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1013,6 +944,16 @@ mod tests {
             .await
             .expect("should borrow from the read-only executor");
         drop(borrowed);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_redis_info() {
+        let info = create_async_test_client()
+            .await
+            .redis_info(Some("server"))
+            .await
+            .expect("INFO server");
+        assert!(info.contains_key("redis_version"), "{info:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

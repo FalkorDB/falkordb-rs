@@ -5,7 +5,7 @@
 
 use crate::{
     client::{blocking::FalkorSyncClientInner, ProvidesSyncConnections},
-    connection::{map_redis_err, reject_server_error},
+    connection::{map_redis_err, reject_server_error, ClusterRoute},
     parser::parse_redis_info,
     FalkorDBError, FalkorResult,
 };
@@ -19,6 +19,54 @@ pub(crate) enum FalkorSyncConnection {
     None,
 
     Redis(redis::Connection),
+
+    /// A connection to a Redis Cluster, routing each command to the node owning the graph's slot.
+    /// Boxed, as it is far larger than a single-node connection.
+    Cluster(Box<redis::cluster::ClusterConnection>),
+}
+
+fn build_command(
+    graph_name: Option<&str>,
+    command: &str,
+    subcommand: Option<&str>,
+    params: Option<&[&str]>,
+) -> redis::Cmd {
+    let mut cmd = redis::cmd(command);
+    cmd.arg(subcommand);
+    cmd.arg(graph_name);
+    if let Some(params) = params {
+        for param in params {
+            cmd.arg(param.to_string());
+        }
+    }
+    cmd
+}
+
+fn run_cluster_command(
+    conn: &mut redis::cluster::ClusterConnection,
+    graph_name: Option<&str>,
+    command: &str,
+    subcommand: Option<&str>,
+    params: Option<&[&str]>,
+) -> FalkorResult<redis::Value> {
+    use redis::ConnectionLike as _;
+    let cmd = build_command(graph_name, command, subcommand, params);
+    let route = ClusterRoute::for_command(command, subcommand);
+    match route.routing_info() {
+        None => conn.req_command(&cmd),
+        Some(routing) => conn
+            .route_command(&cmd, routing)
+            .map(|reply| route.collapse_reply(command, reply)),
+    }
+    .map_err(map_redis_err)
+}
+
+fn run_pipeline<C: redis::ConnectionLike>(
+    conn: &mut C,
+    pipeline: &redis::Pipeline,
+) -> FalkorResult<Vec<redis::Value>> {
+    conn.req_packed_commands(&pipeline.get_packed_pipeline(), 0, pipeline.len())
+        .map_err(map_redis_err)
 }
 
 impl FalkorSyncConnection {
@@ -36,22 +84,17 @@ impl FalkorSyncConnection {
         match self {
             FalkorSyncConnection::Redis(redis_conn) => {
                 use redis::ConnectionLike as _;
-                let mut cmd = redis::cmd(command);
-                cmd.arg(subcommand);
-                cmd.arg(graph_name);
-                if let Some(params) = params {
-                    for param in params {
-                        cmd.arg(param.to_string());
-                    }
-                }
                 redis_conn
-                    .req_command(&cmd)
+                    .req_command(&build_command(graph_name, command, subcommand, params))
                     .map_err(map_redis_err)
-                    .and_then(reject_server_error)
+            }
+            FalkorSyncConnection::Cluster(cluster_conn) => {
+                run_cluster_command(cluster_conn, graph_name, command, subcommand, params)
             }
             #[cfg(test)]
             FalkorSyncConnection::None => Ok(redis::Value::Nil),
         }
+        .and_then(reject_server_error)
     }
 
     /// Dispatch a whole [`redis::Pipeline`] in one round-trip, returning one [`redis::Value`] per
@@ -65,11 +108,9 @@ impl FalkorSyncConnection {
         pipeline: &redis::Pipeline,
     ) -> FalkorResult<Vec<redis::Value>> {
         match self {
-            FalkorSyncConnection::Redis(redis_conn) => {
-                use redis::ConnectionLike as _;
-                redis_conn
-                    .req_packed_commands(&pipeline.get_packed_pipeline(), 0, pipeline.len())
-                    .map_err(map_redis_err)
+            FalkorSyncConnection::Redis(redis_conn) => run_pipeline(redis_conn, pipeline),
+            FalkorSyncConnection::Cluster(cluster_conn) => {
+                run_pipeline(cluster_conn.as_mut(), pipeline)
             }
             #[cfg(test)]
             FalkorSyncConnection::None => Ok(Vec::new()),
@@ -98,17 +139,19 @@ impl FalkorSyncConnection {
                 .set_read_timeout(timeout)
                 .and_then(|()| redis_conn.set_write_timeout(timeout))
                 .map_err(map_redis_err),
+            FalkorSyncConnection::Cluster(cluster_conn) => cluster_conn
+                .set_read_timeout(timeout)
+                .and_then(|()| cluster_conn.set_write_timeout(timeout))
+                .map_err(map_redis_err),
             #[cfg(test)]
             FalkorSyncConnection::None => Ok(()),
         }
     }
 
-    pub(crate) fn check_is_redis_sentinel(&mut self) -> FalkorResult<bool> {
-        let info_map = self.get_redis_info(Some("server"))?;
-        Ok(info_map
-            .get("redis_mode")
-            .map(|redis_mode| redis_mode == "sentinel")
-            .unwrap_or_default())
+    /// The server's `redis_mode` from `INFO server`: `standalone`, `sentinel` or `cluster`.
+    pub(crate) fn redis_mode(&mut self) -> FalkorResult<Option<String>> {
+        self.get_redis_info(Some("server"))
+            .map(|mut info_map| info_map.remove("redis_mode"))
     }
 }
 

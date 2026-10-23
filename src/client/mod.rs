@@ -271,6 +271,9 @@ pub(crate) enum FalkorClientProvider {
         /// uses replica-only connection getters (no primary fallback) so the pool is
         /// only built when a replica connection actually succeeds.
         sentinel_replica: Option<redis::sentinel::SentinelClient>,
+        /// Redis Cluster client, set when the server reports `redis_mode:cluster`. Seeded from
+        /// the configured node; the remaining nodes are discovered from the cluster topology.
+        cluster: Option<redis::cluster::ClusterClient>,
         #[cfg(feature = "embedded-core")]
         #[allow(dead_code)]
         embedded_server: Option<std::sync::Arc<crate::embedded::EmbeddedServer>>,
@@ -284,8 +287,8 @@ pub(crate) enum FalkorClientProvider {
         response_timeout: Option<std::time::Duration>,
         /// Deadline for everything that must finish before a connection is usable:
         /// establishing it, and the one-off topology probe
-        /// [`get_sentinel_client`](FalkorClientProvider::get_sentinel_client) /
-        /// [`get_sentinel_client_async`](FalkorClientProvider::get_sentinel_client_async)
+        /// [`detect_topology`](FalkorClientProvider::detect_topology) /
+        /// [`detect_topology_async`](FalkorClientProvider::detect_topology_async)
         /// runs while the client is being built. It deliberately does not bound query
         /// responses — that is `response_timeout`'s job — so a caller can demand quick
         /// answers without making their client impossible to construct.
@@ -584,6 +587,17 @@ impl FalkorClientProvider {
         deadline: Option<std::time::Instant>,
     ) -> FalkorResult<FalkorSyncConnection> {
         let client = match self {
+            // The cluster client bounds each node connection by the connect timeout itself.
+            FalkorClientProvider::Redis {
+                cluster: Some(cluster),
+                ..
+            } => {
+                return cluster
+                    .get_connection()
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))
+                    .map(|conn| FalkorSyncConnection::Cluster(Box::new(conn)))
+                    .and_then(|conn| conn.set_timeouts(response_timeout).map(|()| conn));
+            }
             FalkorClientProvider::Redis {
                 client: sentinel_client,
                 sentinel: Some(_),
@@ -638,7 +652,7 @@ impl FalkorClientProvider {
 
     /// [`get_async_connection`](Self::get_async_connection) with an explicit response
     /// timeout, so callers that are not executing user queries can opt out of the
-    /// configured deadline. See [`get_sentinel_client_async`](Self::get_sentinel_client_async).
+    /// configured deadline. See [`detect_topology_async`](Self::detect_topology_async).
     #[cfg(feature = "tokio")]
     async fn get_async_connection_with_timeouts(
         &mut self,
@@ -646,6 +660,15 @@ impl FalkorClientProvider {
         connect_timeout: Option<std::time::Duration>,
     ) -> FalkorResult<FalkorAsyncConnection> {
         Ok(match self {
+            FalkorClientProvider::Redis {
+                cluster: Some(cluster),
+                ..
+            } => FalkorAsyncConnection::Cluster(
+                cluster
+                    .get_async_connection()
+                    .await
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
+            ),
             FalkorClientProvider::Redis {
                 sentinel: Some(sentinel),
                 ..
@@ -732,6 +755,18 @@ impl FalkorClientProvider {
         )
     }
 
+    /// Whether this provider talks to a Redis Cluster.
+    #[cfg(feature = "tokio")]
+    pub(crate) fn has_cluster(&self) -> bool {
+        matches!(
+            self,
+            FalkorClientProvider::Redis {
+                cluster: Some(_),
+                ..
+            }
+        )
+    }
+
     /// Whether this provider is managed by Redis Sentinel (its primary is resolved via a
     /// Sentinel client). Multiplexed connections built from a Sentinel-resolved client
     /// pin to a single node and do not re-resolve on failover, so the async client falls
@@ -756,6 +791,10 @@ impl FalkorClientProvider {
         &mut self,
         max_inflight: Option<NonZeroUsize>,
     ) -> FalkorResult<FalkorAsyncConnection> {
+        if self.has_cluster() {
+            // A cluster connection is already a cloneable, multiplexed handle.
+            return self.get_async_connection().await;
+        }
         let response_timeout = self.response_timeout();
         let connect_timeout = self.connect_timeout();
         let client = match self {
@@ -855,6 +894,17 @@ impl FalkorClientProvider {
         }
     }
 
+    pub(crate) fn set_cluster(
+        &mut self,
+        cluster_client: redis::cluster::ClusterClient,
+    ) {
+        match self {
+            FalkorClientProvider::Redis { cluster, .. } => *cluster = Some(cluster_client),
+            #[cfg(test)]
+            FalkorClientProvider::None => {}
+        }
+    }
+
     pub(crate) fn set_sentinel_replica(
         &mut self,
         sentinel_client: redis::sentinel::SentinelClient,
@@ -934,45 +984,51 @@ impl FalkorClientProvider {
         ))
     }
 
+    /// Probe the configured server once to learn what it is: a standalone server, a Sentinel
+    /// (resolving its master and replica clients), or a Redis Cluster node (building a client for
+    /// the whole cluster).
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Get Sentinel Clients", skip_all, level = "info")
+        tracing::instrument(name = "Detect Topology", skip_all, level = "info")
     )]
-    pub(crate) fn get_sentinel_client(
+    pub(crate) fn detect_topology(
         &mut self,
         connection_info: &redis::ConnectionInfo,
-    ) -> FalkorResult<Option<SentinelClients>> {
+    ) -> FalkorResult<Topology> {
         // Topology detection runs while the client is still being built, so it is bounded by
         // `connect_timeout` rather than `response_timeout` (matching the async probe): one
-        // deadline covers establishment and both commands, each armed with what is left of it,
+        // deadline covers establishment and every command, each armed with what is left of it,
         // and a reply that trickles in past it is rejected rather than accepted late.
         let deadline = Self::setup_deadline(self.connect_timeout());
         let mut conn = self.get_connection_by_deadline(None, deadline)?;
         conn.set_timeouts(Self::remaining(deadline)?)?;
-        let is_sentinel = conn.check_is_redis_sentinel()?;
+        let mode = conn.redis_mode()?;
         Self::remaining(deadline)?;
-        if !is_sentinel {
-            return Ok(None);
-        }
-
-        conn.set_timeouts(Self::remaining(deadline)?)?;
-        let sentinel_masters = conn
-            .execute_command(None, "SENTINEL", Some("MASTERS"), None)
-            .and_then(redis_value_as_vec)?;
-        Self::remaining(deadline)?;
-
-        self.build_sentinel_clients(connection_info, sentinel_masters)
+        let reply = match mode.as_deref() {
+            Some("sentinel") => {
+                conn.set_timeouts(Self::remaining(deadline)?)?;
+                let sentinel_masters = conn
+                    .execute_command(None, "SENTINEL", Some("MASTERS"), None)
+                    .and_then(redis_value_as_vec)?;
+                Self::remaining(deadline)?;
+                ProbeReply::Sentinel(sentinel_masters)
+            }
+            Some("cluster") => ProbeReply::Cluster,
+            _ => ProbeReply::Standalone,
+        };
+        self.topology_from(connection_info, reply)
     }
 
+    /// Async counterpart of [`detect_topology`](Self::detect_topology).
     #[cfg(feature = "tokio")]
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Get Sentinel Clients", skip_all, level = "info")
+        tracing::instrument(name = "Detect Topology", skip_all, level = "info")
     )]
-    pub(crate) async fn get_sentinel_client_async(
+    pub(crate) async fn detect_topology_async(
         &mut self,
         connection_info: &redis::ConnectionInfo,
-    ) -> FalkorResult<Option<SentinelClients>> {
+    ) -> FalkorResult<Topology> {
         // Topology detection runs while the client is still being built, so it is bounded by
         // the connect timeout rather than the response timeout: the latter expresses "a query
         // must answer within X", not "the client must finish connecting within X". Applying
@@ -985,27 +1041,63 @@ impl FalkorClientProvider {
             let mut conn = self
                 .get_async_connection_with_timeouts(connect_timeout, connect_timeout)
                 .await?;
-            if !conn.check_is_redis_sentinel().await? {
-                return Ok(None);
-            }
-            conn.execute_command(None, "SENTINEL", Some("MASTERS"), None)
-                .await
-                .and_then(redis_value_as_vec)
-                .map(Some)
+            FalkorResult::Ok(match conn.redis_mode().await?.as_deref() {
+                Some("sentinel") => ProbeReply::Sentinel(
+                    conn.execute_command(None, "SENTINEL", Some("MASTERS"), None)
+                        .await
+                        .and_then(redis_value_as_vec)?,
+                ),
+                Some("cluster") => ProbeReply::Cluster,
+                _ => ProbeReply::Standalone,
+            })
         };
-        let sentinel_masters = match connect_timeout {
+        let reply = match connect_timeout {
             Some(timeout) => tokio::time::timeout(timeout, probe).await.map_err(|_| {
                 FalkorDBError::RedisError(
-                    "Sentinel detection did not finish within the connect timeout".to_string(),
+                    "Topology detection did not finish within the connect timeout".to_string(),
                 )
             })?,
             None => probe.await,
         }?;
-        let Some(sentinel_masters) = sentinel_masters else {
-            return Ok(None);
-        };
+        self.topology_from(connection_info, reply)
+    }
 
-        self.build_sentinel_clients(connection_info, sentinel_masters)
+    /// Route this provider's connections through what the probe found: Sentinel-resolved
+    /// nodes or the whole cluster. A standalone server is used as configured.
+    pub(crate) fn apply_topology(
+        &mut self,
+        topology: Topology,
+    ) {
+        match topology {
+            Topology::Standalone => {}
+            Topology::Sentinel(sentinels) => {
+                self.set_sentinel(sentinels.master);
+                if let Some(replica) = sentinels.replica {
+                    self.set_sentinel_replica(replica);
+                }
+            }
+            Topology::Cluster(cluster) => self.set_cluster(cluster),
+        }
+    }
+
+    /// Build the clients for the topology the probe found.
+    fn topology_from(
+        &self,
+        connection_info: &redis::ConnectionInfo,
+        reply: ProbeReply,
+    ) -> FalkorResult<Topology> {
+        match reply {
+            ProbeReply::Standalone => Ok(Topology::Standalone),
+            ProbeReply::Sentinel(sentinel_masters) => self
+                .build_sentinel_clients(connection_info, sentinel_masters)
+                .map(Topology::Sentinel),
+            ProbeReply::Cluster => Self::build_cluster_client(
+                connection_info,
+                self.response_timeout(),
+                self.connect_timeout(),
+            )
+            .map(Topology::Cluster),
+        }
     }
 
     /// Build both the master and replica [`SentinelClient`](redis::sentinel::SentinelClient)s
@@ -1014,7 +1106,7 @@ impl FalkorClientProvider {
         &self,
         connection_info: &redis::ConnectionInfo,
         sentinel_masters: Vec<redis::Value>,
-    ) -> FalkorResult<Option<SentinelClients>> {
+    ) -> FalkorResult<SentinelClients> {
         let master = self
             .build_sentinel_client(
                 connection_info,
@@ -1028,7 +1120,56 @@ impl FalkorClientProvider {
             redis::sentinel::SentinelServerType::Replica,
         )?;
 
-        Ok(Some(SentinelClients { master, replica }))
+        Ok(SentinelClients { master, replica })
+    }
+
+    /// Build a [`ClusterClient`](redis::cluster::ClusterClient) seeded with the configured node.
+    /// Credentials, TLS mode and protocol come from `connection_info` and its TCP settings are
+    /// forwarded; the other cluster nodes are discovered from the topology the seed node reports.
+    fn build_cluster_client(
+        connection_info: &redis::ConnectionInfo,
+        response_timeout: Option<std::time::Duration>,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> FalkorResult<redis::cluster::ClusterClient> {
+        // Unset, redis-rs would cap each node connection at one second; `None` means no limit.
+        let mut builder = redis::cluster::ClusterClient::builder([connection_info.clone()])
+            .tcp_settings(connection_info.tcp_settings().clone())
+            .connection_timeout(connect_timeout.unwrap_or(std::time::Duration::MAX));
+        if let Some(timeout) = response_timeout {
+            builder = builder.response_timeout(timeout);
+        }
+        builder
+            .build()
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
+    }
+}
+
+/// What the topology probe read from the server, before any client is built from it.
+enum ProbeReply {
+    Standalone,
+    /// The `SENTINEL MASTERS` reply.
+    Sentinel(Vec<redis::Value>),
+    Cluster,
+}
+
+/// What the configured address turned out to be.
+pub(crate) enum Topology {
+    /// A standalone server, used directly.
+    Standalone,
+    /// A Sentinel, with the master and optional replica clients it resolves.
+    Sentinel(SentinelClients),
+    /// A Redis Cluster node, with a client for the whole cluster seeded from it.
+    Cluster(redis::cluster::ClusterClient),
+}
+
+#[cfg(test)]
+impl Topology {
+    fn name(&self) -> &'static str {
+        match self {
+            Topology::Standalone => "standalone",
+            Topology::Sentinel(_) => "sentinel",
+            Topology::Cluster(_) => "cluster",
+        }
     }
 }
 
@@ -1187,6 +1328,7 @@ mod tests {
             client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             // No query deadline at all: setup is bounded on its own terms.
@@ -1196,7 +1338,7 @@ mod tests {
 
         let connection_info =
             redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
-        let probe = provider.get_sentinel_client_async(&connection_info).await;
+        let probe = provider.detect_topology_async(&connection_info).await;
 
         assert!(
             probe.is_err(),
@@ -1218,6 +1360,7 @@ mod tests {
             client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: Some(std::time::Duration::from_millis(5)),
@@ -1226,13 +1369,14 @@ mod tests {
 
         let connection_info =
             redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
-        let sentinels = provider
-            .get_sentinel_client_async(&connection_info)
+        let topology = provider
+            .detect_topology_async(&connection_info)
             .await
             .expect("detection must outlive the 5ms query response timeout");
 
-        assert!(
-            sentinels.is_none(),
+        assert_eq!(
+            topology.name(),
+            "standalone",
             "the fake server reports redis_mode:standalone, so no Sentinel clients are built"
         );
     }
@@ -1245,6 +1389,7 @@ mod tests {
             client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -1253,7 +1398,7 @@ mod tests {
 
         let connection_info =
             redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
-        let probe = provider.get_sentinel_client(&connection_info);
+        let probe = provider.detect_topology(&connection_info);
 
         assert!(
             probe.is_err(),
@@ -1269,6 +1414,7 @@ mod tests {
             client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: Some(std::time::Duration::from_millis(5)),
@@ -1277,12 +1423,13 @@ mod tests {
 
         let connection_info =
             redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
-        let sentinels = provider
-            .get_sentinel_client(&connection_info)
+        let topology = provider
+            .detect_topology(&connection_info)
             .expect("sync detection must outlive the 5ms query response timeout");
 
-        assert!(
-            sentinels.is_none(),
+        assert_eq!(
+            topology.name(),
+            "standalone",
             "the fake server reports redis_mode:standalone, so no Sentinel clients are built"
         );
     }
@@ -1313,6 +1460,7 @@ mod tests {
             client: redis::Client::open(url).expect("open a client for the fake server"),
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -1328,7 +1476,7 @@ mod tests {
         let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
         let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
         assert!(
-            provider.get_sentinel_client(&connection_info).is_err(),
+            provider.detect_topology(&connection_info).is_err(),
             "120ms + 120ms of setup must not fit a 200ms connect timeout"
         );
     }
@@ -1341,7 +1489,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
         assert!(
             provider
-                .get_sentinel_client_async(&connection_info)
+                .detect_topology_async(&connection_info)
                 .await
                 .is_err(),
             "120ms + 120ms of setup must not fit a 200ms connect timeout"
@@ -1396,7 +1544,7 @@ mod tests {
         let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
         let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
         assert!(
-            provider.get_sentinel_client(&connection_info).is_err(),
+            provider.detect_topology(&connection_info).is_err(),
             "a reply finished ~280ms into a 200ms setup deadline must not count as success"
         );
     }
@@ -1411,7 +1559,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
         let start = std::time::Instant::now();
         assert!(provider
-            .get_sentinel_client_async(&connection_info)
+            .detect_topology_async(&connection_info)
             .await
             .is_err());
         assert!(
@@ -1432,11 +1580,12 @@ mod tests {
         let url = spawn_slow_info_server(std::time::Duration::ZERO);
         let mut provider = provider_for(&url, std::time::Duration::MAX);
         let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
-        assert!(
+        assert_eq!(
             provider
-                .get_sentinel_client(&connection_info)
+                .detect_topology(&connection_info)
                 .expect("a standalone server is detected without a deadline")
-                .is_none(),
+                .name(),
+            "standalone",
             "the fake server reports redis_mode:standalone"
         );
     }
@@ -1447,12 +1596,13 @@ mod tests {
         let url = spawn_slow_info_server(std::time::Duration::ZERO);
         let mut provider = provider_for(&url, std::time::Duration::MAX);
         let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
-        assert!(
+        assert_eq!(
             provider
-                .get_sentinel_client_async(&connection_info)
+                .detect_topology_async(&connection_info)
                 .await
                 .expect("a standalone server is detected without a deadline")
-                .is_none(),
+                .name(),
+            "standalone",
             "the fake server reports redis_mode:standalone"
         );
     }
@@ -1465,6 +1615,7 @@ mod tests {
             client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: Some(std::time::Duration::from_millis(50)),
@@ -1607,6 +1758,7 @@ mod tests {
             client: redis::Client::open(connection_info).unwrap(),
             sentinel: Some(sentinel),
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: Some(std::time::Duration::from_millis(200)),
@@ -1651,6 +1803,7 @@ mod tests {
             client: redis::Client::open(connection_info).unwrap(),
             sentinel: Some(sentinel),
             sentinel_replica: Some(replica),
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -1724,6 +1877,7 @@ mod tests {
             client: redis::Client::open(connection_info).unwrap(),
             sentinel: Some(sentinel),
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -1818,6 +1972,7 @@ mod tests {
             client: redis::Client::open(connection_info).unwrap(),
             sentinel: None,
             sentinel_replica: Some(replica),
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: Some(std::time::Duration::from_millis(200)),
@@ -2499,6 +2654,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -2625,8 +2781,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:6379").unwrap();
         let clients = provider
             .build_sentinel_clients(&connection_info, single_master_reply("mymaster"))
-            .expect("clients should build")
-            .expect("a Sentinel reply yields clients");
+            .expect("clients should build");
         assert!(clients.replica.is_some());
     }
 
@@ -2647,6 +2802,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -2674,6 +2830,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             embedded_server: None,
             response_timeout: None,
             connect_timeout: None,
@@ -2689,6 +2846,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -2716,6 +2874,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: Some(replica),
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -2749,6 +2908,7 @@ mod tests {
                 client,
                 sentinel: None,
                 sentinel_replica: Some(replica),
+                cluster: None,
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
@@ -2772,6 +2932,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -2792,6 +2953,7 @@ mod tests {
                 client,
                 sentinel: None,
                 sentinel_replica: None,
+                cluster: None,
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
@@ -2833,6 +2995,7 @@ mod tests {
                 client,
                 sentinel: Some(sentinel),
                 sentinel_replica: None,
+                cluster: None,
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
@@ -2867,6 +3030,7 @@ mod tests {
                 client,
                 sentinel: None,
                 sentinel_replica: Some(replica),
+                cluster: None,
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
@@ -2891,6 +3055,7 @@ mod tests {
                 client,
                 sentinel: None,
                 sentinel_replica: None,
+                cluster: None,
                 #[cfg(feature = "embedded-core")]
                 embedded_server: None,
                 response_timeout: None,
@@ -2898,6 +3063,224 @@ mod tests {
             };
             let result = provider.get_async_replica_connection_manager(None).await;
             assert!(matches!(result, Err(FalkorDBError::UnavailableProvider)));
+        });
+    }
+
+    fn unreachable_cluster_client() -> redis::cluster::ClusterClient {
+        // Port 1 is reliably unroutable in test environments.
+        redis::cluster::ClusterClient::new(["redis://127.0.0.1:1"]).unwrap()
+    }
+
+    fn provider_with_cluster(
+        cluster: Option<redis::cluster::ClusterClient>
+    ) -> FalkorClientProvider {
+        FalkorClientProvider::Redis {
+            client: redis::Client::open("redis://127.0.0.1:6379").unwrap(),
+            sentinel: None,
+            sentinel_replica: None,
+            cluster,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: None,
+            connect_timeout: None,
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_set_cluster_on_redis_provider() {
+        let mut provider = provider_with_cluster(None);
+        assert!(!provider.has_cluster());
+        provider.set_cluster(unreachable_cluster_client());
+        assert!(provider.has_cluster());
+        // A cluster is not a Sentinel deployment and exposes no replica routing.
+        assert!(!provider.has_sentinel());
+        assert!(!provider.has_sentinel_replica());
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_set_cluster_on_none_provider_is_a_noop() {
+        let mut provider = FalkorClientProvider::None;
+        provider.set_cluster(unreachable_cluster_client());
+        assert!(!provider.has_cluster());
+    }
+
+    #[test]
+    fn test_get_connection_uses_the_cluster_client() {
+        // With a cluster client configured, the (unreachable) cluster is dialled rather than the
+        // plain `client`, which points at the live test server and would succeed.
+        let mut provider = provider_with_cluster(Some(unreachable_cluster_client()));
+        assert!(provider.get_connection().is_err());
+    }
+
+    #[test]
+    fn test_build_cluster_client_applies_response_timeout() {
+        let info = redis::ConnectionInfo::from_str("redis://127.0.0.1:7001").unwrap();
+        assert!(FalkorClientProvider::build_cluster_client(&info, None, None).is_ok());
+        assert!(FalkorClientProvider::build_cluster_client(
+            &info,
+            Some(std::time::Duration::from_secs(5)),
+            Some(std::time::Duration::from_secs(2))
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_build_cluster_client_accepts_credentials_of_the_seed_node() {
+        let info = redis::ConnectionInfo::from_str("redis://user:secret@127.0.0.1:7001").unwrap();
+        assert!(FalkorClientProvider::build_cluster_client(&info, None, None).is_ok());
+    }
+
+    #[test]
+    #[cfg(any(feature = "native-tls", feature = "rustls"))]
+    fn test_build_cluster_client_accepts_a_tls_seed_node() {
+        let info = redis::ConnectionInfo::from_str("rediss://127.0.0.1:7001/#insecure").unwrap();
+        assert!(FalkorClientProvider::build_cluster_client(&info, None, None).is_ok());
+    }
+
+    #[test]
+    fn test_build_cluster_client_rejects_unix_sockets() {
+        // A cluster is only reachable over TCP, so a unix-socket seed cannot be a cluster node.
+        let info = redis::ConnectionInfo::from_str("unix:///tmp/redis.sock").unwrap();
+        assert!(FalkorClientProvider::build_cluster_client(&info, None, None).is_err());
+    }
+
+    #[test]
+    fn test_detect_topology_requires_a_provider() {
+        let info = redis::ConnectionInfo::from_str("redis://127.0.0.1:6379").unwrap();
+        let mut provider = FalkorClientProvider::None;
+        assert_eq!(
+            provider.detect_topology(&info).err(),
+            Some(FalkorDBError::UnavailableProvider)
+        );
+    }
+
+    #[test]
+    fn test_topology_from_builds_the_clients_for_each_probe_reply() {
+        let provider = FalkorClientProvider::None;
+        let info = redis::ConnectionInfo::from_str("redis://127.0.0.1:7001").unwrap();
+        for (reply, expected) in [
+            (ProbeReply::Standalone, "standalone"),
+            (ProbeReply::Cluster, "cluster"),
+            (
+                ProbeReply::Sentinel(single_master_reply("mymaster")),
+                "sentinel",
+            ),
+        ] {
+            assert_eq!(
+                provider
+                    .topology_from(&info, reply)
+                    .map(|topology| topology.name()),
+                Ok(expected)
+            );
+        }
+    }
+
+    /// A server whose `INFO server` reports `redis_mode:cluster`.
+    fn spawn_cluster_mode_server() -> String {
+        let port = spawn_fake_resp_server(|command| {
+            if command.contains("\r\nINFO\r\n") {
+                let body = "# Server\r\nredis_mode:cluster\r\n";
+                format!("${}\r\n{body}\r\n", body.len())
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn test_detect_topology_recognizes_a_cluster_node() {
+        let url = spawn_cluster_mode_server();
+        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+        let info = redis::ConnectionInfo::from_str(&url).unwrap();
+        let topology = provider
+            .detect_topology(&info)
+            .expect("a cluster node is detected");
+        assert_eq!(topology.name(), "cluster");
+        provider.apply_topology(topology);
+        #[cfg(feature = "tokio")]
+        assert!(provider.has_cluster());
+    }
+
+    /// A Sentinel whose `INFO server` reports `redis_mode:sentinel`, monitoring one master.
+    fn spawn_sentinel_mode_server() -> String {
+        let port = spawn_fake_resp_server(|command| {
+            if command.contains("\r\nINFO\r\n") {
+                let body = "# Server\r\nredis_mode:sentinel\r\n";
+                format!("${}\r\n{body}\r\n", body.len())
+            } else if command.contains("\r\nMASTERS\r\n") {
+                "*1\r\n*2\r\n$4\r\nname\r\n$8\r\nmymaster\r\n".to_string()
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn test_detect_topology_recognizes_a_sentinel() {
+        let url = spawn_sentinel_mode_server();
+        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+        let info = redis::ConnectionInfo::from_str(&url).unwrap();
+        let topology = provider
+            .detect_topology(&info)
+            .expect("a Sentinel is detected");
+        assert_eq!(topology.name(), "sentinel");
+        provider.apply_topology(topology);
+        assert!(provider.has_sentinel_replica());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_detect_topology_async_recognizes_a_sentinel() {
+        let url = spawn_sentinel_mode_server();
+        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+        let info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert_eq!(
+            provider
+                .detect_topology_async(&info)
+                .await
+                .map(|topology| topology.name()),
+            Ok("sentinel")
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_detect_topology_async_recognizes_a_cluster_node() {
+        let url = spawn_cluster_mode_server();
+        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+        let info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert_eq!(
+            provider
+                .detect_topology_async(&info)
+                .await
+                .map(|topology| topology.name()),
+            Ok("cluster")
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn test_cluster_provider_async_paths_dial_the_cluster() {
+        use tokio::runtime::Runtime;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let info = redis::ConnectionInfo::from_str("redis://127.0.0.1:6379").unwrap();
+            let mut none = FalkorClientProvider::None;
+            assert_eq!(
+                none.detect_topology_async(&info).await.err(),
+                Some(FalkorDBError::UnavailableProvider)
+            );
+
+            // The plain `client` points at the live test server, so failing proves the
+            // (unreachable) cluster was dialled instead.
+            let mut provider = provider_with_cluster(Some(unreachable_cluster_client()));
+            assert!(provider.get_async_connection().await.is_err());
+            // The multiplexed backend hands out the cluster connection directly.
+            assert!(provider.get_async_connection_manager(None).await.is_err());
         });
     }
 }

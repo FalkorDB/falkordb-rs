@@ -302,6 +302,11 @@ fn server_message_hint(message: &str) -> Option<&'static str> {
             "the query exceeded its timeout — raise it with `QueryBuilder::with_timeout(ms)` (or the \
              batch query's `with_timeout(ms)`)",
         )
+    } else if message.contains("crossslot") {
+        Some(
+            "the keys hash to different Redis Cluster slots — give the graph names a shared hash \
+             tag, e.g. `{tenant}:source` and `{tenant}:copy`, so one node owns both",
+        )
     } else if message.contains("wrong number of arguments for 'graph")
         || message.contains("unknown command 'graph")
     {
@@ -428,6 +433,10 @@ mod tests {
                 "FalkorDB",
             ),
             ("ERR unknown command 'GRAPH.QUERY'", "FalkorDB"),
+            (
+                "CROSSSLOT: Keys in request don't hash to the same slot",
+                "hash tag",
+            ),
         ];
         for (message, needle) in cases {
             let hint = FalkorDBError::RedisError(message.to_string()).mitigation_hint();

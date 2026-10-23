@@ -32,6 +32,8 @@ OpenTelemetry-aligned tracing and metrics.
 - **Resilient** — opt-in `RetryPolicy` with bounded backoff for transient failures; writes are never retried.
 - **Observable** — OpenTelemetry-aligned `tracing` spans and `metrics` counters/histograms, privacy-safe by default.
 - **Replica-aware** — opt in to routing read-only queries to replicas behind Redis Sentinel.
+- **Cluster-aware** — connect to any node of a Redis Cluster; each graph command goes to the node
+  that owns the graph.
 - **Embedded server** — spin up a self-contained FalkorDB for tests and prototyping, with an
   optional build-time bundle mode that runs fully offline.
 
@@ -698,6 +700,33 @@ Against a single node (or any deployment without readable replicas),
 `replica_reads_available` returns `false` and reads
 use the primary. See [`examples/readonly_replica.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/readonly_replica.rs)
 for a complete working example.
+
+#### Redis Cluster
+
+Point the client at any node of a Redis Cluster running FalkorDB. While the client is built it
+sees that the node reports `redis_mode:cluster`, discovers the other nodes from it, and from then
+on sends each graph command to the node that owns the graph's hash slot, following the cluster's
+redirects when slots move. The sync client and both async connection strategies work this way.
+
+Commands that act on the whole server are routed for you:
+
+- `list_graphs` asks every primary and merges their answers, so
+  it lists the graphs of the whole cluster.
+- `config_set`, `udf_load`, `udf_delete` and `udf_flush` run on every primary and fail if any
+  of them refuses; `config_get`, `udf_list` and `redis_info` ask a single node.
+
+`copy_graph` makes the copy on the node that owns the source
+graph, so both names must hash to the same slot. Give them a shared hash tag (the part in braces,
+which is all Redis hashes):
+
+```rust
+// `{tenant42}` puts both graphs in one slot.
+client.copy_graph("{tenant42}:graph", "{tenant42}:copy")?;
+```
+
+Without one, the server rejects the copy with a `CROSSSLOT` error, whose
+`mitigation_hint` suggests a hash tag. Read-only queries run on
+the primaries: `ReadPreference::PreferReplica` routes to replicas only behind Redis Sentinel.
 
 ### Resilience and observability
 

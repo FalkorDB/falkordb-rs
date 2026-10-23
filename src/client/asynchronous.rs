@@ -459,6 +459,11 @@ impl FalkorAsyncClient {
 
     /// Copies an entire graph and returns the [`AsyncGraph`] for the new copied graph.
     ///
+    /// On a Redis Cluster both names must hash to the same slot, since the copy is made on the
+    /// node that owns the source: give them a shared hash tag, such as `{tenant}:source` and
+    /// `{tenant}:copy`. Otherwise the server rejects the copy with a `CROSSSLOT` error, whose
+    /// [`mitigation_hint`](FalkorDBError::mitigation_hint) says so.
+    ///
     /// # Arguments
     /// * `graph_to_clone`: A string identifier of the graph to copy.
     /// * `new_graph_name`: The name to give the new graph.
@@ -829,6 +834,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -866,6 +872,7 @@ mod tests {
             client,
             sentinel: None,
             sentinel_replica: Some(replica),
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,
@@ -894,6 +901,7 @@ mod tests {
             client: redis::Client::open("redis://127.0.0.1:6379").unwrap(),
             sentinel: None,
             sentinel_replica: None,
+            cluster: None,
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout: None,

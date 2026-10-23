@@ -104,7 +104,14 @@ jobs:
           cache-targets: "false"
           cache-bin: "false"
 
+      # The cluster suite is skipped unless FALKORDB_CLUSTER_URL is set, so start a cluster
+      # to measure the Redis Cluster code paths.
+      - name: Start FalkorDB cluster
+        run: just image=falkordb/falkordb:${{ needs.falkordb-version.outputs.version }} cluster-up
+
       - name: Generate Code Coverage
+        env:
+          FALKORDB_CLUSTER_URL: falkor://127.0.0.1:7001
         run: just coverage
       
       - name: Upload coverage reports to Codecov

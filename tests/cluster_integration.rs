@@ -1,0 +1,360 @@
+/*
+ * Copyright FalkorDB Ltd. 2023 - present
+ * Licensed under the MIT License.
+ */
+#![recursion_limit = "256"]
+
+//! Integration tests against a Redis Cluster running FalkorDB.
+//!
+//! They only run when `FALKORDB_CLUSTER_URL` points at any node of the cluster (for example
+//! `falkor://127.0.0.1:7001`); otherwise every test returns immediately. `just cluster-up` starts
+//! a local three-node cluster and `just test-cluster` runs this suite against it.
+//!
+//! Each test touches many graphs: graph names hash to different slots, so a client that cannot
+//! follow the cluster topology fails with `MOVED` errors on the ones owned by other nodes.
+
+use falkordb::{FalkorClientBuilder, FalkorConnectionInfo, FalkorDBError};
+
+const GRAPHS: usize = 16;
+
+/// What the server answers a `GRAPH.COPY` whose two names hash to different slots.
+fn cross_slot() -> FalkorDBError {
+    FalkorDBError::RedisError("CROSSSLOT Keys in request don't hash to the same slot".to_string())
+}
+
+fn cluster_info() -> Option<FalkorConnectionInfo> {
+    let url = std::env::var("FALKORDB_CLUSTER_URL").ok()?;
+    Some(FalkorConnectionInfo::try_from(url.as_str()).expect("valid FALKORDB_CLUSTER_URL"))
+}
+
+fn graph_name(
+    prefix: &str,
+    i: usize,
+) -> String {
+    format!("{prefix}_{i}")
+}
+
+#[test]
+fn sync_client_routes_commands_across_cluster_nodes() {
+    let Some(info) = cluster_info() else { return };
+    let client = FalkorClientBuilder::new()
+        .with_connection_info(info)
+        .build()
+        .expect("cluster client");
+
+    assert_eq!(
+        client
+            .redis_info(Some("server"))
+            .expect("info")
+            .get("redis_mode")
+            .map(String::as_str),
+        Some("cluster"),
+        "FALKORDB_CLUSTER_URL must point at a cluster node"
+    );
+
+    for i in 0..GRAPHS {
+        let mut graph = client.select_graph(graph_name("rs_cluster_sync", i));
+        graph
+            .query("CREATE (:N {v: $v})")
+            .with_param("v", i as i64)
+            .execute()
+            .expect("write routed to the owning node");
+        let count = graph
+            .ro_query("MATCH (n:N) RETURN count(n)")
+            .execute()
+            .expect("read routed to the owning node")
+            .data
+            .next()
+            .expect("a row")
+            .expect("row parses")
+            .try_get_at::<i64>(0)
+            .expect("count");
+        assert_eq!(count, 1);
+        graph.delete().expect("delete");
+    }
+}
+
+#[test]
+fn sync_batch_is_routed_to_the_owning_node() {
+    let Some(info) = cluster_info() else { return };
+    let client = FalkorClientBuilder::new()
+        .with_connection_info(info)
+        .build()
+        .expect("cluster client");
+
+    for i in 0..GRAPHS {
+        let mut graph = client.select_graph(graph_name("rs_cluster_batch", i));
+        let mut batch = graph.batch();
+        batch.query("CREATE (:N)");
+        batch.query("CREATE (:N)");
+        batch.ro_query("MATCH (n:N) RETURN count(n) AS c");
+        let results = batch.execute().expect("batch dispatched");
+        let count: i64 = results[2].as_ref().expect("count ok").data[0]
+            .try_get("c")
+            .expect("count");
+        assert_eq!(count, 2);
+        graph.delete().expect("delete");
+    }
+}
+
+#[test]
+fn sync_list_graphs_spans_every_primary() {
+    let Some(info) = cluster_info() else { return };
+    let client = FalkorClientBuilder::new()
+        .with_connection_info(info)
+        .build()
+        .expect("cluster client");
+
+    let mut graphs: Vec<_> = (0..GRAPHS)
+        .map(|i| client.select_graph(graph_name("rs_cluster_list", i)))
+        .collect();
+    for graph in &mut graphs {
+        graph.query("CREATE (:N)").execute().expect("create");
+    }
+
+    // A keyless command would otherwise reach one random node and list only its graphs, so
+    // check every call, not just one.
+    for _ in 0..3 {
+        let listed = client.list_graphs().expect("list");
+        for i in 0..GRAPHS {
+            assert!(
+                listed.contains(&graph_name("rs_cluster_list", i)),
+                "graph {i} missing from the cluster-wide listing"
+            );
+        }
+    }
+    for graph in &mut graphs {
+        graph.delete().expect("delete");
+    }
+}
+
+#[test]
+fn sync_copy_graph_needs_a_shared_hash_tag() {
+    let Some(info) = cluster_info() else { return };
+    let client = FalkorClientBuilder::new()
+        .with_connection_info(info)
+        .build()
+        .expect("cluster client");
+
+    // The `{rs_copy}` hash tag puts both graphs in one slot, owned by one node.
+    let mut source = client.select_graph("{rs_copy}:source");
+    source
+        .query("CREATE (:N {v: 7})")
+        .execute()
+        .expect("create");
+    let mut copy = client
+        .copy_graph("{rs_copy}:source", "{rs_copy}:copy")
+        .expect("copy within one slot");
+    let copied = copy
+        .ro_query("MATCH (n:N) RETURN n.v")
+        .execute()
+        .expect("read the copy")
+        .data
+        .next()
+        .expect("a row")
+        .expect("row parses")
+        .try_get_at::<i64>(0)
+        .expect("v");
+    assert_eq!(copied, 7);
+
+    // An untagged name hashes to another slot: the server refuses, and the hint says why.
+    let Err(err) = client.copy_graph("{rs_copy}:source", "rs_copy_untagged") else {
+        panic!("a copy across slots must fail");
+    };
+    assert_eq!(err, cross_slot());
+    assert!(err
+        .mitigation_hint()
+        .is_some_and(|hint| hint.contains("hash tag")));
+    assert!(!client
+        .list_graphs()
+        .expect("list")
+        .contains(&"rs_copy_untagged".to_string()));
+
+    source.delete().expect("delete source");
+    copy.delete().expect("delete copy");
+}
+
+#[test]
+fn sync_config_and_udf_commands_reach_the_cluster() {
+    let Some(info) = cluster_info() else { return };
+    let client = FalkorClientBuilder::new()
+        .with_connection_info(info)
+        .build()
+        .expect("cluster client");
+
+    client
+        .config_set("RESULTSET_SIZE", 1234)
+        .expect("config set on every primary");
+    assert_eq!(
+        client.config_get("RESULTSET_SIZE").expect("config get")["RESULTSET_SIZE"],
+        falkordb::ConfigValue::Int64(1234)
+    );
+    client
+        .config_set("RESULTSET_SIZE", -1)
+        .expect("restore config");
+
+    let script = "function f(a, b) { return a + b; }\nfalkor.register('f', f);\n";
+    client
+        .udf_load("rs_cluster_lib", script, true)
+        .expect("udf load on every primary");
+    assert!(client.udf_list(None, false).is_ok());
+    client
+        .udf_delete("rs_cluster_lib")
+        .expect("udf delete on every primary");
+    client.udf_flush().expect("udf flush on every primary");
+}
+
+#[cfg(feature = "tokio")]
+mod asynchronous {
+    use super::*;
+    use falkordb::ConnectionStrategy;
+    use futures::StreamExt;
+    use std::num::NonZeroU8;
+
+    async fn exercise(
+        prefix: &str,
+        strategy: ConnectionStrategy,
+    ) {
+        let Some(info) = cluster_info() else { return };
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_info(info)
+            .with_connection_strategy(strategy)
+            .build()
+            .await
+            .expect("cluster client");
+
+        for i in 0..GRAPHS {
+            let mut graph = client.select_graph(graph_name(prefix, i));
+            graph
+                .query("CREATE (:N {v: $v})")
+                .with_param("v", i as i64)
+                .execute()
+                .await
+                .expect("write routed to the owning node");
+            let count = graph
+                .ro_query("MATCH (n:N) RETURN count(n)")
+                .execute()
+                .await
+                .expect("read routed to the owning node")
+                .data
+                .next()
+                .await
+                .expect("a row")
+                .expect("row parses")
+                .try_get_at::<i64>(0)
+                .expect("count");
+            assert_eq!(count, 1);
+
+            let mut batch = graph.batch();
+            batch.query("CREATE (:N)");
+            batch.ro_query("MATCH (n:N) RETURN count(n) AS c");
+            let results = batch.execute().await.expect("batch dispatched");
+            let count: i64 = results[1].as_ref().expect("count ok").data[0]
+                .try_get("c")
+                .expect("count");
+            assert_eq!(count, 2);
+            graph.delete().await.expect("delete");
+        }
+
+        assert!(client.list_graphs().await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_graphs_spans_every_primary() {
+        let Some(info) = cluster_info() else { return };
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_info(info)
+            .build()
+            .await
+            .expect("cluster client");
+
+        let mut graphs: Vec<_> = (0..GRAPHS)
+            .map(|i| client.select_graph(graph_name("rs_cluster_list_async", i)))
+            .collect();
+        for graph in &mut graphs {
+            graph.query("CREATE (:N)").execute().await.expect("create");
+        }
+        for _ in 0..3 {
+            let listed = client.list_graphs().await.expect("list");
+            for i in 0..GRAPHS {
+                assert!(
+                    listed.contains(&graph_name("rs_cluster_list_async", i)),
+                    "graph {i} missing from the cluster-wide listing"
+                );
+            }
+        }
+        for graph in &mut graphs {
+            graph.delete().await.expect("delete");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn copy_graph_needs_a_shared_hash_tag() {
+        let Some(info) = cluster_info() else { return };
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_info(info)
+            .build()
+            .await
+            .expect("cluster client");
+
+        let mut source = client.select_graph("{rs_copy_async}:source");
+        source
+            .query("CREATE (:N {v: 7})")
+            .execute()
+            .await
+            .expect("create");
+        let mut copy = client
+            .copy_graph("{rs_copy_async}:source", "{rs_copy_async}:copy")
+            .await
+            .expect("copy within one slot");
+        let copied = copy
+            .ro_query("MATCH (n:N) RETURN n.v")
+            .execute()
+            .await
+            .expect("read the copy")
+            .data
+            .next()
+            .await
+            .expect("a row")
+            .expect("row parses")
+            .try_get_at::<i64>(0)
+            .expect("v");
+        assert_eq!(copied, 7);
+
+        let Err(err) = client
+            .copy_graph("{rs_copy_async}:source", "rs_copy_async_untagged")
+            .await
+        else {
+            panic!("a copy across slots must fail");
+        };
+        assert_eq!(err, cross_slot());
+        assert!(err
+            .mitigation_hint()
+            .is_some_and(|hint| hint.contains("hash tag")));
+
+        source.delete().await.expect("delete source");
+        copy.delete().await.expect("delete copy");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multiplexed_client_routes_commands_across_cluster_nodes() {
+        exercise(
+            "rs_cluster_mux",
+            ConnectionStrategy::Multiplexed {
+                connections: NonZeroU8::new(2).unwrap(),
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pooled_client_routes_commands_across_cluster_nodes() {
+        exercise(
+            "rs_cluster_pool",
+            ConnectionStrategy::Pooled {
+                size: NonZeroU8::new(2).unwrap(),
+            },
+        )
+        .await;
+    }
+}

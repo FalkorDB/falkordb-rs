@@ -327,6 +327,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                     client,
                     sentinel: None,
                     sentinel_replica: None,
+                    cluster: None,
                     embedded_server: Some(embedded_server),
                     response_timeout,
                     connect_timeout,
@@ -351,6 +352,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                         client,
                         sentinel: None,
                         sentinel_replica: None,
+                        cluster: None,
                         #[cfg(feature = "embedded-core")]
                         embedded_server: None,
                         response_timeout,
@@ -405,12 +407,8 @@ impl FalkorClientBuilder<'S'> {
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
-            if let Some(sentinels) = client.get_sentinel_client(redis_conn_info)? {
-                client.set_sentinel(sentinels.master);
-                if let Some(replica) = sentinels.replica {
-                    client.set_sentinel_replica(replica);
-                }
-            }
+            let topology = client.detect_topology(redis_conn_info)?;
+            client.apply_topology(topology);
         }
         FalkorSyncClient::create(
             client,
@@ -529,12 +527,8 @@ impl FalkorClientBuilder<'A'> {
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
-            if let Some(sentinels) = client.get_sentinel_client_async(redis_conn_info).await? {
-                client.set_sentinel(sentinels.master);
-                if let Some(replica) = sentinels.replica {
-                    client.set_sentinel_replica(replica);
-                }
-            }
+            let topology = client.detect_topology_async(redis_conn_info).await?;
+            client.apply_topology(topology);
         }
         FalkorAsyncClient::create(
             client,

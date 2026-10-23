@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Support Redis Cluster deployments. Point the client at any node of the cluster: it detects the
+  cluster while it is built and sends each graph command to the node that owns the graph's hash
+  slot, on the sync client and both async connection strategies. `list_graphs` asks every primary
+  and merges their graph names instead of listing a single node's, and `config_set` and the UDF
+  load, delete and flush commands run on every primary. `copy_graph` needs both names to share a
+  hash tag on a cluster, as its docs now say, and the `CROSSSLOT` error it gets otherwise carries a
+  mitigation hint suggesting one
+
 ### Fixed
 
 - Report a server's error reply as an error for every command. redis-rs hands error replies back

@@ -1220,6 +1220,7 @@ pub(crate) mod test_utils {
     /// dies holding it, and the registry is emptied on acquire, so a library a failed test left
     /// behind cannot break the next one.
     pub(crate) struct UdfRegistryLock {
+        token: String,
         release: Option<std::sync::mpsc::Sender<()>>,
         keeper: Option<std::thread::JoinHandle<bool>>,
     }
@@ -1231,17 +1232,17 @@ pub(crate) mod test_utils {
 
         /// A plain connection to the server the test clients use, as `FalkorClientBuilder::new`
         /// defaults to.
-        fn test_server() -> redis::Connection {
+        fn test_server() -> redis::RedisResult<redis::Connection> {
             let address = FalkorConnectionInfo::try_from(client::builder::DEFAULT_CONNECTION_URL)
                 .expect("the default connection info is valid")
                 .address();
             redis::Client::open(format!("redis://{address}"))
                 .and_then(|client| client.get_connection())
-                .expect("connect to the test server for the UDF registry lock")
         }
 
         pub(crate) fn acquire() -> Self {
-            let mut conn = Self::test_server();
+            let mut conn =
+                Self::test_server().expect("connect to the test server for the UDF registry lock");
             let token = format!("{}:{:?}", std::process::id(), std::thread::current().id());
             while redis::cmd("SET")
                 .arg(Self::KEY)
@@ -1261,31 +1262,46 @@ pub(crate) mod test_utils {
                 .expect("start from an empty UDF registry");
 
             let (release, released) = std::sync::mpsc::channel::<()>();
+            let keeper_token = token.clone();
             let keeper = std::thread::spawn(move || {
-                let mut held = true;
-                while held
+                let mut conn = Some(conn);
+                // Only a server's answer can show the lock was lost; a failed round trip cannot.
+                let mut lost = false;
+                while !lost
                     && released
                         .recv_timeout(Self::RENEW_EVERY)
-                        .is_err_and(|err| matches!(err, std::sync::mpsc::RecvTimeoutError::Timeout))
+                        .is_err_and(|err| err == std::sync::mpsc::RecvTimeoutError::Timeout)
                 {
-                    held =
-                        Self::if_held(&mut conn, &token, "redis.call('pexpire', KEYS[1], ARGV[2])");
+                    lost = Self::if_held(
+                        &mut conn,
+                        &keeper_token,
+                        "redis.call('pexpire', KEYS[1], ARGV[2])",
+                    ) == Some(false);
                 }
-                Self::if_held(&mut conn, &token, "redis.call('del', KEYS[1])") && held
+                let released =
+                    Self::if_held(&mut conn, &keeper_token, "redis.call('del', KEYS[1])");
+                !lost && released != Some(false)
             });
             Self {
+                token,
                 release: Some(release),
                 keeper: Some(keeper),
             }
         }
 
-        /// Run `action` on the lock key if `token` still holds it, reporting whether it did.
+        /// Run `action` on the lock key if `token` still holds it: `Some(held)` when the server
+        /// answered, `None` when it could not be reached. A failed round trip drops the
+        /// connection, so the next call opens a fresh one.
         fn if_held(
-            conn: &mut redis::Connection,
+            conn: &mut Option<redis::Connection>,
             token: &str,
             action: &str,
-        ) -> bool {
-            redis::cmd("EVAL")
+        ) -> Option<bool> {
+            let connection = match conn {
+                Some(connection) => connection,
+                None => conn.insert(Self::test_server().ok()?),
+            };
+            let held = redis::cmd("EVAL")
                 .arg(format!(
                     "if redis.call('get', KEYS[1]) == ARGV[1] then {action} return 1 else return 0 end"
                 ))
@@ -1293,8 +1309,13 @@ pub(crate) mod test_utils {
                 .arg(Self::KEY)
                 .arg(token)
                 .arg(Self::LEASE_MS)
-                .query::<i64>(conn)
-                .is_ok_and(|done| done == 1)
+                .query::<i64>(connection)
+                .map(|done| done == 1)
+                .ok();
+            if held.is_none() {
+                *conn = None;
+            }
+            held
         }
     }
 
@@ -1315,7 +1336,7 @@ pub(crate) mod test_utils {
     fn udf_registry_lock_renews_its_lease_and_releases_it() {
         let lock = UdfRegistryLock::acquire();
         std::thread::sleep(UdfRegistryLock::RENEW_EVERY + std::time::Duration::from_millis(500));
-        let mut conn = UdfRegistryLock::test_server();
+        let mut conn = UdfRegistryLock::test_server().expect("connect to the test server");
         let ttl: i64 = redis::cmd("PTTL")
             .arg(UdfRegistryLock::KEY)
             .query(&mut conn)
@@ -1323,12 +1344,19 @@ pub(crate) mod test_utils {
         // Unrenewed, 2.5s into a 10s lease would leave about 7.5s.
         assert!(ttl > 8_000, "the lease was not renewed: {ttl}ms left");
 
+        // Another test may take the lock as soon as it is released, so check only that it no
+        // longer holds this guard's token.
+        let token = lock.token.clone();
         drop(lock);
-        let held: bool = redis::cmd("EXISTS")
+        let owner: Option<String> = redis::cmd("GET")
             .arg(UdfRegistryLock::KEY)
             .query(&mut conn)
-            .expect("check the lock");
-        assert!(!held, "the lock must be released on drop");
+            .expect("read the lock");
+        assert_ne!(
+            owner.as_deref(),
+            Some(token.as_str()),
+            "the lock must be released on drop"
+        );
     }
 
     /// A FalkorDB UDF library script registering `name(a, b)`, which returns `body`.

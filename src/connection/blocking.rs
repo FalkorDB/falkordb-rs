@@ -151,12 +151,16 @@ impl BorrowedSyncConnection {
     /// Open a connection to replace a dead one, routed like the pool this slot belongs to (a
     /// replica for the read-only pool), reporting any failure as `NoConnection`.
     fn open_replacement(&self) -> FalkorResult<FalkorSyncConnection> {
-        if self.readonly {
+        let conn = if self.readonly {
             self.client.get_replica_connection()
         } else {
             self.client.get_connection()
+        };
+        #[cfg(feature = "tracing")]
+        if let Err(ref err) = conn {
+            crate::observability::record_reconnect_failure(self.readonly, err);
         }
-        .map_err(|_| FalkorDBError::NoConnection)
+        conn.map_err(|_| FalkorDBError::NoConnection)
     }
 
     #[cfg_attr(
@@ -200,12 +204,20 @@ impl BorrowedSyncConnection {
 
     /// Fetch `INFO` for `section`, with the same dead-connection recovery as
     /// [`execute_command`](Self::execute_command).
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "Borrowed Connection Get Redis Info",
+            skip_all,
+            level = "trace"
+        )
+    )]
     pub(crate) fn get_redis_info(
         &mut self,
         section: Option<&str>,
     ) -> FalkorResult<HashMap<String, String>> {
-        self.execute_command(None, "INFO", section, None)
-            .and_then(parse_redis_info)
+        let result = self.as_inner()?.get_redis_info(section);
+        self.recover_on_connection_down(result)
     }
 
     /// On a dead-connection error, drop the dead connection and swap in a fresh one so a live one is
@@ -309,6 +321,7 @@ mod tests {
                 conn.execute_command(None, "PING", None, None),
                 Err(FalkorDBError::NoConnection)
             );
+            assert_eq!(conn.get_redis_info(None), Err(FalkorDBError::NoConnection));
 
             drop(conn);
             assert_eq!(

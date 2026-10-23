@@ -177,12 +177,16 @@ impl BorrowedAsyncConnection {
     /// Open a connection to replace a dead pooled one, routed like the pool this slot belongs to
     /// (a replica for the read-only pool), reporting any failure as `NoConnection`.
     async fn open_replacement(&self) -> FalkorResult<FalkorAsyncConnection> {
-        if self.readonly {
+        let conn = if self.readonly {
             self.client.get_async_replica_connection().await
         } else {
             self.client.get_async_connection().await
+        };
+        #[cfg(feature = "tracing")]
+        if let Err(ref err) = conn {
+            crate::observability::record_reconnect_failure(self.readonly, err);
         }
-        .map_err(|_| FalkorDBError::NoConnection)
+        conn.map_err(|_| FalkorDBError::NoConnection)
     }
 
     #[cfg_attr(
@@ -229,13 +233,20 @@ impl BorrowedAsyncConnection {
 
     /// Fetch `INFO` for `section`, with the same dead-connection recovery as
     /// [`execute_command`](Self::execute_command).
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            name = "Borrowed Connection Get Redis Info",
+            skip_all,
+            level = "trace"
+        )
+    )]
     pub(crate) async fn get_redis_info(
-        self,
+        mut self,
         section: Option<&str>,
     ) -> FalkorResult<HashMap<String, String>> {
-        self.execute_command(None, "INFO", section, None)
-            .await
-            .and_then(parse_redis_info)
+        let result = self.as_inner().await?.get_redis_info(section).await;
+        self.recover_on_connection_down(result).await
     }
 
     /// On a dead pooled connection, drop it and swap in a fresh one so a live one is returned to the
@@ -362,6 +373,17 @@ mod tests {
                 "the slot must not be lost"
             );
         }
+
+        let (conn, mut rx) = borrowed_from_unreachable(None, false);
+        assert_eq!(
+            conn.get_redis_info(None).await,
+            Err(FalkorDBError::NoConnection)
+        );
+        assert_eq!(
+            rx.try_recv().map(|slot| slot.is_none()),
+            Ok(true),
+            "the slot must not be lost"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -14,14 +14,25 @@ use falkordb::{
     FalkorClientBuilder, FalkorConnectionInfo, FalkorDBError, FalkorResult, ReadPreference,
 };
 
-fn get_test_connection_info() -> FalkorResult<FalkorConnectionInfo> {
+fn test_server_address() -> (String, u16) {
     let host = std::env::var("FALKORDB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port: u16 = std::env::var("FALKORDB_PORT")
         .unwrap_or_else(|_| "6379".to_string())
         .parse()
         .unwrap_or(6379);
+    (host, port)
+}
 
+fn get_test_connection_info() -> FalkorResult<FalkorConnectionInfo> {
+    let (host, port) = test_server_address();
     FalkorConnectionInfo::try_from((host.as_str(), port))
+}
+
+/// Whether the test endpoint is a Sentinel deployment, as declared by `FALKORDB_SENTINEL`.
+fn endpoint_is_sentinel() -> bool {
+    std::env::var("FALKORDB_SENTINEL")
+        .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(false)
 }
 
 fn skip_if_no_server() -> bool {
@@ -201,10 +212,7 @@ fn test_replica_reads_available_single_node() {
     // which case `replica_reads_available()` may legitimately be true. Only assert the
     // single-node expectation (no replica connections) when the endpoint is known to be
     // non-Sentinel; set FALKORDB_SENTINEL to skip that strict assertion.
-    let is_sentinel = std::env::var("FALKORDB_SENTINEL")
-        .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
-        .unwrap_or(false);
-    if !is_sentinel {
+    if !endpoint_is_sentinel() {
         assert!(!client.replica_reads_available());
     }
 
@@ -1918,5 +1926,151 @@ mod async_schema_refresh {
         .expect("all tasks finish before the deadline");
 
         let _ = graph.delete().await;
+    }
+}
+
+/// A pooled connection that dies while the server cannot be reached must not be handed to the
+/// next command once the server is back.
+mod connection_recovery {
+    use super::{endpoint_is_sentinel, skip_if_no_server, test_server_address};
+    use falkordb::{FalkorClientBuilder, FalkorConnectionInfo, FalkorDBError};
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::num::NonZeroU8;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    /// A TCP proxy in front of the test server that can simulate an outage: [`cut`](Self::cut)
+    /// severs every proxied connection and turns new ones away until [`restore`](Self::restore).
+    struct OutageProxy {
+        port: u16,
+        up: Arc<AtomicBool>,
+        sockets: Arc<Mutex<Vec<TcpStream>>>,
+    }
+
+    impl OutageProxy {
+        fn start() -> Self {
+            let server = test_server_address();
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind the proxy");
+            let port = listener
+                .local_addr()
+                .expect("read the proxy address")
+                .port();
+            let up = Arc::new(AtomicBool::new(true));
+            let sockets = Arc::new(Mutex::new(Vec::new()));
+            let (accepting, tracked) = (Arc::clone(&up), Arc::clone(&sockets));
+            std::thread::spawn(move || {
+                for client in listener.incoming().flatten() {
+                    // During an outage the accepted socket is dropped, turning the client away.
+                    if !accepting.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let Ok(upstream) = TcpStream::connect(&server) else {
+                        continue;
+                    };
+                    tracked
+                        .lock()
+                        .unwrap()
+                        .extend([clone(&client), clone(&upstream)]);
+                    pump(clone(&client), clone(&upstream));
+                    pump(upstream, client);
+                }
+            });
+            Self { port, up, sockets }
+        }
+
+        fn connection_info(&self) -> FalkorConnectionInfo {
+            FalkorConnectionInfo::try_from(("127.0.0.1", self.port)).expect("proxy connection info")
+        }
+
+        fn cut(&self) {
+            self.up.store(false, Ordering::SeqCst);
+            for socket in self.sockets.lock().unwrap().drain(..) {
+                let _ = socket.shutdown(Shutdown::Both);
+            }
+        }
+
+        fn restore(&self) {
+            self.up.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn clone(socket: &TcpStream) -> TcpStream {
+        socket.try_clone().expect("clone a proxied socket")
+    }
+
+    fn pump(
+        mut from: TcpStream,
+        mut to: TcpStream,
+    ) {
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut from, &mut to);
+            let _ = to.shutdown(Shutdown::Both);
+        });
+    }
+
+    #[test]
+    fn pooled_sync_client_recovers_after_transient_outage() {
+        // Sentinel hands out node addresses, so data connections would bypass the proxy.
+        if skip_if_no_server() || endpoint_is_sentinel() {
+            return;
+        }
+        let proxy = OutageProxy::start();
+        let client = FalkorClientBuilder::new()
+            .with_connection_info(proxy.connection_info())
+            .with_num_connections(NonZeroU8::MIN)
+            .build()
+            .expect("build a client through the proxy");
+        client
+            .list_graphs()
+            .expect("the proxy forwards to the server");
+
+        proxy.cut();
+        assert!(
+            matches!(client.list_graphs(), Err(FalkorDBError::NoConnection)),
+            "the pooled connection died and the server cannot be reached to replace it"
+        );
+
+        proxy.restore();
+        for attempt in 1..=3 {
+            client
+                .list_graphs()
+                .unwrap_or_else(|err| panic!("command {attempt} after the outage failed: {err}"));
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pooled_async_client_recovers_after_transient_outage() {
+        // Sentinel hands out node addresses, so data connections would bypass the proxy.
+        if skip_if_no_server() || endpoint_is_sentinel() {
+            return;
+        }
+        let proxy = OutageProxy::start();
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_info(proxy.connection_info())
+            .with_connection_strategy(falkordb::ConnectionStrategy::Pooled {
+                size: NonZeroU8::MIN,
+            })
+            .build()
+            .await
+            .expect("build a client through the proxy");
+        client
+            .list_graphs()
+            .await
+            .expect("the proxy forwards to the server");
+
+        proxy.cut();
+        assert!(
+            matches!(client.list_graphs().await, Err(FalkorDBError::NoConnection)),
+            "the pooled connection died and the server cannot be reached to replace it"
+        );
+
+        proxy.restore();
+        for attempt in 1..=3 {
+            client
+                .list_graphs()
+                .await
+                .unwrap_or_else(|err| panic!("command {attempt} after the outage failed: {err}"));
+        }
     }
 }

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Never hand a dead pooled connection to the next command. When a command failed with
+  `ConnectionDown` and no replacement connection could be opened (for example while the server
+  was restarting), the dead connection went back into the pool, so the first command after the
+  server recovered failed again. The pool slot now goes back empty, without shrinking the pool,
+  and the next command on it opens a fresh connection; with the `tracing` feature, a failed
+  reconnect is logged as a warning with the underlying connection error, since callers only see
+  `NoConnection`. `redis_info` gets the same dead-connection recovery as other commands, and
+  multiplexed async borrows no longer take a needless replacement handle on `ConnectionDown`,
+  since their `ConnectionManager` reconnects on its own
+  ([#400](https://github.com/FalkorDB/falkordb-rs/pull/400))
 - Apply `with_connect_timeout` and `with_response_timeout` to synchronous connections (direct,
   Sentinel-resolved primary, Sentinel-resolved replica, and the synchronous Sentinel topology
   probe during `build`) instead of ignoring both deadlines on sync clients, and forward

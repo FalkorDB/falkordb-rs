@@ -231,10 +231,28 @@ pub(crate) fn record_retry(
     .increment(1);
 }
 
-/// The bounded `route` metric label for a borrow: whether it came from the replica-routed pool or
-/// the primary. (The borrow's read-only flag means "served from a replica", not "read operation" —
+/// Record that a dead pooled connection could not be replaced: a `tracing` warning carrying the
+/// underlying connect error, which callers only see as
+/// [`NoConnection`](FalkorDBError::NoConnection). Connection-setup errors never carry query text or
+/// parameters, so the message is included for diagnosis.
+#[cfg(feature = "tracing")]
+pub(crate) fn record_reconnect_failure(
+    from_replica: bool,
+    error: &FalkorDBError,
+) {
+    tracing::warn!(
+        target: "falkordb",
+        route = route_label(from_replica),
+        error_kind = error_kind(error),
+        %error,
+        "could not open a replacement pooled connection"
+    );
+}
+
+/// The bounded `route` label for a borrow: whether it came from the replica-routed pool or the
+/// primary. (The borrow's read-only flag means "served from a replica", not "read operation" —
 /// a read-only query falls back to the primary when no replica route exists.)
-#[cfg(feature = "metrics")]
+#[cfg(any(feature = "tracing", feature = "metrics"))]
 fn route_label(from_replica: bool) -> &'static str {
     if from_replica {
         "replica"
@@ -477,6 +495,16 @@ mod span_capture_tests {
             values.record(&mut visitor);
             self.0.lock().unwrap().extend(visitor.0);
         }
+
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: Context<'_, S>,
+        ) {
+            let mut visitor = Visitor::default();
+            event.record(&mut visitor);
+            self.0.lock().unwrap().extend(visitor.0);
+        }
     }
 
     fn capture(body: impl FnOnce()) -> HashMap<String, String> {
@@ -527,6 +555,21 @@ mod span_capture_tests {
         assert_eq!(
             fields.get("error.type").map(String::as_str),
             Some("connection_down")
+        );
+    }
+
+    #[test]
+    fn reconnect_failure_warning_carries_route_kind_and_error() {
+        let error = crate::FalkorDBError::RedisError("Connection refused (os error 61)".into());
+        let fields = capture(|| super::record_reconnect_failure(true, &error));
+        assert_eq!(fields.get("route").map(String::as_str), Some("replica"));
+        assert_eq!(
+            fields.get("error_kind").map(String::as_str),
+            Some("redis_error")
+        );
+        assert_eq!(
+            fields.get("error").map(String::as_str),
+            Some(error.to_string().as_str())
         );
     }
 

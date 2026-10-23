@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and merges their graph names instead of listing a single node's, and `config_set` and the UDF
   load, delete and flush commands run on every primary. `copy_graph` needs both names to share a
   hash tag on a cluster, as its docs now say, and the `CROSSSLOT` error it gets otherwise carries a
-  mitigation hint suggesting one
+  mitigation hint suggesting one ([#402](https://github.com/FalkorDB/falkordb-rs/pull/402))
 
 ### Fixed
 

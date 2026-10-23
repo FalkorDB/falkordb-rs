@@ -966,36 +966,33 @@ mod tests {
     #[test]
     fn test_server_error_replies_are_errors() {
         let client = create_test_client();
-        let empty_key = || {
-            Err(FalkorDBError::RedisError(
-                "Invalid graph operation on empty key".to_string(),
-            ))
-        };
+        // The error a command failed with (empty if it succeeded). Tests check only a stable part
+        // of the server's message, whose exact wording varies between server versions.
+        let error =
+            |result: FalkorResult<()>| result.err().map(|err| err.to_string()).unwrap_or_default();
 
         // These replies used to be ignored, so the commands reported success.
-        assert_eq!(
+        let copy = error(
             client
                 .copy_graph("rs_missing_graph", "rs_missing_graph_copy")
                 .map(|_| ()),
-            empty_key()
         );
-        assert_eq!(
-            client.select_graph("rs_missing_graph").delete().map(|_| ()),
-            empty_key()
+        assert!(
+            copy.contains("Invalid graph operation on empty key"),
+            "{copy:?}"
         );
-        assert_eq!(
-            client.config_set("NO_SUCH_CONFIG_KEY", 1).map(|_| ()),
-            Err(FalkorDBError::RedisError(
-                "Unknown configuration field 'NO_SUCH_CONFIG_KEY'".to_string()
-            ))
+        let delete = error(client.select_graph("rs_missing_graph").delete());
+        assert!(
+            delete.contains("Invalid graph operation on empty key"),
+            "{delete:?}"
         );
+        let config = error(client.config_set("NO_SUCH_CONFIG_KEY", 1).map(|_| ()));
+        assert!(config.contains("Unknown configuration field"), "{config:?}");
 
-        // A query error keeps the server's whole message.
+        // A query error keeps the server's whole message, first word included.
         let mut graph = open_empty_test_graph("test_server_error_replies_sync");
-        assert_eq!(
-            graph.inner.query("RETURN 1/0").execute().map(|_| ()),
-            Err(FalkorDBError::RedisError("Division by zero".to_string()))
-        );
+        let query = error(graph.inner.query("RETURN 1/0").execute().map(|_| ()));
+        assert!(query.contains("Division by zero"), "{query:?}");
     }
 
     /// The single integer `query` returns.

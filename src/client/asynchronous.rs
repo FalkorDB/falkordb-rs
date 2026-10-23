@@ -1192,11 +1192,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_server_error_replies_are_errors() {
-        let empty_key = || {
-            Err(FalkorDBError::RedisError(
-                "Invalid graph operation on empty key".to_string(),
-            ))
-        };
+        // The error a command failed with (empty if it succeeded). Tests check only a stable part
+        // of the server's message, whose exact wording varies between server versions.
+        let error =
+            |result: FalkorResult<()>| result.err().map(|err| err.to_string()).unwrap_or_default();
         for strategy in [
             ConnectionStrategy::Pooled {
                 size: NonZeroU8::MIN,
@@ -1212,37 +1211,33 @@ mod tests {
                 .expect("Could not build the client");
 
             // These replies used to be ignored, so the commands reported success.
-            assert_eq!(
+            let copy = error(
                 client
                     .copy_graph("rs_missing_graph", "rs_missing_graph_copy")
                     .await
                     .map(|_| ()),
-                empty_key(),
-                "{strategy:?}"
             );
-            assert_eq!(
-                client
-                    .select_graph("rs_missing_graph")
-                    .delete()
-                    .await
-                    .map(|_| ()),
-                empty_key(),
-                "{strategy:?}"
+            assert!(
+                copy.contains("Invalid graph operation on empty key"),
+                "{strategy:?}: {copy:?}"
             );
-            assert_eq!(
-                client.config_set("NO_SUCH_CONFIG_KEY", 1).await.map(|_| ()),
-                Err(FalkorDBError::RedisError(
-                    "Unknown configuration field 'NO_SUCH_CONFIG_KEY'".to_string()
-                )),
-                "{strategy:?}"
+            let delete = error(client.select_graph("rs_missing_graph").delete().await);
+            assert!(
+                delete.contains("Invalid graph operation on empty key"),
+                "{strategy:?}: {delete:?}"
+            );
+            let config = error(client.config_set("NO_SUCH_CONFIG_KEY", 1).await.map(|_| ()));
+            assert!(
+                config.contains("Unknown configuration field"),
+                "{strategy:?}: {config:?}"
             );
 
-            // A query error keeps the server's whole message.
+            // A query error keeps the server's whole message, first word included.
             let mut graph = client.select_graph("test_server_error_replies_async");
-            assert_eq!(
-                graph.query("RETURN 1/0").execute().await.map(|_| ()),
-                Err(FalkorDBError::RedisError("Division by zero".to_string())),
-                "{strategy:?}"
+            let query = error(graph.query("RETURN 1/0").execute().await.map(|_| ()));
+            assert!(
+                query.contains("Division by zero"),
+                "{strategy:?}: {query:?}"
             );
             graph.delete().await.ok();
         }

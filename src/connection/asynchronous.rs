@@ -4,8 +4,10 @@
  */
 
 use crate::{
-    client::asynchronous::FalkorAsyncClientInner, connection::map_redis_err,
-    parser::parse_redis_info, FalkorDBError, FalkorResult,
+    client::asynchronous::FalkorAsyncClientInner,
+    connection::{map_redis_err, reject_server_error},
+    parser::parse_redis_info,
+    FalkorDBError, FalkorResult,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
@@ -60,6 +62,7 @@ impl FalkorAsyncConnection {
                     .map_err(map_redis_err)
             }
         }
+        .and_then(reject_server_error)
     }
 
     /// Dispatch a whole [`redis::Pipeline`] in one round-trip, returning one [`redis::Value`] per

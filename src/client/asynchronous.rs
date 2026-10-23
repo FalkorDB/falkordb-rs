@@ -630,8 +630,8 @@ mod tests {
     use crate::{
         test_utils::{
             create_async_test_client, default_on_connection_down, imdb_async_test_client,
-            read_copied_actors, retry_until_async_fn_with_timeout, TestAsyncGraphHandle,
-            COPY_RETRY_TIMEOUT,
+            open_empty_async_test_graph, read_copied_actors, retry_until_async_fn_with_timeout,
+            udf_script, TestAsyncGraphHandle, UdfRegistryLock, COPY_RETRY_TIMEOUT,
         },
         FalkorClientBuilder,
     };
@@ -1191,103 +1191,169 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_server_error_replies_are_errors() {
+        let empty_key = || {
+            Err(FalkorDBError::RedisError(
+                "Invalid graph operation on empty key".to_string(),
+            ))
+        };
+        for strategy in [
+            ConnectionStrategy::Pooled {
+                size: NonZeroU8::MIN,
+            },
+            ConnectionStrategy::Multiplexed {
+                connections: NonZeroU8::MIN,
+            },
+        ] {
+            let client = FalkorClientBuilder::new_async()
+                .with_connection_strategy(strategy)
+                .build()
+                .await
+                .expect("Could not build the client");
+
+            // These replies used to be ignored, so the commands reported success.
+            assert_eq!(
+                client
+                    .copy_graph("rs_missing_graph", "rs_missing_graph_copy")
+                    .await
+                    .map(|_| ()),
+                empty_key(),
+                "{strategy:?}"
+            );
+            assert_eq!(
+                client
+                    .select_graph("rs_missing_graph")
+                    .delete()
+                    .await
+                    .map(|_| ()),
+                empty_key(),
+                "{strategy:?}"
+            );
+            assert_eq!(
+                client.config_set("NO_SUCH_CONFIG_KEY", 1).await.map(|_| ()),
+                Err(FalkorDBError::RedisError(
+                    "Unknown configuration field 'NO_SUCH_CONFIG_KEY'".to_string()
+                )),
+                "{strategy:?}"
+            );
+
+            // A query error keeps the server's whole message.
+            let mut graph = client.select_graph("test_server_error_replies_async");
+            assert_eq!(
+                graph.query("RETURN 1/0").execute().await.map(|_| ()),
+                Err(FalkorDBError::RedisError("Division by zero".to_string())),
+                "{strategy:?}"
+            );
+            graph.delete().await.ok();
+        }
+    }
+
+    /// The single integer `query` returns.
+    async fn scalar(
+        graph: &mut AsyncGraph,
+        query: &str,
+    ) -> FalkorResult<i64> {
+        let mut result = graph.query(query).execute().await?;
+        result
+            .data
+            .next()
+            .await
+            .expect("a row")
+            .and_then(|row| row.try_get_at::<i64>(0))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_udf_operations() {
+        let _registry = UdfRegistryLock::acquire();
         let client = create_async_test_client().await;
+        let mut graph = open_empty_async_test_graph("test_udf_operations_async").await;
 
-        // Test UDF load
-        let script = r#"
-#!js api_version=1.0 name=mylib_async
-
-redis.registerFunction('my_func', function(a, b) {
-    return a + b;
-});
-"#;
-
-        // Load a UDF library
-        let result = client.udf_load("mylib_async", script, false).await;
-        assert!(result.is_ok(), "Failed to load UDF library: {:?}", result);
-
-        // List UDF libraries
-        let list_result = client.udf_list(None, false).await;
-        assert!(list_result.is_ok(), "Failed to list UDF libraries");
-
-        // List specific library with code
-        let list_with_code = client.udf_list(Some("mylib_async"), true).await;
+        client
+            .udf_load("rs_udf_async_ops", &udf_script("add", "a + b"), false)
+            .await
+            .expect("Failed to load UDF library");
+        assert_eq!(
+            scalar(&mut graph.inner, "RETURN rs_udf_async_ops.add(1, 2)").await,
+            Ok(3)
+        );
         assert!(
-            list_with_code.is_ok(),
+            client.udf_list(None, false).await.is_ok(),
+            "Failed to list UDF libraries"
+        );
+        assert!(
+            client
+                .udf_list(Some("rs_udf_async_ops"), true)
+                .await
+                .is_ok(),
             "Failed to list UDF library with code"
         );
 
-        // Delete the UDF library
-        let delete_result = client.udf_delete("mylib_async").await;
-        assert!(delete_result.is_ok(), "Failed to delete UDF library");
-
-        // Verify library was deleted
-        let list_after_delete = client.udf_list(None, false).await;
+        client
+            .udf_delete("rs_udf_async_ops")
+            .await
+            .expect("Failed to delete UDF library");
+        // Once deleted, the library's function is gone and the library cannot be deleted again.
         assert!(
-            list_after_delete.is_ok(),
-            "Failed to list UDF libraries after delete"
+            scalar(&mut graph.inner, "RETURN rs_udf_async_ops.add(3, 4)")
+                .await
+                .is_err()
         );
+        assert!(client.udf_delete("rs_udf_async_ops").await.is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_udf_load_replace() {
+        let _registry = UdfRegistryLock::acquire();
         let client = create_async_test_client().await;
+        let mut graph = open_empty_async_test_graph("test_udf_load_replace_async").await;
 
-        let script = r#"
-#!js api_version=1.0 name=replacelib_async
+        client
+            .udf_load("rs_udf_async_replace", &udf_script("calc", "a * 2"), false)
+            .await
+            .expect("Failed to load UDF library");
+        assert_eq!(
+            scalar(&mut graph.inner, "RETURN rs_udf_async_replace.calc(5, 0)").await,
+            Ok(10)
+        );
 
-redis.registerFunction('func1', function(x) {
-    return x * 2;
-});
-"#;
+        // An existing library is only overwritten when `replace` is set.
+        let updated = udf_script("calc", "a * 3");
+        assert!(client
+            .udf_load("rs_udf_async_replace", &updated, false)
+            .await
+            .is_err());
+        client
+            .udf_load("rs_udf_async_replace", &updated, true)
+            .await
+            .expect("Failed to replace UDF library");
+        assert_eq!(
+            scalar(&mut graph.inner, "RETURN rs_udf_async_replace.calc(5, 1)").await,
+            Ok(15)
+        );
 
-        // Load a UDF library
-        let result = client.udf_load("replacelib_async", script, false).await;
-        assert!(result.is_ok(), "Failed to load UDF library");
-
-        let updated_script = r#"
-#!js api_version=1.0 name=replacelib_async
-
-redis.registerFunction('func1', function(x) {
-    return x * 3;
-});
-"#;
-
-        // Replace the library
-        let replace_result = client
-            .udf_load("replacelib_async", updated_script, true)
-            .await;
-        assert!(replace_result.is_ok(), "Failed to replace UDF library");
-
-        // Clean up
-        client.udf_delete("replacelib_async").await.ok();
+        client
+            .udf_delete("rs_udf_async_replace")
+            .await
+            .expect("Failed to delete UDF library");
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_udf_flush() {
+        let _registry = UdfRegistryLock::acquire();
         let client = create_async_test_client().await;
 
-        let script = r#"
-#!js api_version=1.0 name=flushlib_async
-
-redis.registerFunction('test_func', function() {
-    return 42;
-});
-"#;
-
-        // Load a UDF library
-        client.udf_load("flushlib_async", script, false).await.ok();
-
-        // Flush all UDF libraries
-        let flush_result = client.udf_flush().await;
-        assert!(flush_result.is_ok(), "Failed to flush UDF libraries");
-
-        // Verify all libraries were flushed
-        let list_after_flush = client.udf_list(None, false).await;
-        assert!(
-            list_after_flush.is_ok(),
-            "Failed to list UDF libraries after flush"
+        client
+            .udf_load("rs_udf_async_flush", &udf_script("f", "a"), false)
+            .await
+            .expect("Failed to load UDF library");
+        client
+            .udf_flush()
+            .await
+            .expect("Failed to flush UDF libraries");
+        assert_eq!(
+            client.udf_list(None, false).await,
+            Ok(redis::Value::Array(vec![])),
+            "flush removes every library"
         );
     }
 }

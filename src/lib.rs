@@ -1212,6 +1212,58 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// Holds a server-wide lock while a test changes the shared UDF registry, so that one test's
+    /// `udf_flush` cannot remove a library another test, in this or another test process, is still
+    /// using. Released on drop; the key also expires on its own if a test process dies holding it.
+    pub(crate) struct UdfRegistryLock {
+        conn: redis::Connection,
+        token: String,
+    }
+
+    impl UdfRegistryLock {
+        const KEY: &'static str = "falkordb-rs:tests:udf-registry-lock";
+
+        pub(crate) fn acquire() -> Self {
+            let mut conn = redis::Client::open("redis://127.0.0.1:6379")
+                .and_then(|client| client.get_connection())
+                .expect("connect to the test server for the UDF registry lock");
+            let token = format!("{}:{:?}", std::process::id(), std::thread::current().id());
+            while redis::cmd("SET")
+                .arg(Self::KEY)
+                .arg(&token)
+                .arg("NX")
+                .arg("PX")
+                .arg(30_000)
+                .query::<Option<String>>(&mut conn)
+                .expect("try the UDF registry lock")
+                .is_none()
+            {
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Self { conn, token }
+        }
+    }
+
+    impl Drop for UdfRegistryLock {
+        fn drop(&mut self) {
+            // Release only our own hold, in case it expired and another test took the lock.
+            let _: redis::RedisResult<i64> = redis::cmd("EVAL")
+                .arg("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end")
+                .arg(1)
+                .arg(Self::KEY)
+                .arg(&self.token)
+                .query(&mut self.conn);
+        }
+    }
+
+    /// A FalkorDB UDF library script registering `name(a, b)`, which returns `body`.
+    pub(crate) fn udf_script(
+        name: &str,
+        body: &str,
+    ) -> String {
+        format!("function {name}(a, b) {{ return {body}; }}\nfalkor.register('{name}', {name});\n")
+    }
+
     const RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
     /// `GRAPH.COPY` is performed by a background fork on the server, which can take

@@ -10,17 +10,18 @@ fn main() -> FalkorResult<()> {
         .with_connection_info("falkor://127.0.0.1:6379".try_into()?)
         .build()?;
 
-    // Example UDF script that adds two numbers
+    // A UDF library is JavaScript: define functions, then register each one with `falkor.register`.
     let script = r#"
-#!js api_version=1.0 name=mylib
-
-redis.registerFunction('add', function(a, b) {
+function add(a, b) {
     return a + b;
-});
+}
 
-redis.registerFunction('multiply', function(a, b) {
+function multiply(a, b) {
     return a * b;
-});
+}
+
+falkor.register('add', add);
+falkor.register('multiply', multiply);
 "#;
 
     // Load the UDF library
@@ -37,25 +38,41 @@ redis.registerFunction('multiply', function(a, b) {
     let list_with_code = client.udf_list(Some("mylib"), true)?;
     println!("UDF details: {:?}", list_with_code);
 
+    // Call the functions from Cypher as `<library>.<function>`
+    let mut graph = client.select_graph("udf_example");
+    let mut result = graph
+        .query("RETURN mylib.add(1, 2), mylib.multiply(3, 4)")
+        .execute()?;
+    if let Some(row) = result.data.next() {
+        println!("\nadd(1, 2), multiply(3, 4) = {:?}", row?.into_values());
+    }
+
     // Update the library with replace flag
     let updated_script = r#"
-#!js api_version=1.0 name=mylib
-
-redis.registerFunction('add', function(a, b) {
+function add(a, b) {
     return a + b;
-});
+}
 
-redis.registerFunction('multiply', function(a, b) {
+function multiply(a, b) {
     return a * b;
-});
+}
 
-redis.registerFunction('subtract', function(a, b) {
+function subtract(a, b) {
     return a - b;
-});
+}
+
+falkor.register('add', add);
+falkor.register('multiply', multiply);
+falkor.register('subtract', subtract);
 "#;
 
     println!("\nReplacing UDF library with updated version...");
     client.udf_load("mylib", updated_script, true)?;
+    let mut result = graph.query("RETURN mylib.subtract(10, 4)").execute()?;
+    if let Some(row) = result.data.next() {
+        println!("subtract(10, 4) = {:?}", row?.into_values());
+    }
+    graph.delete()?;
 
     // Delete the UDF library
     println!("\nDeleting UDF library...");

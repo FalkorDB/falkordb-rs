@@ -122,6 +122,138 @@ pub enum ReadPreference {
     PreferReplica,
 }
 
+/// Where the next Sentinel replica lookup starts in the list of eligible replicas.
+static REPLICA_ROTATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// redis-rs 1.7.1's timed native-TLS connect runs the handshake on a socket with no deadline and
+/// `unwrap`s its result, so a failing peer panics and a silent one blocks forever. Rustls
+/// handshakes lazily under the read timeout redis-rs sets during setup, so only native-TLS-only
+/// builds need this.
+#[cfg(all(
+    any(feature = "native-tls", feature = "tokio-native-tls"),
+    not(any(feature = "rustls", feature = "tokio-rustls"))
+))]
+mod native_tls_connect {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc, Mutex, OnceLock};
+    use std::time::Duration;
+
+    /// Most in-flight or abandoned attempts per `(host, port)` target. Each stalled attempt
+    /// holds a helper thread and a socket until its peer answers or closes, so past this per-peer
+    /// limit, new attempts to that peer fail fast without affecting healthy peers.
+    pub(super) const MAX_IN_FLIGHT_PER_TARGET: usize = 16;
+
+    /// In-flight attempt counters keyed by `(host, port)`.
+    type TargetCounts = Mutex<HashMap<(String, u16), Arc<AtomicUsize>>>;
+
+    static TARGET_COUNTS: OnceLock<TargetCounts> = OnceLock::new();
+
+    pub(super) fn counter_for(client: &redis::Client) -> Arc<AtomicUsize> {
+        let key = match client.get_connection_info().addr() {
+            redis::ConnectionAddr::Tcp(host, port)
+            | redis::ConnectionAddr::TcpTls { host, port, .. } => (host.clone(), *port),
+            other => (other.to_string(), 0),
+        };
+        let mut map = TARGET_COUNTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Counters are only handed out under this lock, and every caller and running worker
+        // holds a clone, so one referenced by the map alone is idle and can never be revived.
+        map.retain(|_, counter| Arc::strong_count(counter) > 1);
+        Arc::clone(
+            map.entry(key)
+                .or_insert_with(|| Arc::new(AtomicUsize::new(0))),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_tracked(client: &redis::Client) -> bool {
+        let redis::ConnectionAddr::TcpTls { host, port, .. } = client.get_connection_info().addr()
+        else {
+            return false;
+        };
+        TARGET_COUNTS.get().is_some_and(|map| {
+            map.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&(host.clone(), *port))
+        })
+    }
+
+    struct SlotGuard(Arc<AtomicUsize>);
+
+    impl Drop for SlotGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    fn try_reserve(
+        counter: &Arc<AtomicUsize>,
+        max_in_flight: usize,
+    ) -> Option<SlotGuard> {
+        let mut cur = counter.load(Ordering::Acquire);
+        loop {
+            if cur >= max_in_flight {
+                return None;
+            }
+            match counter.compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(SlotGuard(Arc::clone(counter))),
+                Err(actual) => cur = actual,
+            }
+        }
+    }
+
+    fn timed_out(msg: &str) -> redis::RedisError {
+        std::io::Error::new(std::io::ErrorKind::TimedOut, msg.to_string()).into()
+    }
+
+    /// Connect `client` on a helper thread and return within `timeout`, turning the handshake
+    /// panic into an error. Capacity is reserved atomically in `in_flight` before spawning and
+    /// released when the worker exits; while `max_in_flight` workers for the target are running
+    /// or stalled, no new thread is spawned.
+    pub(super) fn connect(
+        client: &redis::Client,
+        timeout: Duration,
+        in_flight: &Arc<AtomicUsize>,
+        max_in_flight: usize,
+    ) -> redis::RedisResult<redis::Connection> {
+        let Some(slot) = try_reserve(in_flight, max_in_flight) else {
+            return Err(timed_out(
+                "too many earlier TLS connection attempts are still stalled",
+            ));
+        };
+
+        let client = client.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _slot = slot;
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                client.get_connection_with_timeout(timeout)
+            }))
+            .unwrap_or_else(|payload| {
+                let detail = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("TLS handshake failed")
+                    .to_string();
+                Err(redis::RedisError::from((
+                    redis::ErrorKind::Io,
+                    "SSL Handshake error",
+                    detail,
+                )))
+            });
+            // If the caller already gave up, the send fails and the connection is dropped here.
+            let _ = tx.send(res);
+        });
+
+        rx.recv_timeout(timeout)
+            .unwrap_or_else(|_| Err(timed_out("TLS connection setup timed out")))
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum FalkorClientProvider {
     #[cfg(test)]
@@ -142,16 +274,17 @@ pub(crate) enum FalkorClientProvider {
         #[cfg(feature = "embedded-core")]
         #[allow(dead_code)]
         embedded_server: Option<std::sync::Arc<crate::embedded::EmbeddedServer>>,
-        /// Client-side response timeout applied to async connections. `None` (the
-        /// default) disables the client-side deadline entirely, letting the server's
+        /// Client-side response timeout applied to sync and async connections. `None`
+        /// (the default) disables the client-side deadline entirely, letting the server's
         /// own `TIMEOUT`/`TIMEOUT_DEFAULT` configuration govern query duration. This
-        /// overrides redis-rs 1.x's default 500ms response timeout, which is far too
+        /// overrides redis-rs 1.x's default 500ms async response timeout, which is far too
         /// short for typical graph queries (e.g. `LOAD CSV`, deep traversals) and
         /// would otherwise surface as spurious connection errors while the server
         /// keeps executing the query.
         response_timeout: Option<std::time::Duration>,
         /// Deadline for everything that must finish before a connection is usable:
         /// establishing it, and the one-off topology probe
+        /// [`get_sentinel_client`](FalkorClientProvider::get_sentinel_client) /
         /// [`get_sentinel_client_async`](FalkorClientProvider::get_sentinel_client_async)
         /// runs while the client is being built. It deliberately does not bound query
         /// responses — that is `response_timeout`'s job — so a caller can demand quick
@@ -161,25 +294,325 @@ pub(crate) enum FalkorClientProvider {
 }
 
 impl FalkorClientProvider {
-    pub(crate) fn get_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
-        Ok(match self {
-            FalkorClientProvider::Redis {
-                sentinel: Some(sentinel),
-                ..
-            } => FalkorSyncConnection::Redis(
-                sentinel
-                    .get_connection()
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
-            ),
+    /// Open a synchronous connection from `client`, honoring `connect_timeout` during
+    /// establishment and applying `response_timeout` as the socket read/write deadline
+    /// once setup finishes.
+    fn open_sync_connection(
+        client: &redis::Client,
+        response_timeout: Option<std::time::Duration>,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> FalkorResult<FalkorSyncConnection> {
+        Self::connect_redis_client(client, connect_timeout)
+            .and_then(|conn| {
+                conn.set_read_timeout(response_timeout)
+                    .and_then(|()| conn.set_write_timeout(response_timeout))
+                    .map(|()| FalkorSyncConnection::Redis(conn))
+            })
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
+    }
 
-            FalkorClientProvider::Redis { client, .. } => FalkorSyncConnection::Redis(
-                client
-                    .get_connection()
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
-            ),
+    /// Connect `client` with an optional setup deadline while avoiding redis-rs 1.7.1's
+    /// `tls_connector.connect(...).unwrap()` panic and unbounded TLS handshake on the
+    /// timed `native-tls` (without `rustls`) code path.
+    fn connect_redis_client(
+        client: &redis::Client,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> redis::RedisResult<redis::Connection> {
+        match connect_timeout {
+            #[cfg(all(
+                any(feature = "native-tls", feature = "tokio-native-tls"),
+                not(any(feature = "rustls", feature = "tokio-rustls"))
+            ))]
+            Some(timeout)
+                if matches!(
+                    client.get_connection_info().addr(),
+                    redis::ConnectionAddr::TcpTls { .. }
+                ) =>
+            {
+                let counter = native_tls_connect::counter_for(client);
+                native_tls_connect::connect(
+                    client,
+                    timeout,
+                    &counter,
+                    native_tls_connect::MAX_IN_FLIGHT_PER_TARGET,
+                )
+            }
+            Some(timeout) => client.get_connection_with_timeout(timeout),
+            None => client.get_connection(),
+        }
+    }
+
+    /// The setup deadline `connect_timeout` from now, shared by every step of a connection's
+    /// setup so their total, not each step, is bounded by it. A timeout too large to represent
+    /// as an [`Instant`](std::time::Instant) is as good as none.
+    fn setup_deadline(connect_timeout: Option<std::time::Duration>) -> Option<std::time::Instant> {
+        connect_timeout.and_then(|timeout| std::time::Instant::now().checked_add(timeout))
+    }
+
+    /// Time left before `deadline` (`None` when unbounded), or an error once it has passed.
+    fn remaining(
+        deadline: Option<std::time::Instant>
+    ) -> FalkorResult<Option<std::time::Duration>> {
+        deadline
+            .map(|deadline| {
+                deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .filter(|left| !left.is_zero())
+                    .ok_or_else(|| {
+                        FalkorDBError::RedisError(
+                            "Connection setup did not finish within the connect timeout"
+                                .to_string(),
+                        )
+                    })
+            })
+            .transpose()
+    }
+
+    /// Bound the next command on `conn` by what is left of `deadline`.
+    fn arm_probe(
+        conn: &redis::Connection,
+        deadline: Option<std::time::Instant>,
+    ) -> FalkorResult<()> {
+        let left = Self::remaining(deadline)?;
+        conn.set_read_timeout(left)
+            .and_then(|()| conn.set_write_timeout(left))
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
+    }
+
+    /// Open a synchronous probe connection within `deadline`.
+    fn open_probe_connection(
+        connection_info: &redis::ConnectionInfo,
+        deadline: Option<std::time::Instant>,
+    ) -> FalkorResult<redis::Connection> {
+        let left = Self::remaining(deadline)?;
+        let conn = redis::Client::open(connection_info.clone())
+            .and_then(|client| Self::connect_redis_client(&client, left))
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        Self::arm_probe(&conn, deadline)?;
+        Ok(conn)
+    }
+
+    /// Build a node `redis::ConnectionInfo` for a Sentinel-discovered `(ip, port)` using
+    /// the Sentinel's Redis/TCP/TLS settings.
+    fn sentinel_node_connection_info(
+        sentinel_info: &redis::ConnectionInfo,
+        ip: String,
+        port: u16,
+    ) -> redis::ConnectionInfo {
+        let mut addr = sentinel_info.addr().clone();
+        match &mut addr {
+            redis::ConnectionAddr::Tcp(host, p)
+            | redis::ConnectionAddr::TcpTls { host, port: p, .. } => {
+                *host = ip;
+                *p = port;
+            }
+            _ => addr = redis::ConnectionAddr::Tcp(ip, port),
+        }
+        sentinel_info.clone().set_addr(addr)
+    }
+
+    /// Parse a `SENTINEL MASTERS` or `SENTINEL SLAVES` array reply into key/value maps.
+    fn parse_sentinel_maps(entries: Vec<redis::Value>) -> Vec<HashMap<String, String>> {
+        entries
+            .into_iter()
+            .filter_map(|entry| entry.into_sequence().ok())
+            .map(|seq| {
+                seq.chunks_exact(2)
+                    .filter_map(|chunk| {
+                        redis_value_as_string(chunk[0].clone())
+                            .and_then(|k| redis_value_as_string(chunk[1].clone()).map(|v| (k, v)))
+                            .ok()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Query a Redis command on `conn` within `deadline`, mapping any error into
+    /// [`FalkorDBError::RedisError`].
+    fn query_cmd<T: redis::FromRedisValue>(
+        cmd: &redis::Cmd,
+        conn: &mut redis::Connection,
+        deadline: Option<std::time::Instant>,
+    ) -> FalkorResult<T> {
+        Self::arm_probe(conn, deadline)?;
+        cmd.query(conn)
+            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
+    }
+
+    /// Check whether a candidate node reports the expected `expected_role` (`"master"` or
+    /// `"slave"`) via `ROLE`, with both connection establishment and the role query
+    /// bounded by `deadline`.
+    ///
+    /// Like redis-rs's own resolver, a node whose server rejects `ROLE` (renamed, or denied by
+    /// an ACL) is asked for the `role:` field of `INFO REPLICATION` instead. Transport failures
+    /// do not fall back, since the connection may be left mid-reply.
+    fn node_matches_role(
+        node_info: &redis::ConnectionInfo,
+        expected_role: &str,
+        deadline: Option<std::time::Instant>,
+    ) -> FalkorResult<bool> {
+        let mut conn = Self::open_probe_connection(node_info, deadline)?;
+        match redis::cmd("ROLE").query::<Vec<redis::Value>>(&mut conn) {
+            Ok(items) => Ok(items
+                .into_iter()
+                .next()
+                .and_then(|v| redis_value_as_string(v).ok())
+                .as_deref()
+                == Some(expected_role)),
+            Err(role_err)
+                if matches!(
+                    role_err.kind(),
+                    redis::ErrorKind::Server(_) | redis::ErrorKind::Extension
+                ) =>
+            {
+                Self::arm_probe(&conn, deadline)?;
+                let info: String = redis::cmd("INFO")
+                    .arg("REPLICATION")
+                    .query(&mut conn)
+                    .map_err(|_| FalkorDBError::RedisError(role_err.to_string()))?;
+                Ok(info
+                    .lines()
+                    .find_map(|line| line.trim_end().strip_prefix("role:"))
+                    == Some(expected_role))
+            }
+            Err(err) => Err(FalkorDBError::RedisError(err.to_string())),
+        }
+    }
+
+    /// Resolve a `redis::Client` for the current Sentinel master (`is_replica == false`)
+    /// or replica (`is_replica == true`), finishing every Sentinel query and candidate-node
+    /// `ROLE` validation by `deadline`, so stalled candidates cannot add up past it.
+    fn resolve_sentinel_client_with_timeout(
+        sentinel_info: &redis::ConnectionInfo,
+        is_replica: bool,
+        deadline: Option<std::time::Instant>,
+    ) -> FalkorResult<redis::Client> {
+        let mut sentinel_conn = Self::open_probe_connection(sentinel_info, deadline)?;
+        let raw_masters: Vec<redis::Value> = Self::query_cmd(
+            redis::cmd("SENTINEL").arg("MASTERS"),
+            &mut sentinel_conn,
+            deadline,
+        )?;
+        if raw_masters.len() > 1 {
+            return Err(FalkorDBError::SentinelMastersCount);
+        }
+        let masters = Self::parse_sentinel_maps(raw_masters);
+
+        let (candidates, expected_role, not_found_msg) = if is_replica {
+            let service_name = masters
+                .first()
+                .and_then(|m| m.get("name"))
+                .cloned()
+                .ok_or_else(|| {
+                    FalkorDBError::RedisError(
+                        "No valid master found in sentinel for replica lookup".to_string(),
+                    )
+                })?;
+            let raw_replicas: Vec<redis::Value> = Self::query_cmd(
+                redis::cmd("SENTINEL").arg("SLAVES").arg(&service_name),
+                &mut sentinel_conn,
+                deadline,
+            )?;
+            (
+                Self::parse_sentinel_maps(raw_replicas),
+                "slave",
+                "No valid replica found in sentinel for given name",
+            )
+        } else {
+            (
+                masters,
+                "master",
+                "Master with given name not found in sentinel",
+            )
+        };
+
+        // Same eligibility as redis-rs: flags must be present and not down, and an advertised
+        // master must also carry the `master` flag.
+        let mut addresses: Vec<(String, u16)> = candidates
+            .into_iter()
+            .filter(|candidate| {
+                candidate.get("flags").is_some_and(|flags| {
+                    (is_replica || flags.contains("master"))
+                        && !flags.contains("s_down")
+                        && !flags.contains("o_down")
+                })
+            })
+            .filter_map(|candidate| {
+                candidate
+                    .get("ip")
+                    .cloned()
+                    .zip(candidate.get("port").and_then(|p| p.parse::<u16>().ok()))
+            })
+            .collect();
+        // Start each replica lookup one further along the list, so a read-only pool that
+        // resolves once per connection spreads across replicas instead of piling onto the first.
+        if is_replica && !addresses.is_empty() {
+            let start = REPLICA_ROTATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let len = addresses.len();
+            addresses.rotate_left(start % len);
+        }
+
+        let mut last_probe_err = None;
+        for (ip, port) in addresses {
+            Self::remaining(deadline)?;
+            let node_info = Self::sentinel_node_connection_info(sentinel_info, ip, port);
+            match Self::node_matches_role(&node_info, expected_role, deadline) {
+                Ok(true) => {
+                    return Ok(redis::Client::open(node_info).expect("valid Redis ConnectionInfo"));
+                }
+                Ok(false) => continue,
+                Err(err) => last_probe_err = Some(err),
+            }
+        }
+        Err(last_probe_err.unwrap_or_else(|| FalkorDBError::RedisError(not_found_msg.to_string())))
+    }
+
+    pub(crate) fn get_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
+        let response_timeout = self.response_timeout();
+        let deadline = Self::setup_deadline(self.connect_timeout());
+        self.get_connection_by_deadline(response_timeout, deadline)
+    }
+
+    /// [`get_connection`](Self::get_connection) with an explicit response timeout and setup
+    /// deadline, so callers that are not executing user queries (such as the one-off Sentinel
+    /// probe during client construction) can opt out of the query deadline and keep using
+    /// their own setup deadline after the connection is open.
+    fn get_connection_by_deadline(
+        &mut self,
+        response_timeout: Option<std::time::Duration>,
+        deadline: Option<std::time::Instant>,
+    ) -> FalkorResult<FalkorSyncConnection> {
+        let client = match self {
+            FalkorClientProvider::Redis {
+                client: sentinel_client,
+                sentinel: Some(_),
+                ..
+            } => Self::resolve_sentinel_client_with_timeout(
+                sentinel_client.get_connection_info(),
+                false,
+                deadline,
+            )?,
+            FalkorClientProvider::Redis { client, .. } => client.clone(),
             #[cfg(test)]
-            FalkorClientProvider::None => Err(FalkorDBError::UnavailableProvider)?,
-        })
+            FalkorClientProvider::None => return Err(FalkorDBError::UnavailableProvider),
+        };
+        Self::open_sync_connection_by(&client, response_timeout, deadline)
+    }
+
+    /// Open the node connection with what is left of `deadline`, and reject it if its setup
+    /// only finished after the deadline. Each socket read is bounded by the time left, but a
+    /// reply that keeps trickling in can still complete late, and that must not count as
+    /// success.
+    fn open_sync_connection_by(
+        client: &redis::Client,
+        response_timeout: Option<std::time::Duration>,
+        deadline: Option<std::time::Instant>,
+    ) -> FalkorResult<FalkorSyncConnection> {
+        let conn =
+            Self::open_sync_connection(client, response_timeout, Self::remaining(deadline)?)?;
+        Self::remaining(deadline)?;
+        Ok(conn)
     }
 
     /// Async connection config carrying the provider's timeouts. Both are always set
@@ -243,15 +676,22 @@ impl FalkorClientProvider {
     /// building and maintaining the dedicated read-only pool so that it never
     /// gets populated with primary connections.
     pub(crate) fn get_replica_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
+        let response_timeout = self.response_timeout();
+        let connect_timeout = self.connect_timeout();
         match self {
             FalkorClientProvider::Redis {
-                sentinel_replica: Some(replica),
+                client: sentinel_client,
+                sentinel_replica: Some(_),
                 ..
-            } => Ok(FalkorSyncConnection::Redis(
-                replica
-                    .get_connection()
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
-            )),
+            } => {
+                let deadline = Self::setup_deadline(connect_timeout);
+                let client = Self::resolve_sentinel_client_with_timeout(
+                    sentinel_client.get_connection_info(),
+                    true,
+                    deadline,
+                )?;
+                Self::open_sync_connection_by(&client, response_timeout, deadline)
+            }
             _ => Err(FalkorDBError::UnavailableProvider),
         }
     }
@@ -360,7 +800,6 @@ impl FalkorClientProvider {
     }
 
     /// The configured client-side response timeout (`None` disables it).
-    #[cfg(feature = "tokio")]
     fn response_timeout(&self) -> Option<std::time::Duration> {
         match self {
             FalkorClientProvider::Redis {
@@ -372,7 +811,6 @@ impl FalkorClientProvider {
     }
 
     /// The configured deadline for connection setup (`None` disables it).
-    #[cfg(feature = "tokio")]
     fn connect_timeout(&self) -> Option<std::time::Duration> {
         match self {
             FalkorClientProvider::Redis {
@@ -478,7 +916,8 @@ impl FalkorClientProvider {
                 name.clone(),
                 Some({
                     let node_info = redis::sentinel::SentinelNodeConnectionInfo::default()
-                        .set_redis_connection_info(connection_info.redis_settings().clone());
+                        .set_redis_connection_info(connection_info.redis_settings().clone())
+                        .set_tcp_settings(connection_info.tcp_settings().clone());
                     match connection_info.addr() {
                         redis::ConnectionAddr::TcpTls { insecure: true, .. } => {
                             node_info.set_tls_mode(redis::TlsMode::Insecure)
@@ -503,14 +942,24 @@ impl FalkorClientProvider {
         &mut self,
         connection_info: &redis::ConnectionInfo,
     ) -> FalkorResult<Option<SentinelClients>> {
-        let mut conn = self.get_connection()?;
-        if !conn.check_is_redis_sentinel()? {
+        // Topology detection runs while the client is still being built, so it is bounded by
+        // `connect_timeout` rather than `response_timeout` (matching the async probe): one
+        // deadline covers establishment and both commands, each armed with what is left of it,
+        // and a reply that trickles in past it is rejected rather than accepted late.
+        let deadline = Self::setup_deadline(self.connect_timeout());
+        let mut conn = self.get_connection_by_deadline(None, deadline)?;
+        conn.set_timeouts(Self::remaining(deadline)?)?;
+        let is_sentinel = conn.check_is_redis_sentinel()?;
+        Self::remaining(deadline)?;
+        if !is_sentinel {
             return Ok(None);
         }
 
+        conn.set_timeouts(Self::remaining(deadline)?)?;
         let sentinel_masters = conn
             .execute_command(None, "SENTINEL", Some("MASTERS"), None)
             .and_then(redis_value_as_vec)?;
+        Self::remaining(deadline)?;
 
         self.build_sentinel_clients(connection_info, sentinel_masters)
     }
@@ -529,19 +978,32 @@ impl FalkorClientProvider {
         // must answer within X", not "the client must finish connecting within X". Applying
         // the response timeout here made `FalkorClientBuilder::build` fail with a connection
         // error whenever the handshake or this `INFO` happened to be slower than a tight
-        // timeout — the client could not even be constructed.
+        // timeout — the client could not even be constructed. The whole probe shares that one
+        // deadline, so slow steps cannot add up past it.
         let connect_timeout = self.connect_timeout();
-        let mut conn = self
-            .get_async_connection_with_timeouts(connect_timeout, connect_timeout)
-            .await?;
-        if !conn.check_is_redis_sentinel().await? {
+        let probe = async {
+            let mut conn = self
+                .get_async_connection_with_timeouts(connect_timeout, connect_timeout)
+                .await?;
+            if !conn.check_is_redis_sentinel().await? {
+                return Ok(None);
+            }
+            conn.execute_command(None, "SENTINEL", Some("MASTERS"), None)
+                .await
+                .and_then(redis_value_as_vec)
+                .map(Some)
+        };
+        let sentinel_masters = match connect_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, probe).await.map_err(|_| {
+                FalkorDBError::RedisError(
+                    "Sentinel detection did not finish within the connect timeout".to_string(),
+                )
+            })?,
+            None => probe.await,
+        }?;
+        let Some(sentinel_masters) = sentinel_masters else {
             return Ok(None);
-        }
-
-        let sentinel_masters = conn
-            .execute_command(None, "SENTINEL", Some("MASTERS"), None)
-            .await
-            .and_then(redis_value_as_vec)?;
+        };
 
         self.build_sentinel_clients(connection_info, sentinel_masters)
     }
@@ -591,7 +1053,6 @@ mod tests {
     /// It answers every command immediately except `INFO`, which it holds back for
     /// `info_delay`, so a test can pin down which timeout a code path is subject to without
     /// needing a real server. One connection — all the Sentinel probe opens — is served.
-    #[cfg(feature = "tokio")]
     fn spawn_slow_info_server(info_delay: std::time::Duration) -> String {
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -641,7 +1102,6 @@ mod tests {
     /// behind. TCP reads are not message boundaries: a read can carry several pipelined
     /// commands or half of one, and answering per read rather than per command would
     /// desynchronize the stream and stall whatever the server is standing in for.
-    #[cfg(feature = "tokio")]
     fn take_commands(pending: &mut String) -> Vec<String> {
         let mut commands = Vec::new();
 
@@ -666,7 +1126,6 @@ mod tests {
 
     /// The offset just past `lines` CRLF-terminated lines of `buf`, or `None` when it holds
     /// fewer than that.
-    #[cfg(feature = "tokio")]
     fn crlf_lines_end(
         buf: &str,
         lines: usize,
@@ -681,7 +1140,6 @@ mod tests {
 
     /// Whatever the fake server stands in for, it must recover the command framing from a
     /// byte stream: reads carry pipelined commands, split commands, or both.
-    #[cfg(feature = "tokio")]
     #[test]
     fn test_take_commands_reframes_the_byte_stream() {
         let ping = "*1\r\n$4\r\nPING\r\n";
@@ -777,6 +1235,1250 @@ mod tests {
             sentinels.is_none(),
             "the fake server reports redis_mode:standalone, so no Sentinel clients are built"
         );
+    }
+
+    #[test]
+    fn test_sync_sentinel_detection_is_bounded_by_the_connect_timeout() {
+        let url = spawn_slow_info_server(std::time::Duration::from_secs(30));
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: None,
+            connect_timeout: Some(std::time::Duration::from_millis(50)),
+        };
+
+        let connection_info =
+            redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
+        let probe = provider.get_sentinel_client(&connection_info);
+
+        assert!(
+            probe.is_err(),
+            "a server that goes silent after the handshake must not hang sync client construction"
+        );
+    }
+
+    #[test]
+    fn test_sync_sentinel_detection_is_not_bounded_by_the_response_timeout() {
+        let url = spawn_slow_info_server(std::time::Duration::from_millis(250));
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: Some(std::time::Duration::from_millis(5)),
+            connect_timeout: Some(crate::DEFAULT_CONNECT_TIMEOUT),
+        };
+
+        let connection_info =
+            redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
+        let sentinels = provider
+            .get_sentinel_client(&connection_info)
+            .expect("sync detection must outlive the 5ms query response timeout");
+
+        assert!(
+            sentinels.is_none(),
+            "the fake server reports redis_mode:standalone, so no Sentinel clients are built"
+        );
+    }
+
+    /// A server whose handshake and `INFO` each answer within `stage_delay`.
+    fn spawn_slow_handshake_and_info_server(stage_delay: std::time::Duration) -> String {
+        let handshake_done = std::sync::atomic::AtomicBool::new(false);
+        let port = spawn_fake_resp_server(move |command| {
+            if !handshake_done.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                std::thread::sleep(stage_delay);
+            }
+            if command.contains("\r\nINFO\r\n") {
+                std::thread::sleep(stage_delay);
+                let body = "# Server\r\nredis_mode:standalone\r\n";
+                format!("${}\r\n{body}\r\n", body.len())
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    fn provider_for(
+        url: &str,
+        connect_timeout: std::time::Duration,
+    ) -> FalkorClientProvider {
+        FalkorClientProvider::Redis {
+            client: redis::Client::open(url).expect("open a client for the fake server"),
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: None,
+            connect_timeout: Some(connect_timeout),
+        }
+    }
+
+    /// The handshake and `INFO` each fit in the connect timeout, but together they do not: the
+    /// probe must fail rather than give every step its own full timeout.
+    #[test]
+    fn test_sync_sentinel_detection_shares_one_deadline_across_steps() {
+        let url = spawn_slow_handshake_and_info_server(std::time::Duration::from_millis(120));
+        let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider.get_sentinel_client(&connection_info).is_err(),
+            "120ms + 120ms of setup must not fit a 200ms connect timeout"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_sentinel_detection_shares_one_deadline_across_steps() {
+        let url = spawn_slow_handshake_and_info_server(std::time::Duration::from_millis(120));
+        let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider
+                .get_sentinel_client_async(&connection_info)
+                .await
+                .is_err(),
+            "120ms + 120ms of setup must not fit a 200ms connect timeout"
+        );
+    }
+
+    /// A standalone server that sends its `INFO` reply in `pieces` writes `gap` apart, so every
+    /// socket read finishes quickly while the reply as a whole takes `pieces - 1` gaps.
+    fn spawn_trickling_info_server(
+        pieces: usize,
+        gap: std::time::Duration,
+    ) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept the probe's connection");
+            stream.set_nodelay(true).unwrap();
+            let mut pending = String::new();
+            let mut chunk = [0u8; 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                for command in take_commands(&mut pending) {
+                    if !command.contains("\r\nINFO\r\n") {
+                        let _ = stream.write_all(b"+OK\r\n");
+                        continue;
+                    }
+                    let body = "# Server\r\nredis_mode:standalone\r\n";
+                    let reply = format!("${}\r\n{body}\r\n", body.len()).into_bytes();
+                    for (i, piece) in reply.chunks(reply.len().div_ceil(pieces)).enumerate() {
+                        if i > 0 {
+                            std::thread::sleep(gap);
+                        }
+                        let _ = stream.write_all(piece);
+                    }
+                }
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    /// Each piece of the reply arrives well within the time left, but the whole reply only
+    /// completes after the deadline: the probe must not report that late result as success.
+    #[test]
+    fn test_sync_sentinel_detection_rejects_a_reply_completed_after_the_deadline() {
+        let url = spawn_trickling_info_server(5, std::time::Duration::from_millis(70));
+        let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider.get_sentinel_client(&connection_info).is_err(),
+            "a reply finished ~280ms into a 200ms setup deadline must not count as success"
+        );
+    }
+
+    /// The async probe runs under one timer, so a trickling reply is cut off at the deadline
+    /// itself rather than when the reply completes.
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_sentinel_detection_cuts_off_a_trickling_reply_at_the_deadline() {
+        let url = spawn_trickling_info_server(5, std::time::Duration::from_millis(70));
+        let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        let start = std::time::Instant::now();
+        assert!(provider
+            .get_sentinel_client_async(&connection_info)
+            .await
+            .is_err());
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(270),
+            "the async probe must stop at the 200ms deadline, not wait out the reply, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// A connect timeout too large to add to `Instant::now()` must behave as no deadline
+    /// instead of panicking.
+    #[test]
+    fn test_sync_huge_connect_timeout_does_not_overflow_the_deadline() {
+        assert_eq!(
+            FalkorClientProvider::setup_deadline(Some(std::time::Duration::MAX)),
+            None
+        );
+        let url = spawn_slow_info_server(std::time::Duration::ZERO);
+        let mut provider = provider_for(&url, std::time::Duration::MAX);
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider
+                .get_sentinel_client(&connection_info)
+                .expect("a standalone server is detected without a deadline")
+                .is_none(),
+            "the fake server reports redis_mode:standalone"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_huge_connect_timeout_does_not_overflow_the_deadline() {
+        let url = spawn_slow_info_server(std::time::Duration::ZERO);
+        let mut provider = provider_for(&url, std::time::Duration::MAX);
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider
+                .get_sentinel_client_async(&connection_info)
+                .await
+                .expect("a standalone server is detected without a deadline")
+                .is_none(),
+            "the fake server reports redis_mode:standalone"
+        );
+    }
+
+    #[test]
+    fn test_sync_get_connection_applies_response_timeout() {
+        let url = spawn_slow_info_server(std::time::Duration::from_secs(30));
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(url.as_str()).expect("open a client for the fake server"),
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: Some(std::time::Duration::from_millis(50)),
+            connect_timeout: Some(std::time::Duration::from_secs(2)),
+        };
+
+        let mut conn = provider
+            .get_connection()
+            .expect("connection establishment should succeed within connect_timeout");
+        let start = std::time::Instant::now();
+        let res = conn.execute_command(None, "INFO", None, None);
+        assert!(
+            res.is_err(),
+            "slow command on sync connection must fail once response_timeout expires"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "command must time out promptly rather than waiting for the 30s server delay"
+        );
+    }
+
+    /// Spawn a minimal fake Sentinel + master server pair so `SentinelClient::get_client()`
+    /// resolves a node `redis::Client` whose `ConnectionInfo` can be inspected.
+    fn spawn_fake_sentinel_master_resolver() -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let master_listener = TcpListener::bind("127.0.0.1:0").expect("bind master port");
+        let master_port = master_listener
+            .local_addr()
+            .expect("read master address")
+            .port();
+
+        std::thread::spawn(move || {
+            for stream in master_listener.incoming().take(2).flatten() {
+                let mut stream = stream;
+                let mut pending = String::new();
+                let mut chunk = [0u8; 1024];
+                while let Ok(read) = stream.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let reply = if command.to_ascii_uppercase().contains("\r\nROLE\r\n") {
+                            "*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n"
+                        } else {
+                            "+OK\r\n"
+                        };
+                        let _ = stream.write_all(reply.as_bytes());
+                    }
+                }
+            }
+        });
+
+        let sentinel_listener = TcpListener::bind("127.0.0.1:0").expect("bind sentinel port");
+        let sentinel_port = sentinel_listener
+            .local_addr()
+            .expect("read sentinel address")
+            .port();
+
+        std::thread::spawn(move || {
+            let (mut stream, _) = sentinel_listener
+                .accept()
+                .expect("accept sentinel connection");
+            let mut pending = String::new();
+            let mut chunk = [0u8; 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                for command in take_commands(&mut pending) {
+                    let upper = command.to_ascii_uppercase();
+                    let reply = if upper.contains("\r\nSENTINEL\r\n")
+                        && upper.contains("\r\nMASTERS\r\n")
+                    {
+                        let port_str = master_port.to_string();
+                        format!(
+                            "*1\r\n*8\r\n$4\r\nname\r\n$8\r\nmymaster\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{port_str}\r\n$5\r\nflags\r\n$6\r\nmaster\r\n",
+                            port_str.len()
+                        )
+                    } else if upper.contains("\r\nROLE\r\n") {
+                        "*2\r\n$8\r\nsentinel\r\n*1\r\n$8\r\nmymaster\r\n".to_string()
+                    } else {
+                        "+OK\r\n".to_string()
+                    };
+                    let _ = stream.write_all(reply.as_bytes());
+                }
+            }
+        });
+
+        format!("redis://127.0.0.1:{sentinel_port}")
+    }
+
+    #[test]
+    fn test_build_sentinel_client_forwards_tcp_settings_to_node_connections() {
+        let sentinel_url = spawn_fake_sentinel_master_resolver();
+        let settings = redis::io::tcp::TcpSettings::default()
+            .set_nodelay(true)
+            .set_keepalive(
+                redis::io::tcp::socket2::TcpKeepalive::new()
+                    .with_time(std::time::Duration::from_secs(42)),
+            );
+        let connection_info = redis::ConnectionInfo::from_str(&sentinel_url)
+            .expect("parse sentinel url")
+            .set_tcp_settings(settings);
+
+        let provider = FalkorClientProvider::None;
+        let mut sentinel_client = provider
+            .get_sentinel_client_common(&connection_info, single_master_reply("mymaster"))
+            .expect("sentinel client should build")
+            .expect("single master yields a client");
+
+        let resolved_node_client = sentinel_client
+            .get_client()
+            .expect("resolve master client from fake sentinel");
+        let node_tcp = resolved_node_client.get_connection_info().tcp_settings();
+        assert!(
+            node_tcp.nodelay(),
+            "Sentinel-resolved node client must inherit tcp_settings.nodelay"
+        );
+        assert!(
+            node_tcp.keepalive().is_some(),
+            "Sentinel-resolved node client must inherit tcp_settings.keepalive"
+        );
+    }
+
+    #[test]
+    fn test_sync_get_connection_routes_through_sentinel() {
+        let sentinel_url = spawn_fake_sentinel_master_resolver();
+        let connection_info =
+            redis::ConnectionInfo::from_str(&sentinel_url).expect("parse sentinel url");
+        let sentinel = FalkorClientProvider::None
+            .get_sentinel_client_common(&connection_info, single_master_reply("mymaster"))
+            .expect("sentinel client should build")
+            .expect("single master yields a client");
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(connection_info).unwrap(),
+            sentinel: Some(sentinel),
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: Some(std::time::Duration::from_millis(200)),
+            connect_timeout: None,
+        };
+
+        // Note: the fake master accepts two connections (one for Sentinel ROLE check and one
+        // for open_sync_connection), so get_connection() succeeds via Sentinel.
+        assert!(
+            provider.get_connection().is_ok(),
+            "sync get_connection should resolve the master via Sentinel and open a connection"
+        );
+    }
+
+    #[test]
+    fn test_sync_sentinel_resolution_stalled_sentinel_is_bounded_by_connect_timeout() {
+        use std::net::TcpListener;
+
+        // A listener that accepts the TCP handshake and never sends a byte.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent sentinel");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept silent sentinel");
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+
+        let sentinel_url = format!("redis://127.0.0.1:{port}");
+        let connection_info = redis::ConnectionInfo::from_str(&sentinel_url).unwrap();
+        let sentinel = FalkorClientProvider::None
+            .get_sentinel_client_common(&connection_info, single_master_reply("mymaster"))
+            .unwrap()
+            .unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info.clone()],
+            "mymaster".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(connection_info).unwrap(),
+            sentinel: Some(sentinel),
+            sentinel_replica: Some(replica),
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: None,
+            connect_timeout: Some(std::time::Duration::from_millis(60)),
+        };
+
+        let start = std::time::Instant::now();
+        assert!(
+            provider.get_connection().is_err(),
+            "stalled Sentinel must fail within connect_timeout"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "Sentinel resolution must not hang when Sentinel stalls after TCP accept"
+        );
+    }
+
+    #[test]
+    fn test_sync_sentinel_resolution_stalled_node_role_is_bounded_by_connect_timeout() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        // Candidate master accepts TCP but stalls on ROLE.
+        let master_listener = TcpListener::bind("127.0.0.1:0").expect("bind silent master");
+        let master_port = master_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (_stream, _) = master_listener.accept().expect("accept silent master");
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+
+        // Sentinel answers ROLE and SENTINEL MASTERS pointing at the stalled master.
+        let sentinel_listener = TcpListener::bind("127.0.0.1:0").expect("bind sentinel");
+        let sentinel_port = sentinel_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = sentinel_listener.accept().expect("accept sentinel");
+            let mut pending = String::new();
+            let mut chunk = [0u8; 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                for command in take_commands(&mut pending) {
+                    let upper = command.to_ascii_uppercase();
+                    let reply = if upper.contains("\r\nSENTINEL\r\n")
+                        && upper.contains("\r\nMASTERS\r\n")
+                    {
+                        let port_str = master_port.to_string();
+                        format!(
+                            "*1\r\n*8\r\n$4\r\nname\r\n$8\r\nmymaster\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{port_str}\r\n$5\r\nflags\r\n$6\r\nmaster\r\n",
+                            port_str.len()
+                        )
+                    } else if upper.contains("\r\nROLE\r\n") {
+                        "*2\r\n$8\r\nsentinel\r\n*1\r\n$8\r\nmymaster\r\n".to_string()
+                    } else {
+                        "+OK\r\n".to_string()
+                    };
+                    let _ = stream.write_all(reply.as_bytes());
+                }
+            }
+        });
+
+        let sentinel_url = format!("redis://127.0.0.1:{sentinel_port}");
+        let connection_info = redis::ConnectionInfo::from_str(&sentinel_url).unwrap();
+        let sentinel = FalkorClientProvider::None
+            .get_sentinel_client_common(&connection_info, single_master_reply("mymaster"))
+            .unwrap()
+            .unwrap();
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(connection_info).unwrap(),
+            sentinel: Some(sentinel),
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: None,
+            connect_timeout: Some(std::time::Duration::from_millis(60)),
+        };
+
+        let start = std::time::Instant::now();
+        assert!(
+            provider.get_connection().is_err(),
+            "stalled node ROLE check must fail within connect_timeout"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "node ROLE validation must not hang when candidate node stalls"
+        );
+    }
+
+    #[test]
+    fn test_sync_get_replica_connection_routes_through_sentinel() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let replica_listener = TcpListener::bind("127.0.0.1:0").expect("bind replica");
+        let replica_port = replica_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in replica_listener.incoming().take(2).flatten() {
+                let mut stream = stream;
+                let mut pending = String::new();
+                let mut chunk = [0u8; 1024];
+                while let Ok(read) = stream.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let reply = if command.to_ascii_uppercase().contains("\r\nROLE\r\n") {
+                            "*5\r\n$5\r\nslave\r\n$9\r\n127.0.0.1\r\n:6379\r\n$9\r\nconnected\r\n:0\r\n"
+                        } else {
+                            "+OK\r\n"
+                        };
+                        let _ = stream.write_all(reply.as_bytes());
+                    }
+                }
+            }
+        });
+
+        let sentinel_listener = TcpListener::bind("127.0.0.1:0").expect("bind sentinel");
+        let sentinel_port = sentinel_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = sentinel_listener.accept().expect("accept sentinel");
+            let mut pending = String::new();
+            let mut chunk = [0u8; 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                for command in take_commands(&mut pending) {
+                    let upper = command.to_ascii_uppercase();
+                    let reply = if upper.contains("\r\nSENTINEL\r\n")
+                        && upper.contains("\r\nMASTERS\r\n")
+                    {
+                        "*1\r\n*2\r\n$4\r\nname\r\n$8\r\nmymaster\r\n".to_string()
+                    } else if upper.contains("\r\nSENTINEL\r\n") && upper.contains("\r\nSLAVES\r\n")
+                    {
+                        let port_str = replica_port.to_string();
+                        format!(
+                            "*2\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n$1\r\n0\r\n$5\r\nflags\r\n$5\r\nslave\r\n*6\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{port_str}\r\n$5\r\nflags\r\n$5\r\nslave\r\n",
+                            port_str.len()
+                        )
+                    } else if upper.contains("\r\nROLE\r\n") {
+                        "*2\r\n$8\r\nsentinel\r\n*1\r\n$8\r\nmymaster\r\n".to_string()
+                    } else {
+                        "+OK\r\n".to_string()
+                    };
+                    let _ = stream.write_all(reply.as_bytes());
+                }
+            }
+        });
+
+        let sentinel_url = format!("redis://127.0.0.1:{sentinel_port}");
+        let connection_info = redis::ConnectionInfo::from_str(&sentinel_url).unwrap();
+        let replica = redis::sentinel::SentinelClient::build(
+            vec![connection_info.clone()],
+            "mymaster".to_string(),
+            None,
+            redis::sentinel::SentinelServerType::Replica,
+        )
+        .unwrap();
+
+        let mut provider = FalkorClientProvider::Redis {
+            client: redis::Client::open(connection_info).unwrap(),
+            sentinel: None,
+            sentinel_replica: Some(replica),
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: Some(std::time::Duration::from_millis(200)),
+            connect_timeout: Some(std::time::Duration::from_secs(2)),
+        };
+
+        assert!(
+            provider.get_replica_connection().is_ok(),
+            "sync get_replica_connection should resolve a replica via Sentinel with timeouts"
+        );
+    }
+
+    #[test]
+    fn test_sync_sentinel_resolution_edge_cases() {
+        use redis::IntoConnectionInfo;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let closed_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_port = closed_listener.local_addr().unwrap().port();
+        drop(closed_listener);
+        let tcp_info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{closed_port}")).unwrap();
+        assert!(FalkorClientProvider::connect_redis_client(
+            &redis::Client::open(tcp_info).unwrap(),
+            None
+        )
+        .is_err());
+
+        let unix_info = redis::ConnectionInfo::from_str("redis+unix:///tmp/sentinel.sock").unwrap();
+        let mapped_unix = FalkorClientProvider::sentinel_node_connection_info(
+            &unix_info,
+            "127.0.0.1".to_string(),
+            6380,
+        );
+        assert!(matches!(
+            mapped_unix.addr(),
+            redis::ConnectionAddr::Tcp(host, 6380) if host == "127.0.0.1"
+        ));
+
+        let tls_sentinel_info = redis::ConnectionAddr::TcpTls {
+            host: "sentinel.local".to_string(),
+            port: 26379,
+            insecure: true,
+            tls_params: None,
+        }
+        .into_connection_info()
+        .unwrap();
+        let mapped_tls = FalkorClientProvider::sentinel_node_connection_info(
+            &tls_sentinel_info,
+            "10.0.0.2".to_string(),
+            6381,
+        );
+        assert!(matches!(
+            mapped_tls.addr(),
+            redis::ConnectionAddr::TcpTls {
+                host,
+                port: 6381,
+                insecure: true,
+                ..
+            } if host == "10.0.0.2"
+        ));
+
+        let multi_service = TcpListener::bind("127.0.0.1:0").unwrap();
+        let multi_port = multi_service.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = multi_service.accept() {
+                let mut pending = String::new();
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = s.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let reply = if command.to_ascii_uppercase().contains("\r\nROLE\r\n") {
+                            "-NOPERM this user has no permissions to run the 'role' command\r\n"
+                        } else {
+                            "*2\r\n*2\r\n$4\r\nname\r\n$2\r\nm1\r\n*2\r\n$4\r\nname\r\n$2\r\nm2\r\n"
+                        };
+                        let _ = s.write_all(reply.as_bytes());
+                    }
+                }
+            }
+        });
+        let multi_info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{multi_port}")).unwrap();
+        assert!(matches!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &multi_info,
+                false,
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
+            ),
+            Err(FalkorDBError::SentinelMastersCount)
+        ));
+
+        let non_sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+        let non_sentinel_port = non_sentinel.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = non_sentinel.accept() {
+                let mut pending = String::new();
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = s.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let reply = if command.to_ascii_uppercase().contains("\r\nSENTINEL\r\n") {
+                            "-ERR unknown command 'SENTINEL'\r\n"
+                        } else {
+                            "+OK\r\n"
+                        };
+                        let _ = s.write_all(reply.as_bytes());
+                    }
+                }
+            }
+        });
+        let info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{non_sentinel_port}"))
+                .unwrap();
+        assert!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &info,
+                false,
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
+            )
+            .is_err(),
+            "non-sentinel ROLE should return an error"
+        );
+
+        let no_master_sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+        let no_master_port = no_master_sentinel.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = no_master_sentinel.accept() {
+                let mut pending = String::new();
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = stream.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for _ in take_commands(&mut pending) {
+                        let _ = stream.write_all(b"*0\r\n");
+                    }
+                }
+            }
+        });
+        let no_master_info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{no_master_port}"))
+                .unwrap();
+        assert!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &no_master_info,
+                true,
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
+            )
+            .is_err(),
+            "replica resolution without any master in SENTINEL MASTERS should return an error"
+        );
+
+        let empty_sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+        let empty_port = empty_sentinel.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in empty_sentinel.incoming().take(3).flatten() {
+                let mut stream = stream;
+                let mut pending = String::new();
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = stream.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    for command in take_commands(&mut pending) {
+                        let upper = command.to_ascii_uppercase();
+                        let reply = if upper.contains("\r\nROLE\r\n") {
+                            "*2\r\n$8\r\nsentinel\r\n*0\r\n".to_string()
+                        } else if upper.contains("\r\nSLAVES\r\n") {
+                            "*0\r\n".to_string()
+                        } else {
+                            // Single master entry whose candidate port is the sentinel itself (so ROLE returns "sentinel", not "master")
+                            let self_port = empty_port.to_string();
+                            format!(
+                                "*1\r\n*8\r\n$2\r\nip\r\n$9\r\n127.0.0.1\r\n$4\r\nport\r\n${}\r\n{self_port}\r\n$4\r\nname\r\n$8\r\nmymaster\r\n$5\r\nflags\r\n$6\r\nmaster\r\n",
+                                self_port.len()
+                            )
+                        };
+                        let _ = stream.write_all(reply.as_bytes());
+                    }
+                }
+            }
+        });
+        let empty_info =
+            redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{empty_port}")).unwrap();
+        assert!(FalkorClientProvider::resolve_sentinel_client_with_timeout(
+            &empty_info,
+            false,
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
+        )
+        .is_err());
+        assert!(FalkorClientProvider::resolve_sentinel_client_with_timeout(
+            &empty_info,
+            true,
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(500)),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_tls_handshake_failure_and_stall_are_bounded_and_do_not_panic() {
+        use redis::IntoConnectionInfo;
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind plain tcp server");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.write_all(b"-ERR plain tcp\r\n");
+            }
+        });
+
+        let tls_info = redis::ConnectionAddr::TcpTls {
+            host: "127.0.0.1".to_string(),
+            port,
+            insecure: false,
+            tls_params: None,
+        }
+        .into_connection_info()
+        .unwrap();
+        let client = redis::Client::open(tls_info).unwrap();
+        let res = FalkorClientProvider::open_sync_connection(
+            &client,
+            Some(std::time::Duration::from_millis(200)),
+            Some(std::time::Duration::from_millis(500)),
+        );
+        assert!(
+            res.is_err(),
+            "failed TLS handshake with finite connect_timeout must return Err, never panic"
+        );
+
+        let silent_listener = TcpListener::bind("127.0.0.1:0").expect("bind silent tcp server");
+        let silent_port = silent_listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((_stream, _)) = silent_listener.accept() {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        });
+        let silent_tls_info = redis::ConnectionAddr::TcpTls {
+            host: "127.0.0.1".to_string(),
+            port: silent_port,
+            insecure: false,
+            tls_params: None,
+        }
+        .into_connection_info()
+        .unwrap();
+        let silent_client = redis::Client::open(silent_tls_info).unwrap();
+        let start = std::time::Instant::now();
+        assert!(
+            FalkorClientProvider::open_sync_connection(
+                &silent_client,
+                None,
+                Some(std::time::Duration::from_millis(60)),
+            )
+            .is_err(),
+            "stalled TLS peer must fail within connect_timeout"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "stalled TLS peer must not hang indefinitely"
+        );
+    }
+
+    /// Serve every connection to an ephemeral port on its own thread, answering each command
+    /// with `reply(command)`, and return the port.
+    fn spawn_fake_resp_server(reply: impl Fn(&str) -> String + Send + Sync + 'static) -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake server");
+        let port = listener.local_addr().unwrap().port();
+        let reply = std::sync::Arc::new(reply);
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let reply = std::sync::Arc::clone(&reply);
+                std::thread::spawn(move || {
+                    let mut pending = String::new();
+                    let mut chunk = [0u8; 1024];
+                    while let Ok(read) = stream.read(&mut chunk) {
+                        if read == 0 {
+                            break;
+                        }
+                        pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                        for command in take_commands(&mut pending) {
+                            let _ =
+                                stream.write_all(reply(&command.to_ascii_uppercase()).as_bytes());
+                        }
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    /// A fake Sentinel monitoring `mymaster`, answering `SENTINEL MASTERS` / `SENTINEL SLAVES`
+    /// with the given pre-encoded RESP replies and rejecting any other command (such as `ROLE`)
+    /// with `-NOPERM`.
+    fn spawn_fake_sentinel(
+        masters: String,
+        replicas: String,
+    ) -> redis::ConnectionInfo {
+        let port = spawn_fake_resp_server(move |command| {
+            if command.contains("\r\nMASTERS\r\n") {
+                masters.clone()
+            } else if command.contains("\r\nSLAVES\r\n") {
+                replicas.clone()
+            } else {
+                "-NOPERM this user has no permissions to run this command\r\n".to_string()
+            }
+        });
+        redis::ConnectionInfo::from_str(&format!("redis://127.0.0.1:{port}")).unwrap()
+    }
+
+    /// RESP encoding of one `SENTINEL MASTERS`/`SLAVES` entry.
+    fn sentinel_entry(fields: &[(&str, &str)]) -> String {
+        let mut out = format!("*{}\r\n", fields.len() * 2);
+        for (key, val) in fields {
+            out.push_str(&format!(
+                "${}\r\n{key}\r\n${}\r\n{val}\r\n",
+                key.len(),
+                val.len()
+            ));
+        }
+        out
+    }
+
+    fn resolved_port(client: &redis::Client) -> u16 {
+        let redis::ConnectionAddr::Tcp(_, port) = client.get_connection_info().addr() else {
+            unreachable!()
+        };
+        *port
+    }
+
+    #[test]
+    fn test_sync_replica_resolution_spreads_across_healthy_replicas() {
+        let replica_role = |command: &str| {
+            if command.contains("\r\nROLE\r\n") {
+                "*5\r\n$5\r\nslave\r\n$9\r\n127.0.0.1\r\n:6379\r\n$9\r\nconnected\r\n:0\r\n"
+                    .to_string()
+            } else {
+                "+OK\r\n".to_string()
+            }
+        };
+        let first = spawn_fake_resp_server(replica_role);
+        let second = spawn_fake_resp_server(replica_role);
+        let replicas = [first, second]
+            .iter()
+            .map(|port| {
+                sentinel_entry(&[
+                    ("ip", "127.0.0.1"),
+                    ("port", &port.to_string()),
+                    ("flags", "slave"),
+                ])
+            })
+            .collect::<String>();
+        let sentinel = spawn_fake_sentinel(
+            format!("*1\r\n{}", sentinel_entry(&[("name", "mymaster")])),
+            format!("*2\r\n{replicas}"),
+        );
+
+        let chosen: std::collections::HashSet<u16> = (0..6)
+            .map(|_| {
+                let client = FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                    &sentinel,
+                    true,
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(2)),
+                )
+                .expect("a healthy replica resolves");
+                resolved_port(&client)
+            })
+            .collect();
+        assert_eq!(
+            chosen,
+            [first, second].into_iter().collect(),
+            "repeated replica lookups must not all land on the first healthy replica"
+        );
+    }
+
+    #[test]
+    fn test_sync_replica_resolution_bounds_all_candidates_by_one_deadline() {
+        use std::net::TcpListener;
+
+        // Replicas that accept TCP and never answer: each would otherwise get its own
+        // full connect timeout.
+        let replicas: String = (0..5)
+            .map(|_| {
+                let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent replica");
+                let port = listener.local_addr().unwrap().port();
+                std::thread::spawn(move || {
+                    let held: Vec<_> = listener.incoming().take(5).collect();
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    drop(held);
+                });
+                sentinel_entry(&[
+                    ("ip", "127.0.0.1"),
+                    ("port", &port.to_string()),
+                    ("flags", "slave"),
+                ])
+            })
+            .collect();
+        let sentinel = spawn_fake_sentinel(
+            format!("*1\r\n{}", sentinel_entry(&[("name", "mymaster")])),
+            format!("*5\r\n{replicas}"),
+        );
+
+        let budget = std::time::Duration::from_millis(200);
+        let start = std::time::Instant::now();
+        assert!(FalkorClientProvider::resolve_sentinel_client_with_timeout(
+            &sentinel,
+            true,
+            Some(start + budget),
+        )
+        .is_err());
+        assert!(
+            start.elapsed() < budget * 3,
+            "five stalled replicas must share one {budget:?} deadline, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn test_sync_master_resolution_checks_flags_and_falls_back_to_info_replication() {
+        // Rejects `ROLE` but reports its role through `INFO REPLICATION`.
+        let info_only = |role: &'static str| {
+            spawn_fake_resp_server(move |command| {
+                if command.contains("\r\nROLE\r\n") {
+                    "-NOPERM this user has no permissions to run the 'role' command\r\n".to_string()
+                } else if command.contains("\r\nINFO\r\n") {
+                    let body = format!("# Replication\r\nrole:{role}\r\nconnected_slaves:0\r\n");
+                    format!("${}\r\n{body}\r\n", body.len())
+                } else {
+                    "+OK\r\n".to_string()
+                }
+            })
+        };
+        let master = info_only("master");
+        let masters = |port: u16| {
+            format!(
+                "*1\r\n{}",
+                sentinel_entry(&[
+                    ("name", "mymaster"),
+                    ("ip", "127.0.0.1"),
+                    ("port", &port.to_string()),
+                    ("flags", "master"),
+                ]),
+            )
+        };
+
+        let unflagged_sentinel = spawn_fake_sentinel(
+            format!(
+                "*1\r\n{}",
+                sentinel_entry(&[
+                    ("name", "mymaster"),
+                    ("ip", "127.0.0.1"),
+                    ("port", &master.to_string()),
+                ]),
+            ),
+            "*0\r\n".to_string(),
+        );
+        assert!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &unflagged_sentinel,
+                false,
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(2)),
+            )
+            .is_err(),
+            "a master entry without the master flag is not eligible"
+        );
+
+        let sentinel = spawn_fake_sentinel(masters(master), "*0\r\n".to_string());
+        let client = FalkorClientProvider::resolve_sentinel_client_with_timeout(
+            &sentinel,
+            false,
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(2)),
+        )
+        .expect("a master that rejects ROLE resolves through INFO REPLICATION");
+        assert_eq!(resolved_port(&client), master);
+
+        let demoted = spawn_fake_sentinel(masters(info_only("slave")), "*0\r\n".to_string());
+        assert!(
+            FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &demoted,
+                false,
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(2)),
+            )
+            .is_err(),
+            "a node whose INFO REPLICATION says slave is not accepted as the master"
+        );
+    }
+
+    #[cfg(all(
+        any(feature = "native-tls", feature = "tokio-native-tls"),
+        not(any(feature = "rustls", feature = "tokio-rustls"))
+    ))]
+    fn silent_tls_client(port: u16) -> redis::Client {
+        use redis::IntoConnectionInfo;
+
+        redis::Client::open(
+            redis::ConnectionAddr::TcpTls {
+                host: "127.0.0.1".to_string(),
+                port,
+                insecure: false,
+                tls_params: None,
+            }
+            .into_connection_info()
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    #[cfg(all(
+        any(feature = "native-tls", feature = "tokio-native-tls"),
+        not(any(feature = "rustls", feature = "tokio-rustls"))
+    ))]
+    fn test_native_tls_abandoned_handshake_is_released_when_the_peer_closes() {
+        use std::net::TcpListener;
+        use std::sync::atomic::Ordering;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent tls peer");
+        let port = listener.local_addr().unwrap().port();
+        let (close_tx, close_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept the handshake");
+            let _ = close_rx.recv();
+        });
+
+        let client = silent_tls_client(port);
+        let in_flight = native_tls_connect::counter_for(&client);
+        assert!(native_tls_connect::connect(
+            &client,
+            std::time::Duration::from_millis(60),
+            &in_flight,
+            16,
+        )
+        .is_err());
+        assert_eq!(
+            in_flight.load(Ordering::Acquire),
+            1,
+            "the stalled attempt is tracked"
+        );
+
+        close_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while in_flight.load(Ordering::Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the helper thread must finish once the peer closes"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Still referenced here, so no concurrent lookup can have pruned it.
+        assert!(native_tls_connect::is_tracked(&client));
+        drop(in_flight);
+        // The worker may still hold its last reference for a moment after the count hits zero,
+        // so keep triggering pruning until the idle counter is dropped.
+        while native_tls_connect::is_tracked(&client) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "idle per-target counters must not accumulate"
+            );
+            drop(native_tls_connect::counter_for(&silent_tls_client(1)));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    #[cfg(all(
+        any(feature = "native-tls", feature = "tokio-native-tls"),
+        not(any(feature = "rustls", feature = "tokio-rustls"))
+    ))]
+    fn test_native_tls_connect_fails_fast_once_too_many_attempts_are_stalled() {
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        // 1. Concurrent admission: 4 callers race against a cap of 2; at most 2 are admitted.
+        let stalled_listener = TcpListener::bind("127.0.0.1:0").expect("bind stalled tls peer");
+        let stalled_port = stalled_listener.local_addr().unwrap().port();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let mut accepted = Vec::new();
+            for stream in stalled_listener.incoming().take(2).flatten() {
+                accepted.push(stream);
+            }
+            let _ = release_rx.recv();
+        });
+
+        let stalled_client = silent_tls_client(stalled_port);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let c = stalled_client.clone();
+                let counter = Arc::clone(&in_flight);
+                let b = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    b.wait();
+                    native_tls_connect::connect(
+                        &c,
+                        std::time::Duration::from_millis(60),
+                        &counter,
+                        2,
+                    )
+                })
+            })
+            .collect();
+        for h in handles {
+            assert!(h.join().unwrap().is_err());
+        }
+        assert!(
+            in_flight.load(Ordering::Acquire) <= 2,
+            "concurrent callers must never exceed max_in_flight"
+        );
+
+        // 2. While the stalled target is at capacity, a new attempt to that target does not even
+        //    open a TCP socket, whereas a different target gets its own independent counter.
+        let unaccepted = TcpListener::bind("127.0.0.1:0").expect("bind tls peer");
+        unaccepted.set_nonblocking(true).unwrap();
+        let unaccepted_port = unaccepted.local_addr().unwrap().port();
+        let saturated = Arc::new(AtomicUsize::new(2));
+        assert!(native_tls_connect::connect(
+            &silent_tls_client(unaccepted_port),
+            std::time::Duration::from_secs(5),
+            &saturated,
+            2,
+        )
+        .is_err());
+        assert_eq!(
+            unaccepted.accept().map_err(|err| err.kind()).err(),
+            Some(std::io::ErrorKind::WouldBlock),
+            "no connection is attempted while the target cap is reached"
+        );
+        assert_eq!(
+            native_tls_connect::counter_for(&silent_tls_client(unaccepted_port))
+                .load(Ordering::Acquire),
+            0,
+            "an unrelated target has its own counter and is not blocked by another peer"
+        );
+
+        // 3. Releasing the stalled peers returns the counter to 0 without underflow.
+        let _ = release_tx.send(());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while in_flight.load(Ordering::Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stalled workers must release their reservations without wrapping"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -1000,8 +2702,8 @@ mod tests {
         // When a replica SentinelClient exists but the replica is unreachable, the
         // implementation must propagate the error rather than fall back to the
         // primary, so the read-only pool never receives primary connections.
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
         // Port 1 is reliably unroutable in test environments.
+        let client = redis::Client::open("redis://127.0.0.1:1").unwrap();
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
             vec![connection_info],

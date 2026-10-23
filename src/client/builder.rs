@@ -150,12 +150,11 @@ impl<const R: char> FalkorClientBuilder<R> {
         }
     }
 
-    /// Configure TCP-level socket settings for direct Redis TCP connections
-    /// opened by this client (keepalive, `TCP_NODELAY`, `TCP_USER_TIMEOUT` on
-    /// Linux).
+    /// Configure TCP-level socket settings for Redis TCP connections opened by
+    /// this client (keepalive, `TCP_NODELAY`, `TCP_USER_TIMEOUT` on Linux),
+    /// including both direct and Sentinel-resolved connections.
     ///
-    /// Unix-domain socket / embedded connections ignore these settings, and the
-    /// Sentinel connection path is not affected by this option.
+    /// Unix-domain socket / embedded connections ignore these settings.
     ///
     /// Useful for long-lived clients sitting behind NATs, stateful firewalls,
     /// or idle-timeout-enforcing proxies that silently drop inactive TCP
@@ -179,9 +178,9 @@ impl<const R: char> FalkorClientBuilder<R> {
     }
 
     /// Convenience: enable TCP keepalive probes with the given idle time.
-    /// Sends keepalive probes after `idle` of inactivity on direct Redis TCP
-    /// connections. See [`with_tcp_settings`](Self::with_tcp_settings) for
-    /// scope limitations.
+    /// Sends keepalive probes after `idle` of inactivity on Redis TCP
+    /// connections, both direct and Sentinel-resolved. See
+    /// [`with_tcp_settings`](Self::with_tcp_settings) for scope limitations.
     ///
     /// Equivalent to:
     /// ```ignore
@@ -207,13 +206,13 @@ impl<const R: char> FalkorClientBuilder<R> {
         self.with_tcp_settings(settings)
     }
 
-    /// Set a client-side response timeout for async connections.
+    /// Set a client-side response timeout for sync and async connections.
     ///
     /// By default no client-side timeout is applied (`None`), matching the other
     /// FalkorDB clients (e.g. falkordb-py's `socket_timeout=None`): query duration is
     /// governed by the server's own `TIMEOUT`/`TIMEOUT_DEFAULT` configuration. This
-    /// default deliberately overrides redis-rs 1.x's built-in 500ms response timeout,
-    /// which is far too short for typical graph workloads (`LOAD CSV`, deep
+    /// default deliberately overrides redis-rs 1.x's built-in 500ms async response
+    /// timeout, which is far too short for typical graph workloads (`LOAD CSV`, deep
     /// traversals) and would otherwise cut the connection while the server keeps
     /// executing the query.
     ///
@@ -234,8 +233,7 @@ impl<const R: char> FalkorClientBuilder<R> {
     /// use std::time::Duration;
     ///
     /// // Client users set the response timeout through the public builder API; `None` (the
-    /// // default) leaves it unset. The deadline applies to async connections, and the builder
-    /// // method is reachable on every `FalkorClientBuilder`.
+    /// // default) leaves it unset. The deadline applies to both sync and async connections.
     /// let builder = FalkorClientBuilder::new().with_response_timeout(Some(Duration::from_secs(30)));
     /// # let _ = builder;
     /// ```
@@ -249,7 +247,7 @@ impl<const R: char> FalkorClientBuilder<R> {
         }
     }
 
-    /// Set the deadline for connection setup on async connections.
+    /// Set the deadline for connection setup on sync and async connections.
     ///
     /// This bounds everything that must finish before a connection can serve a query —
     /// establishing it, and the one-off topology probe
@@ -257,6 +255,11 @@ impl<const R: char> FalkorClientBuilder<R> {
     /// is [`with_response_timeout`](FalkorClientBuilder::with_response_timeout)'s job.
     /// Keeping the two apart means a caller can demand quick answers from queries without
     /// making the client impossible to construct on a momentarily slow server.
+    ///
+    /// Every step of setup shares this one deadline, and setup that has not finished by it fails
+    /// rather than succeeding late. A server that stops answering fails setup on time. On sync
+    /// connections, a server that keeps sending a reply in small pieces can only delay that
+    /// failure, since each socket read is bounded by the time left when its command was sent.
     ///
     /// Defaults to [`DEFAULT_CONNECT_TIMEOUT`]. `None` waits indefinitely, which lets a
     /// server that accepts the connection and then never answers hang client construction.
@@ -329,18 +332,18 @@ impl<const R: char> FalkorClientBuilder<R> {
             ));
         }
 
-        Ok((
-            match connection_info {
-                FalkorConnectionInfo::Redis(ref redis_info) => {
-                    // In redis 1.0+, TCP settings live on ConnectionInfo
-                    // itself. Clone the info, apply the settings (if any),
-                    // then open the client from it.
-                    let mut cfg = redis_info.clone();
-                    if let Some(settings) = tcp_settings {
-                        cfg = cfg.set_tcp_settings(settings.clone());
-                    }
-                    let client = redis::Client::open(cfg)
-                        .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+        match connection_info {
+            FalkorConnectionInfo::Redis(ref redis_info) => {
+                // In redis 1.0+, TCP settings live on ConnectionInfo itself.
+                // Clone the info, apply the settings (if any), and return the
+                // updated `FalkorConnectionInfo::Redis(cfg)` as well so
+                // Sentinel client construction inherits the same TCP settings.
+                let mut cfg = redis_info.clone();
+                if let Some(settings) = tcp_settings {
+                    cfg = cfg.set_tcp_settings(settings.clone());
+                }
+                let client = redis::Client::open(cfg.clone()).expect("valid Redis ConnectionInfo");
+                Ok((
                     FalkorClientProvider::Redis {
                         client,
                         sentinel: None,
@@ -349,13 +352,13 @@ impl<const R: char> FalkorClientBuilder<R> {
                         embedded_server: None,
                         response_timeout,
                         connect_timeout,
-                    }
-                }
-                #[cfg(feature = "embedded-core")]
-                FalkorConnectionInfo::Embedded(_) => unreachable!("Handled above"),
-            },
-            connection_info,
-        ))
+                    },
+                    FalkorConnectionInfo::Redis(cfg),
+                ))
+            }
+            #[cfg(feature = "embedded-core")]
+            FalkorConnectionInfo::Embedded(_) => unreachable!("Handled above"),
+        }
     }
 }
 
@@ -652,6 +655,31 @@ mod tests {
             .expect("tcp_settings should be set after with_tcp_settings");
         assert!(applied.nodelay());
         assert!(applied.keepalive().is_some());
+    }
+
+    #[test]
+    fn test_get_client_preserves_tcp_settings_on_returned_connection_info() {
+        let settings = redis::io::tcp::TcpSettings::default()
+            .set_nodelay(true)
+            .set_keepalive(
+                redis::io::tcp::socket2::TcpKeepalive::new().with_time(Duration::from_secs(45)),
+            );
+        let conn_info: FalkorConnectionInfo = "falkor://127.0.0.1:6379".try_into().unwrap();
+        let (_provider, actual_info) =
+            FalkorClientBuilder::<'S'>::get_client(conn_info, Some(&settings), None, None).unwrap();
+        let redis_info = match actual_info {
+            FalkorConnectionInfo::Redis(info) => info,
+            #[cfg(feature = "embedded-core")]
+            FalkorConnectionInfo::Embedded(_) => unreachable!(),
+        };
+        assert!(
+            redis_info.tcp_settings().nodelay(),
+            "returned FalkorConnectionInfo must carry the configured nodelay"
+        );
+        assert!(
+            redis_info.tcp_settings().keepalive().is_some(),
+            "returned FalkorConnectionInfo must carry the configured keepalive"
+        );
     }
 
     #[test]

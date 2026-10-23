@@ -569,19 +569,19 @@ impl FalkorClientProvider {
 
     pub(crate) fn get_connection(&mut self) -> FalkorResult<FalkorSyncConnection> {
         let response_timeout = self.response_timeout();
-        let connect_timeout = self.connect_timeout();
-        self.get_connection_with_timeouts(response_timeout, connect_timeout)
+        let deadline = Self::setup_deadline(self.connect_timeout());
+        self.get_connection_by_deadline(response_timeout, deadline)
     }
 
-    /// [`get_connection`](Self::get_connection) with an explicit response timeout, so
-    /// callers that are not executing user queries (such as the one-off Sentinel probe
-    /// during client construction) can opt out of the query deadline.
-    fn get_connection_with_timeouts(
+    /// [`get_connection`](Self::get_connection) with an explicit response timeout and setup
+    /// deadline, so callers that are not executing user queries (such as the one-off Sentinel
+    /// probe during client construction) can opt out of the query deadline and keep using
+    /// their own setup deadline after the connection is open.
+    fn get_connection_by_deadline(
         &mut self,
         response_timeout: Option<std::time::Duration>,
-        connect_timeout: Option<std::time::Duration>,
+        deadline: Option<std::time::Instant>,
     ) -> FalkorResult<FalkorSyncConnection> {
-        let deadline = Self::setup_deadline(connect_timeout);
         let client = match self {
             FalkorClientProvider::Redis {
                 client: sentinel_client,
@@ -926,14 +926,17 @@ impl FalkorClientProvider {
         &mut self,
         connection_info: &redis::ConnectionInfo,
     ) -> FalkorResult<Option<SentinelClients>> {
-        // Topology detection runs while the client is still being built, so bound it by
-        // `connect_timeout` rather than `response_timeout` (matching the async probe).
-        let connect_timeout = self.connect_timeout();
-        let mut conn = self.get_connection_with_timeouts(connect_timeout, connect_timeout)?;
+        // Topology detection runs while the client is still being built, so it is bounded by
+        // `connect_timeout` rather than `response_timeout` (matching the async probe): one
+        // deadline covers establishment and both commands, each armed with what is left of it.
+        let deadline = Self::setup_deadline(self.connect_timeout());
+        let mut conn = self.get_connection_by_deadline(None, deadline)?;
+        conn.set_timeouts(Self::remaining(deadline)?)?;
         if !conn.check_is_redis_sentinel()? {
             return Ok(None);
         }
 
+        conn.set_timeouts(Self::remaining(deadline)?)?;
         let sentinel_masters = conn
             .execute_command(None, "SENTINEL", Some("MASTERS"), None)
             .and_then(redis_value_as_vec)?;
@@ -955,19 +958,32 @@ impl FalkorClientProvider {
         // must answer within X", not "the client must finish connecting within X". Applying
         // the response timeout here made `FalkorClientBuilder::build` fail with a connection
         // error whenever the handshake or this `INFO` happened to be slower than a tight
-        // timeout — the client could not even be constructed.
+        // timeout — the client could not even be constructed. The whole probe shares that one
+        // deadline, so slow steps cannot add up past it.
         let connect_timeout = self.connect_timeout();
-        let mut conn = self
-            .get_async_connection_with_timeouts(connect_timeout, connect_timeout)
-            .await?;
-        if !conn.check_is_redis_sentinel().await? {
+        let probe = async {
+            let mut conn = self
+                .get_async_connection_with_timeouts(connect_timeout, connect_timeout)
+                .await?;
+            if !conn.check_is_redis_sentinel().await? {
+                return Ok(None);
+            }
+            conn.execute_command(None, "SENTINEL", Some("MASTERS"), None)
+                .await
+                .and_then(redis_value_as_vec)
+                .map(Some)
+        };
+        let sentinel_masters = match connect_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, probe).await.map_err(|_| {
+                FalkorDBError::RedisError(
+                    "Sentinel detection did not finish within the connect timeout".to_string(),
+                )
+            })?,
+            None => probe.await,
+        }?;
+        let Some(sentinel_masters) = sentinel_masters else {
             return Ok(None);
-        }
-
-        let sentinel_masters = conn
-            .execute_command(None, "SENTINEL", Some("MASTERS"), None)
-            .await
-            .and_then(redis_value_as_vec)?;
+        };
 
         self.build_sentinel_clients(connection_info, sentinel_masters)
     }
@@ -1248,6 +1264,67 @@ mod tests {
         assert!(
             sentinels.is_none(),
             "the fake server reports redis_mode:standalone, so no Sentinel clients are built"
+        );
+    }
+
+    /// A server whose handshake and `INFO` each answer within `stage_delay`.
+    fn spawn_slow_handshake_and_info_server(stage_delay: std::time::Duration) -> String {
+        let handshake_done = std::sync::atomic::AtomicBool::new(false);
+        let port = spawn_fake_resp_server(move |command| {
+            if !handshake_done.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                std::thread::sleep(stage_delay);
+            }
+            if command.contains("\r\nINFO\r\n") {
+                std::thread::sleep(stage_delay);
+                let body = "# Server\r\nredis_mode:standalone\r\n";
+                format!("${}\r\n{body}\r\n", body.len())
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    fn provider_for(
+        url: &str,
+        connect_timeout: std::time::Duration,
+    ) -> FalkorClientProvider {
+        FalkorClientProvider::Redis {
+            client: redis::Client::open(url).expect("open a client for the fake server"),
+            sentinel: None,
+            sentinel_replica: None,
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: None,
+            connect_timeout: Some(connect_timeout),
+        }
+    }
+
+    /// The handshake and `INFO` each fit in the connect timeout, but together they do not: the
+    /// probe must fail rather than give every step its own full timeout.
+    #[test]
+    fn test_sync_sentinel_detection_shares_one_deadline_across_steps() {
+        let url = spawn_slow_handshake_and_info_server(std::time::Duration::from_millis(120));
+        let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider.get_sentinel_client(&connection_info).is_err(),
+            "120ms + 120ms of setup must not fit a 200ms connect timeout"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_sentinel_detection_shares_one_deadline_across_steps() {
+        let url = spawn_slow_handshake_and_info_server(std::time::Duration::from_millis(120));
+        let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider
+                .get_sentinel_client_async(&connection_info)
+                .await
+                .is_err(),
+            "120ms + 120ms of setup must not fit a 200ms connect timeout"
         );
     }
 
@@ -2174,14 +2251,19 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
-        // Once nothing holds the idle counter, the next lookup drops it from the map.
-        drop(in_flight);
+        // Still referenced here, so no concurrent lookup can have pruned it.
         assert!(native_tls_connect::is_tracked(&client));
-        drop(native_tls_connect::counter_for(&silent_tls_client(1)));
-        assert!(
-            !native_tls_connect::is_tracked(&client),
-            "idle per-target counters must not accumulate"
-        );
+        drop(in_flight);
+        // The worker may still hold its last reference for a moment after the count hits zero,
+        // so keep triggering pruning until the idle counter is dropped.
+        while native_tls_connect::is_tracked(&client) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "idle per-target counters must not accumulate"
+            );
+            drop(native_tls_connect::counter_for(&silent_tls_client(1)));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

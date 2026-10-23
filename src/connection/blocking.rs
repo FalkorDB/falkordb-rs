@@ -85,6 +85,21 @@ impl FalkorSyncConnection {
             .and_then(parse_redis_info)
     }
 
+    /// Set the socket read and write deadline for the next commands (`None` waits forever).
+    pub(crate) fn set_timeouts(
+        &self,
+        timeout: Option<std::time::Duration>,
+    ) -> FalkorResult<()> {
+        match self {
+            FalkorSyncConnection::Redis(redis_conn) => redis_conn
+                .set_read_timeout(timeout)
+                .and_then(|()| redis_conn.set_write_timeout(timeout))
+                .map_err(map_redis_err),
+            #[cfg(test)]
+            FalkorSyncConnection::None => Ok(()),
+        }
+    }
+
     pub(crate) fn check_is_redis_sentinel(&mut self) -> FalkorResult<bool> {
         let info_map = self.get_redis_info(Some("server"))?;
         Ok(info_map

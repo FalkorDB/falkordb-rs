@@ -343,9 +343,10 @@ impl FalkorClientProvider {
     }
 
     /// The setup deadline `connect_timeout` from now, shared by every step of a connection's
-    /// setup so their total, not each step, is bounded by it.
+    /// setup so their total, not each step, is bounded by it. A timeout too large to represent
+    /// as an [`Instant`](std::time::Instant) is as good as none.
     fn setup_deadline(connect_timeout: Option<std::time::Duration>) -> Option<std::time::Instant> {
-        connect_timeout.map(|timeout| std::time::Instant::now() + timeout)
+        connect_timeout.and_then(|timeout| std::time::Instant::now().checked_add(timeout))
     }
 
     /// Time left before `deadline` (`None` when unbounded), or an error once it has passed.
@@ -596,7 +597,22 @@ impl FalkorClientProvider {
             #[cfg(test)]
             FalkorClientProvider::None => return Err(FalkorDBError::UnavailableProvider),
         };
-        Self::open_sync_connection(&client, response_timeout, Self::remaining(deadline)?)
+        Self::open_sync_connection_by(&client, response_timeout, deadline)
+    }
+
+    /// Open the node connection with what is left of `deadline`, and reject it if its setup
+    /// only finished after the deadline. Each socket read is bounded by the time left, but a
+    /// reply that keeps trickling in can still complete late, and that must not count as
+    /// success.
+    fn open_sync_connection_by(
+        client: &redis::Client,
+        response_timeout: Option<std::time::Duration>,
+        deadline: Option<std::time::Instant>,
+    ) -> FalkorResult<FalkorSyncConnection> {
+        let conn =
+            Self::open_sync_connection(client, response_timeout, Self::remaining(deadline)?)?;
+        Self::remaining(deadline)?;
+        Ok(conn)
     }
 
     /// Async connection config carrying the provider's timeouts. Both are always set
@@ -674,7 +690,7 @@ impl FalkorClientProvider {
                     true,
                     deadline,
                 )?;
-                Self::open_sync_connection(&client, response_timeout, Self::remaining(deadline)?)
+                Self::open_sync_connection_by(&client, response_timeout, deadline)
             }
             _ => Err(FalkorDBError::UnavailableProvider),
         }
@@ -928,11 +944,14 @@ impl FalkorClientProvider {
     ) -> FalkorResult<Option<SentinelClients>> {
         // Topology detection runs while the client is still being built, so it is bounded by
         // `connect_timeout` rather than `response_timeout` (matching the async probe): one
-        // deadline covers establishment and both commands, each armed with what is left of it.
+        // deadline covers establishment and both commands, each armed with what is left of it,
+        // and a reply that trickles in past it is rejected rather than accepted late.
         let deadline = Self::setup_deadline(self.connect_timeout());
         let mut conn = self.get_connection_by_deadline(None, deadline)?;
         conn.set_timeouts(Self::remaining(deadline)?)?;
-        if !conn.check_is_redis_sentinel()? {
+        let is_sentinel = conn.check_is_redis_sentinel()?;
+        Self::remaining(deadline)?;
+        if !is_sentinel {
             return Ok(None);
         }
 
@@ -940,6 +959,7 @@ impl FalkorClientProvider {
         let sentinel_masters = conn
             .execute_command(None, "SENTINEL", Some("MASTERS"), None)
             .and_then(redis_value_as_vec)?;
+        Self::remaining(deadline)?;
 
         self.build_sentinel_clients(connection_info, sentinel_masters)
     }
@@ -1325,6 +1345,115 @@ mod tests {
                 .await
                 .is_err(),
             "120ms + 120ms of setup must not fit a 200ms connect timeout"
+        );
+    }
+
+    /// A standalone server that sends its `INFO` reply in `pieces` writes `gap` apart, so every
+    /// socket read finishes quickly while the reply as a whole takes `pieces - 1` gaps.
+    fn spawn_trickling_info_server(
+        pieces: usize,
+        gap: std::time::Duration,
+    ) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept the probe's connection");
+            stream.set_nodelay(true).unwrap();
+            let mut pending = String::new();
+            let mut chunk = [0u8; 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                for command in take_commands(&mut pending) {
+                    if !command.contains("\r\nINFO\r\n") {
+                        let _ = stream.write_all(b"+OK\r\n");
+                        continue;
+                    }
+                    let body = "# Server\r\nredis_mode:standalone\r\n";
+                    let reply = format!("${}\r\n{body}\r\n", body.len()).into_bytes();
+                    for (i, piece) in reply.chunks(reply.len().div_ceil(pieces)).enumerate() {
+                        if i > 0 {
+                            std::thread::sleep(gap);
+                        }
+                        let _ = stream.write_all(piece);
+                    }
+                }
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    /// Each piece of the reply arrives well within the time left, but the whole reply only
+    /// completes after the deadline: the probe must not report that late result as success.
+    #[test]
+    fn test_sync_sentinel_detection_rejects_a_reply_completed_after_the_deadline() {
+        let url = spawn_trickling_info_server(5, std::time::Duration::from_millis(70));
+        let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider.get_sentinel_client(&connection_info).is_err(),
+            "a reply finished ~280ms into a 200ms setup deadline must not count as success"
+        );
+    }
+
+    /// The async probe runs under one timer, so a trickling reply is cut off at the deadline
+    /// itself rather than when the reply completes.
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_sentinel_detection_cuts_off_a_trickling_reply_at_the_deadline() {
+        let url = spawn_trickling_info_server(5, std::time::Duration::from_millis(70));
+        let mut provider = provider_for(&url, std::time::Duration::from_millis(200));
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        let start = std::time::Instant::now();
+        assert!(provider
+            .get_sentinel_client_async(&connection_info)
+            .await
+            .is_err());
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(270),
+            "the async probe must stop at the 200ms deadline, not wait out the reply, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// A connect timeout too large to add to `Instant::now()` must behave as no deadline
+    /// instead of panicking.
+    #[test]
+    fn test_sync_huge_connect_timeout_does_not_overflow_the_deadline() {
+        assert_eq!(
+            FalkorClientProvider::setup_deadline(Some(std::time::Duration::MAX)),
+            None
+        );
+        let url = spawn_slow_info_server(std::time::Duration::ZERO);
+        let mut provider = provider_for(&url, std::time::Duration::MAX);
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider
+                .get_sentinel_client(&connection_info)
+                .expect("a standalone server is detected without a deadline")
+                .is_none(),
+            "the fake server reports redis_mode:standalone"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_huge_connect_timeout_does_not_overflow_the_deadline() {
+        let url = spawn_slow_info_server(std::time::Duration::ZERO);
+        let mut provider = provider_for(&url, std::time::Duration::MAX);
+        let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert!(
+            provider
+                .get_sentinel_client_async(&connection_info)
+                .await
+                .expect("a standalone server is detected without a deadline")
+                .is_none(),
+            "the fake server reports redis_mode:standalone"
         );
     }
 

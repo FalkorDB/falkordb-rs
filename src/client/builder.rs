@@ -256,6 +256,11 @@ impl<const R: char> FalkorClientBuilder<R> {
     /// Keeping the two apart means a caller can demand quick answers from queries without
     /// making the client impossible to construct on a momentarily slow server.
     ///
+    /// Every step of setup shares this one deadline, and setup that has not finished by it fails
+    /// rather than succeeding late. A server that stops answering fails setup on time. On sync
+    /// connections, a server that keeps sending a reply in small pieces can only delay that
+    /// failure, since each socket read is bounded by the time left when its command was sent.
+    ///
     /// Defaults to [`DEFAULT_CONNECT_TIMEOUT`]. `None` waits indefinitely, which lets a
     /// server that accepts the connection and then never answers hang client construction.
     ///

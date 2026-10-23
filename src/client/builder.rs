@@ -35,6 +35,9 @@ pub struct FalkorClientBuilder<const R: char> {
 /// silent.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The server a client connects to unless given connection info.
+pub(crate) const DEFAULT_CONNECTION_URL: &str = "falkor://127.0.0.1:6379";
+
 impl<const R: char> FalkorClientBuilder<R> {
     /// Provide a connection info for the database connection
     /// Will otherwise use the default connection details.
@@ -391,7 +394,7 @@ impl FalkorClientBuilder<'S'> {
     pub fn build(self) -> FalkorResult<FalkorSyncClient> {
         let connection_info = self
             .connection_info
-            .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
+            .unwrap_or(DEFAULT_CONNECTION_URL.try_into()?);
 
         let (mut client, actual_connection_info) = Self::get_client(
             connection_info,
@@ -515,7 +518,7 @@ impl FalkorClientBuilder<'A'> {
     pub async fn build(self) -> FalkorResult<FalkorAsyncClient> {
         let connection_info = self
             .connection_info
-            .unwrap_or("falkor://127.0.0.1:6379".try_into()?);
+            .unwrap_or(DEFAULT_CONNECTION_URL.try_into()?);
 
         let (mut client, actual_connection_info) = Self::get_client(
             connection_info,

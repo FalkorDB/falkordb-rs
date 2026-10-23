@@ -39,7 +39,7 @@ falkor.register('multiply', multiply);
     println!("UDF details: {:?}", list_with_code);
 
     // Call the functions from Cypher as `<library>.<function>`
-    let mut graph = client.select_graph("udf_example");
+    let mut graph = client.select_graph("udf_usage_example");
     let mut result = graph
         .query("RETURN mylib.add(1, 2), mylib.multiply(3, 4)")
         .execute()?;

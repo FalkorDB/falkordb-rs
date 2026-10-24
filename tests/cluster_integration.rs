@@ -13,9 +13,17 @@
 //! Each test touches many graphs: graph names hash to different slots, so a client that cannot
 //! follow the cluster topology fails with `MOVED` errors on the ones owned by other nodes.
 
-use falkordb::{FalkorClientBuilder, FalkorConnectionInfo, FalkorDBError};
+use falkordb::{
+    ConstraintType, EntityType, FalkorClientBuilder, FalkorConnectionInfo, FalkorDBError,
+    FalkorResult,
+};
 
 const GRAPHS: usize = 16;
+
+/// How long to keep re-issuing a `GRAPH.COPY` that came out empty, and how long to wait between
+/// tries.
+const COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const COPY_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// What the server answers a `GRAPH.COPY` whose two names hash to different slots.
 fn cross_slot() -> FalkorDBError {
@@ -32,6 +40,45 @@ fn graph_name(
     i: usize,
 ) -> String {
     format!("{prefix}_{i}")
+}
+
+/// What a copy holds, given its first row, or `None` for an empty copy or a transient connection
+/// failure, both worth another try. Any other error fails the test.
+fn copied_value(
+    copy: FalkorResult<Option<FalkorResult<falkordb::Row>>>,
+    what: &str,
+) -> Option<i64> {
+    match copy {
+        Ok(row) => row.map(|row| {
+            row.and_then(|row| row.try_get_at::<i64>(0))
+                .expect("the copied value")
+        }),
+        Err(FalkorDBError::ConnectionDown) => None,
+        Err(err) => panic!("{what}: {err}"),
+    }
+}
+
+/// `GRAPH.COPY` runs in a fork on the server, and a copy made while the server is busy forking
+/// can come out empty. Copy `source`, which holds one node, to `target` until the copy holds it
+/// too, and return its `v`.
+fn copy_until_complete(
+    client: &falkordb::FalkorSyncClient,
+    source: &str,
+    target: &str,
+) -> Option<i64> {
+    let deadline = std::time::Instant::now() + COPY_TIMEOUT;
+    loop {
+        let _ = client.select_graph(target).delete();
+        let copy = client.copy_graph(source, target).and_then(|mut copy| {
+            let mut result = copy.ro_query("MATCH (n:N) RETURN n.v").execute()?;
+            Ok(result.data.next())
+        });
+        let value = copied_value(copy, "copy within one slot");
+        if value.is_some() || std::time::Instant::now() >= deadline {
+            return value;
+        }
+        std::thread::sleep(COPY_RETRY_INTERVAL);
+    }
 }
 
 /// Select `name`, first deleting whatever an interrupted earlier run may have left in it.
@@ -81,6 +128,13 @@ fn sync_client_routes_commands_across_cluster_nodes() {
             .try_get_at::<i64>(0)
             .expect("count");
         assert_eq!(count, 1);
+        // The graph name follows the subcommand here, yet the command still goes to its node.
+        graph
+            .create_mandatory_constraint(EntityType::Node, "N", &["v"])
+            .expect("constraint created on the owning node");
+        graph
+            .drop_constraint(ConstraintType::Mandatory, EntityType::Node, "N", &["v"])
+            .expect("constraint dropped on the owning node");
         graph.delete().expect("delete");
     }
 }
@@ -177,25 +231,15 @@ fn sync_copy_graph_needs_a_shared_hash_tag() {
 
     // The `{rs_copy}` hash tag puts both graphs in one slot, owned by one node.
     let mut source = fresh_graph(&client, "{rs_copy}:source");
-    let _ = fresh_graph(&client, "{rs_copy}:copy");
     source
         .query("CREATE (:N {v: 7})")
         .execute()
         .expect("create");
-    let mut copy = client
-        .copy_graph("{rs_copy}:source", "{rs_copy}:copy")
-        .expect("copy within one slot");
-    let copied = copy
-        .ro_query("MATCH (n:N) RETURN n.v")
-        .execute()
-        .expect("read the copy")
-        .data
-        .next()
-        .expect("a row")
-        .expect("row parses")
-        .try_get_at::<i64>(0)
-        .expect("v");
-    assert_eq!(copied, 7);
+    assert_eq!(
+        copy_until_complete(&client, "{rs_copy}:source", "{rs_copy}:copy"),
+        Some(7)
+    );
+    let mut copy = client.select_graph("{rs_copy}:copy");
 
     // An untagged name hashes to another slot: the server refuses, and the hint says why.
     let Err(err) = client.copy_graph("{rs_copy}:source", "rs_copy_untagged") else {
@@ -258,6 +302,29 @@ mod asynchronous {
     use futures::StreamExt;
     use std::num::NonZeroU8;
 
+    /// Async counterpart of [`copy_until_complete`](super::copy_until_complete).
+    async fn copy_until_complete(
+        client: &falkordb::FalkorAsyncClient,
+        source: &str,
+        target: &str,
+    ) -> Option<i64> {
+        let deadline = std::time::Instant::now() + COPY_TIMEOUT;
+        loop {
+            let _ = client.select_graph(target).delete().await;
+            let copy = async {
+                let mut copy = client.copy_graph(source, target).await?;
+                let mut result = copy.ro_query("MATCH (n:N) RETURN n.v").execute().await?;
+                Ok(result.data.next().await)
+            }
+            .await;
+            let value = copied_value(copy, "copy within one slot");
+            if value.is_some() || std::time::Instant::now() >= deadline {
+                return value;
+            }
+            tokio::time::sleep(COPY_RETRY_INTERVAL).await;
+        }
+    }
+
     /// Async counterpart of [`fresh_graph`](super::fresh_graph).
     async fn fresh_graph(
         client: &falkordb::FalkorAsyncClient,
@@ -301,6 +368,14 @@ mod asynchronous {
                 .try_get_at::<i64>(0)
                 .expect("count");
             assert_eq!(count, 1);
+            graph
+                .create_mandatory_constraint(EntityType::Node, "N", &["v"])
+                .await
+                .expect("constraint created on the owning node");
+            graph
+                .drop_constraint(ConstraintType::Mandatory, EntityType::Node, "N", &["v"])
+                .await
+                .expect("constraint dropped on the owning node");
 
             let mut batch = graph.batch();
             batch.query("CREATE (:N)");
@@ -356,29 +431,16 @@ mod asynchronous {
             .expect("cluster client");
 
         let mut source = fresh_graph(&client, "{rs_copy_async}:source").await;
-        let _ = fresh_graph(&client, "{rs_copy_async}:copy").await;
         source
             .query("CREATE (:N {v: 7})")
             .execute()
             .await
             .expect("create");
-        let mut copy = client
-            .copy_graph("{rs_copy_async}:source", "{rs_copy_async}:copy")
-            .await
-            .expect("copy within one slot");
-        let copied = copy
-            .ro_query("MATCH (n:N) RETURN n.v")
-            .execute()
-            .await
-            .expect("read the copy")
-            .data
-            .next()
-            .await
-            .expect("a row")
-            .expect("row parses")
-            .try_get_at::<i64>(0)
-            .expect("v");
-        assert_eq!(copied, 7);
+        assert_eq!(
+            copy_until_complete(&client, "{rs_copy_async}:source", "{rs_copy_async}:copy").await,
+            Some(7)
+        );
+        let mut copy = client.select_graph("{rs_copy_async}:copy");
 
         let Err(err) = client
             .copy_graph("{rs_copy_async}:source", "rs_copy_async_untagged")

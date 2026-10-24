@@ -86,16 +86,13 @@ impl FalkorAsyncConnection {
                     .map_err(map_redis_err)
             }
             FalkorAsyncConnection::Cluster(cluster_conn, response_timeout) => {
-                use redis::aio::ConnectionLike as _;
                 let route = ClusterRoute::for_command(command, subcommand);
+                let routing = route.routing_info(graph_name);
                 within_response_timeout(*response_timeout, async move {
-                    match route.routing_info() {
-                        None => cluster_conn.req_packed_command(&cmd).await,
-                        Some(routing) => cluster_conn
-                            .route_command(cmd, routing)
-                            .await
-                            .map(|reply| route.collapse_reply(command, reply)),
-                    }
+                    cluster_conn
+                        .route_command(cmd, routing)
+                        .await
+                        .map(|reply| route.collapse_reply(command, reply))
                 })
                 .await
                 .map_err(map_redis_err)

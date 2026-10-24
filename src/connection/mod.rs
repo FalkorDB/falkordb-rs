@@ -15,7 +15,7 @@ pub(crate) mod asynchronous;
 /// choice (a single arbitrary primary, or every primary).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClusterRoute {
-    /// Route by the command's key (the graph name).
+    /// Route by the graph name, to the primary owning its slot.
     ByKey,
     /// Any single primary can answer. A replica could still lag behind a write made on every
     /// primary, such as `GRAPH.CONFIG SET`.
@@ -40,18 +40,26 @@ impl ClusterRoute {
         }
     }
 
-    /// The `redis` routing for this route, or `None` to leave the default key-based routing.
-    pub(crate) fn routing_info(self) -> Option<redis::cluster_routing::RoutingInfo> {
-        use redis::cluster_routing::{MultipleNodeRoutingInfo, RoutingInfo, SingleNodeRoutingInfo};
-        match self {
-            Self::ByKey => None,
-            Self::AnyPrimary => Some(RoutingInfo::SingleNode(
-                SingleNodeRoutingInfo::RandomPrimary,
-            )),
-            Self::AllPrimaries => Some(RoutingInfo::MultiNode((
-                MultipleNodeRoutingInfo::AllMasters,
-                None,
-            ))),
+    /// The `redis` routing for this route. A graph command is routed by `graph_name` explicitly,
+    /// since redis-rs would hash the command's first argument, which is the subcommand in
+    /// `GRAPH.CONSTRAINT CREATE <graph>`; a command without a graph goes to any primary.
+    pub(crate) fn routing_info(
+        self,
+        graph_name: Option<&str>,
+    ) -> redis::cluster_routing::RoutingInfo {
+        use redis::cluster_routing::{
+            MultipleNodeRoutingInfo, Route, RoutingInfo, SingleNodeRoutingInfo, SlotAddr,
+        };
+        match (self, graph_name) {
+            (Self::ByKey, Some(graph_name)) => RoutingInfo::SingleNode(
+                SingleNodeRoutingInfo::SpecificNode(Route::with_key(graph_name, SlotAddr::Master)),
+            ),
+            (Self::ByKey | Self::AnyPrimary, _) => {
+                RoutingInfo::SingleNode(SingleNodeRoutingInfo::RandomPrimary)
+            }
+            (Self::AllPrimaries, _) => {
+                RoutingInfo::MultiNode((MultipleNodeRoutingInfo::AllMasters, None))
+            }
         }
     }
 
@@ -286,20 +294,26 @@ mod tests {
 
     #[test]
     fn cluster_route_routing_info() {
-        use redis::cluster_routing::{MultipleNodeRoutingInfo, RoutingInfo, SingleNodeRoutingInfo};
-        assert_eq!(ClusterRoute::ByKey.routing_info(), None);
+        use redis::cluster_routing::{
+            MultipleNodeRoutingInfo, Route, RoutingInfo, SingleNodeRoutingInfo, SlotAddr,
+        };
+        // Wherever the graph name sits in the command, it picks the slot.
         assert_eq!(
-            ClusterRoute::AnyPrimary.routing_info(),
-            Some(RoutingInfo::SingleNode(
-                SingleNodeRoutingInfo::RandomPrimary
-            ))
-        );
-        assert_eq!(
-            ClusterRoute::AllPrimaries.routing_info(),
-            Some(RoutingInfo::MultiNode((
-                MultipleNodeRoutingInfo::AllMasters,
-                None
+            ClusterRoute::ByKey.routing_info(Some("{tenant}:g")),
+            RoutingInfo::SingleNode(SingleNodeRoutingInfo::SpecificNode(Route::with_key(
+                "{tenant}:g",
+                SlotAddr::Master
             )))
+        );
+        for route in [ClusterRoute::ByKey, ClusterRoute::AnyPrimary] {
+            assert_eq!(
+                route.routing_info(None),
+                RoutingInfo::SingleNode(SingleNodeRoutingInfo::RandomPrimary)
+            );
+        }
+        assert_eq!(
+            ClusterRoute::AllPrimaries.routing_info(None),
+            RoutingInfo::MultiNode((MultipleNodeRoutingInfo::AllMasters, None))
         );
     }
 

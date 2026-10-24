@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    connection::blocking::FalkorSyncConnection,
+    connection::blocking::{ClusterNode, FalkorSyncConnection},
     parser::{redis_value_as_string, redis_value_as_vec},
     FalkorDBError, FalkorResult,
 };
@@ -131,8 +131,9 @@ static REPLICA_ROTATION: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 ///   its result, so a failing peer panics and a silent one blocks forever. Rustls handshakes
 ///   lazily under the read timeout redis-rs sets during setup, so only native-TLS-only builds
 ///   need this for a single node;
-/// - its sync cluster setup sends a `PING` on each new node connection before setting any read
-///   timeout, and connects each node through that same timed connect.
+/// - its sync cluster connection takes several steps to set up, each bounded on its own (see
+///   [`ClusterNode`](crate::connection::blocking::ClusterNode)), so only a helper thread bounds
+///   them all by one deadline.
 mod setup_thread {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -214,11 +215,9 @@ mod setup_thread {
     }
 
     /// Run `setup`, turning a panic into an error. The one panic known on these paths is the
-    /// native-TLS handshake `unwrap`, which cluster node connections reach too, so it is reported
-    /// the way redis-rs reports a failed handshake elsewhere.
-    pub(super) fn catch_panic<T>(
-        setup: impl FnOnce() -> redis::RedisResult<T>
-    ) -> redis::RedisResult<T> {
+    /// native-TLS handshake `unwrap`, so it is reported the way redis-rs reports a failed
+    /// handshake elsewhere.
+    fn catch_panic<T>(setup: impl FnOnce() -> redis::RedisResult<T>) -> redis::RedisResult<T> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(setup)).unwrap_or_else(|payload| {
             let detail = payload
                 .downcast_ref::<String>()
@@ -347,7 +346,7 @@ impl FalkorClientProvider {
     /// Connect `client` with an optional setup deadline while avoiding redis-rs 1.7.1's
     /// `tls_connector.connect(...).unwrap()` panic and unbounded TLS handshake on the
     /// timed `native-tls` (without `rustls`) code path.
-    fn connect_redis_client(
+    pub(crate) fn connect_redis_client(
         client: &redis::Client,
         connect_timeout: Option<std::time::Duration>,
     ) -> redis::RedisResult<redis::Connection> {
@@ -617,34 +616,33 @@ impl FalkorClientProvider {
         deadline: Option<std::time::Instant>,
     ) -> FalkorResult<FalkorSyncConnection> {
         let client = match self {
-            // Node connections, health checks and slot discovery must all fit what is left of the
-            // deadline, but redis-rs leaves some of them unbounded (see `setup_thread`), so the
-            // setup runs on a helper thread abandoned at the deadline. Every step also gets the
-            // time left as its own timeout, so an abandoned thread usually ends soon after. The
-            // query deadline applies once the connection is up.
+            // A sync connection gets a cluster client of its own, seeded with the same node, whose
+            // response timeout bounds the reads of setup (health checks, slot discovery) by what is
+            // left of the deadline. Its node connections are `ClusterNode`s, which also bound what
+            // redis-rs leaves unbounded, both now and when it opens node connections while a query
+            // runs. The steps are bounded one by one, so setup runs on a helper thread abandoned at
+            // the deadline. The query deadline applies once the connection is up.
             FalkorClientProvider::Redis {
                 client,
-                cluster: Some(cluster),
+                cluster: Some(_),
+                connect_timeout,
                 ..
             } => {
+                let builder =
+                    Self::cluster_client_builder(client.get_connection_info(), *connect_timeout);
                 let conn = match Self::remaining(deadline)? {
-                    Some(left) => {
-                        let cluster = cluster.clone();
+                    Some(left) => builder.response_timeout(left).build().and_then(|cluster| {
                         setup_thread::run(
                             "cluster connection",
                             left,
                             &setup_thread::counter_for(client),
                             setup_thread::MAX_IN_FLIGHT_PER_TARGET,
-                            move || {
-                                cluster.get_connection_with_config(
-                                    redis::cluster::ClusterConfig::new()
-                                        .set_connection_timeout(left)
-                                        .set_response_timeout(left),
-                                )
-                            },
+                            move || cluster.get_generic_connection::<ClusterNode>(),
                         )
-                    }
-                    None => setup_thread::catch_panic(|| cluster.get_connection()),
+                    }),
+                    None => builder
+                        .build()
+                        .and_then(|cluster| cluster.get_generic_connection::<ClusterNode>()),
                 }
                 .map(|conn| FalkorSyncConnection::Cluster(Box::new(conn)))
                 .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
@@ -1194,21 +1192,29 @@ impl FalkorClientProvider {
         Ok(SentinelClients { master, replica })
     }
 
-    /// Build a [`ClusterClient`](redis::cluster::ClusterClient) seeded with the configured node.
-    /// Credentials, TLS mode and protocol come from `connection_info` and its TCP settings are
-    /// forwarded; the other cluster nodes are discovered from the topology the seed node reports.
-    /// The query response timeout is applied per connection rather than here, since a
-    /// client-wide one would also bound the connection's setup.
+    /// A [`ClusterClient`](redis::cluster::ClusterClient) builder seeded with the configured
+    /// node. Credentials, TLS mode and protocol come from `connection_info` and its TCP settings
+    /// are forwarded; the other cluster nodes are discovered from the topology the seed node
+    /// reports.
+    fn cluster_client_builder(
+        connection_info: &redis::ConnectionInfo,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> redis::cluster::ClusterClientBuilder {
+        // Unset, redis-rs would cap each node connection at one second; `MAX` means no limit.
+        redis::cluster::ClusterClient::builder([connection_info.clone()])
+            .tcp_settings(connection_info.tcp_settings().clone())
+            .connection_timeout(connect_timeout.unwrap_or(std::time::Duration::MAX))
+    }
+
+    /// The cluster client async connections are opened from. The query response timeout is
+    /// applied per command rather than here, since a client-wide one would also bound setup.
     #[cfg_attr(not(feature = "tokio"), allow(unused_variables))]
     fn build_cluster_client(
         connection_info: &redis::ConnectionInfo,
         connect_timeout: Option<std::time::Duration>,
         concurrency_limit: Option<std::num::NonZeroUsize>,
     ) -> FalkorResult<redis::cluster::ClusterClient> {
-        // Unset, redis-rs would cap each node connection at one second; `None` means no limit.
-        let builder = redis::cluster::ClusterClient::builder([connection_info.clone()])
-            .tcp_settings(connection_info.tcp_settings().clone())
-            .connection_timeout(connect_timeout.unwrap_or(std::time::Duration::MAX));
+        let builder = Self::cluster_client_builder(connection_info, connect_timeout);
         #[cfg(feature = "tokio")]
         let builder = match concurrency_limit {
             Some(limit) => builder.connection_concurrency_limit(limit.get()),
@@ -3136,11 +3142,13 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "tokio")]
     fn unreachable_cluster_client() -> redis::cluster::ClusterClient {
         // Port 1 is reliably unroutable in test environments.
         redis::cluster::ClusterClient::new(["redis://127.0.0.1:1"]).unwrap()
     }
 
+    #[cfg(feature = "tokio")]
     fn provider_with_cluster(
         cluster: Option<redis::cluster::ClusterClient>
     ) -> FalkorClientProvider {
@@ -3178,10 +3186,18 @@ mod tests {
 
     #[test]
     fn test_get_connection_uses_the_cluster_client() {
-        // With a cluster client configured, the (unreachable) cluster is dialled rather than the
-        // plain `client`, which points at the live test server and would succeed.
-        let mut provider = provider_with_cluster(Some(unreachable_cluster_client()));
-        assert!(provider.get_connection().is_err());
+        let url = spawn_one_node_cluster(
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            Default::default(),
+        );
+        let mut provider = cluster_provider(&url, None, None);
+        assert_eq!(
+            provider
+                .get_connection()
+                .map(|conn| matches!(conn, FalkorSyncConnection::Cluster(_))),
+            Ok(true)
+        );
     }
 
     #[test]
@@ -3479,6 +3495,146 @@ mod tests {
             }
         });
         format!("redis://127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn test_cluster_node_passes_commands_and_timeouts_to_its_connection() {
+        use redis::cluster::Connect as _;
+        use redis::ConnectionLike as _;
+
+        let port = spawn_fake_resp_server(|command| {
+            if command.contains("\r\nPING\r\n") {
+                "+PONG\r\n"
+            } else {
+                "+OK\r\n"
+            }
+            .to_string()
+        });
+        // A cluster client without a connect timeout passes `MAX`.
+        let mut node = ClusterNode::connect(
+            format!("redis://127.0.0.1:{port}").as_str(),
+            Some(std::time::Duration::MAX),
+        )
+        .expect("connect to the fake node");
+        assert!(node.check_connection());
+        assert!(node.is_open());
+        assert_eq!(node.get_db(), 0);
+
+        let pong = redis::Value::SimpleString("PONG".to_string());
+        let mut pipeline = redis::pipe();
+        pipeline.cmd("PING").cmd("PING");
+        assert_eq!(
+            node.req_packed_commands(&pipeline.get_packed_pipeline(), 0, 2)
+                .ok(),
+            Some(vec![pong.clone(), pong.clone()])
+        );
+        assert!(node
+            .send_packed_command(&redis::cmd("PING").get_packed_command())
+            .is_ok());
+        assert_eq!(node.recv_response().ok(), Some(pong));
+        assert!(node
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .is_ok());
+        assert!(node.set_write_timeout(None).is_ok());
+    }
+
+    /// A one-node cluster whose first connection serves setup and one `GRAPH.QUERY`, then closes as
+    /// if the node had restarted. Every later connection completes its handshake but leaves `PING`
+    /// unanswered until `release` is dropped: a replacement that accepts connections but stalls.
+    fn spawn_node_stalling_after_a_restart(release: std::sync::mpsc::Receiver<()>) -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake cluster node");
+        let port = listener.local_addr().unwrap().port();
+        let slots = format!("*1\r\n*3\r\n:0\r\n:16383\r\n*2\r\n$9\r\n127.0.0.1\r\n:{port}\r\n");
+        let release = std::sync::Arc::new(std::sync::Mutex::new(release));
+        std::thread::spawn(move || {
+            for (index, mut stream) in listener.incoming().flatten().enumerate() {
+                let slots = slots.clone();
+                let release = std::sync::Arc::clone(&release);
+                std::thread::spawn(move || {
+                    let mut pending = String::new();
+                    let mut chunk = [0u8; 4096];
+                    while let Ok(read) = stream.read(&mut chunk) {
+                        if read == 0 {
+                            break;
+                        }
+                        pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                        for command in take_commands(&mut pending) {
+                            let command = command.to_ascii_uppercase();
+                            let reply = if command.contains("\r\nPING\r\n") {
+                                if index > 0 {
+                                    let _ = release.lock().unwrap().recv();
+                                    return;
+                                }
+                                "+PONG\r\n".to_string()
+                            } else if command.contains("\r\nCLUSTER\r\n") {
+                                slots.clone()
+                            } else if command.contains("\r\nGRAPH.QUERY\r\n") {
+                                let _ = stream.write_all(b":1\r\n");
+                                return;
+                            } else {
+                                "+OK\r\n".to_string()
+                            };
+                            let _ = stream.write_all(reply.as_bytes());
+                        }
+                    }
+                });
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    /// Open a sync cluster connection to a node that restarts after one query, then run `request`
+    /// on it. redis-rs reconnects while `request` runs, and the replacement never answers, which
+    /// must fail `request` rather than hang it.
+    fn assert_reconnect_to_a_stalled_node_fails(
+        request: impl FnOnce(&mut FalkorSyncConnection) -> FalkorResult<Vec<redis::Value>>
+            + Send
+            + 'static
+    ) {
+        let (release, stall) = std::sync::mpsc::channel();
+        let url = spawn_node_stalling_after_a_restart(stall);
+        let mut provider = cluster_provider(
+            &url,
+            Some(std::time::Duration::from_secs(1)),
+            Some(std::time::Duration::from_millis(100)),
+        );
+        let mut conn = provider.get_connection().expect("cluster connection");
+        assert_eq!(
+            conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"])),
+            Ok(redis::Value::Int(1))
+        );
+
+        // On a thread, so that a regression fails this test instead of hanging it.
+        let (done, outcome) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(request(&mut conn).is_err());
+        });
+        assert_eq!(
+            outcome.recv_timeout(std::time::Duration::from_secs(30)),
+            Ok(true),
+            "a reconnect to a node that never answers must fail the request"
+        );
+        drop(release);
+    }
+
+    #[test]
+    fn test_sync_cluster_reconnect_during_a_query_is_bounded() {
+        assert_reconnect_to_a_stalled_node_fails(|conn| {
+            conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"]))
+                .map(|reply| vec![reply])
+        });
+    }
+
+    #[test]
+    fn test_sync_cluster_reconnect_during_a_batch_is_bounded() {
+        assert_reconnect_to_a_stalled_node_fails(|conn| {
+            let mut pipeline = redis::pipe();
+            pipeline.cmd("GRAPH.QUERY").arg("g").arg("RETURN 1");
+            pipeline.cmd("GRAPH.QUERY").arg("g").arg("RETURN 2");
+            conn.execute_pipeline(&pipeline)
+        });
     }
 
     #[test]

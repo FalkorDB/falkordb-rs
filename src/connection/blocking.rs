@@ -4,7 +4,7 @@
  */
 
 use crate::{
-    client::{blocking::FalkorSyncClientInner, ProvidesSyncConnections},
+    client::{blocking::FalkorSyncClientInner, FalkorClientProvider, ProvidesSyncConnections},
     connection::{map_redis_err, reject_server_error, ClusterRoute},
     parser::parse_redis_info,
     FalkorDBError, FalkorResult,
@@ -22,7 +22,88 @@ pub(crate) enum FalkorSyncConnection {
 
     /// A connection to a Redis Cluster, routing each command to the node owning the graph's slot.
     /// Boxed, as it is far larger than a single-node connection.
-    Cluster(Box<redis::cluster::ClusterConnection>),
+    Cluster(Box<redis::cluster::ClusterConnection<ClusterNode>>),
+}
+
+/// A connection to one node of a Redis Cluster, as the sync cluster connection opens them: during
+/// setup, and again while a query runs (after a dropped connection, a redirect or a slot refresh).
+/// redis-rs clears a new connection's socket timeouts, sends it a `PING`, and only then installs
+/// the cluster's timeouts, so a node that accepts connections but never answers would block that
+/// `PING` forever. A `ClusterNode` keeps its connect timeout on the socket until then, and connects
+/// the way single-node connections do, avoiding the native-TLS handshake's panic and stall.
+pub(crate) struct ClusterNode(redis::Connection);
+
+impl redis::cluster::Connect for ClusterNode {
+    fn connect<T>(
+        info: T,
+        timeout: Option<std::time::Duration>,
+    ) -> redis::RedisResult<Self>
+    where
+        T: redis::IntoConnectionInfo,
+    {
+        // The cluster client passes its connection timeout, `MAX` standing for none.
+        let timeout = timeout.filter(|timeout| *timeout != std::time::Duration::MAX);
+        let conn =
+            FalkorClientProvider::connect_redis_client(&redis::Client::open(info)?, timeout)?;
+        conn.set_read_timeout(timeout)?;
+        conn.set_write_timeout(timeout)?;
+        Ok(Self(conn))
+    }
+
+    fn send_packed_command(
+        &mut self,
+        cmd: &[u8],
+    ) -> redis::RedisResult<()> {
+        self.0.send_packed_command(cmd)
+    }
+
+    fn set_write_timeout(
+        &self,
+        dur: Option<std::time::Duration>,
+    ) -> redis::RedisResult<()> {
+        self.0.set_write_timeout(dur)
+    }
+
+    fn set_read_timeout(
+        &self,
+        dur: Option<std::time::Duration>,
+    ) -> redis::RedisResult<()> {
+        self.0.set_read_timeout(dur)
+    }
+
+    fn recv_response(&mut self) -> redis::RedisResult<redis::Value> {
+        self.0.recv_response()
+    }
+}
+
+impl redis::ConnectionLike for ClusterNode {
+    fn req_packed_command(
+        &mut self,
+        cmd: &[u8],
+    ) -> redis::RedisResult<redis::Value> {
+        self.0.req_packed_command(cmd)
+    }
+
+    fn req_packed_commands(
+        &mut self,
+        cmd: &[u8],
+        offset: usize,
+        count: usize,
+    ) -> redis::RedisResult<Vec<redis::Value>> {
+        self.0.req_packed_commands(cmd, offset, count)
+    }
+
+    fn get_db(&self) -> i64 {
+        self.0.get_db()
+    }
+
+    fn check_connection(&mut self) -> bool {
+        self.0.check_connection()
+    }
+
+    fn is_open(&self) -> bool {
+        self.0.is_open()
+    }
 }
 
 fn build_command(
@@ -43,22 +124,17 @@ fn build_command(
 }
 
 fn run_cluster_command(
-    conn: &mut redis::cluster::ClusterConnection,
+    conn: &mut redis::cluster::ClusterConnection<ClusterNode>,
     graph_name: Option<&str>,
     command: &str,
     subcommand: Option<&str>,
     params: Option<&[&str]>,
 ) -> FalkorResult<redis::Value> {
-    use redis::ConnectionLike as _;
     let cmd = build_command(graph_name, command, subcommand, params);
     let route = ClusterRoute::for_command(command, subcommand);
-    match route.routing_info() {
-        None => conn.req_command(&cmd),
-        Some(routing) => conn
-            .route_command(&cmd, routing)
-            .map(|reply| route.collapse_reply(command, reply)),
-    }
-    .map_err(map_redis_err)
+    conn.route_command(&cmd, route.routing_info(graph_name))
+        .map(|reply| route.collapse_reply(command, reply))
+        .map_err(map_redis_err)
 }
 
 fn run_pipeline<C: redis::ConnectionLike>(
@@ -74,7 +150,7 @@ fn run_pipeline<C: redis::ConnectionLike>(
 /// command's server error in that command's slot, so do the same here; a connection failure
 /// still fails them all.
 fn run_cluster_pipeline(
-    conn: &mut redis::cluster::ClusterConnection,
+    conn: &mut redis::cluster::ClusterConnection<ClusterNode>,
     pipeline: &redis::Pipeline,
 ) -> FalkorResult<Vec<redis::Value>> {
     use redis::ConnectionLike as _;

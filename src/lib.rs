@@ -727,11 +727,11 @@
 //!
 //! Two things work differently on a cluster:
 //!
-//! - **A write can run more than once.** redis-rs's cluster client sends a command again when the
-//!   node connection drops before the reply arrives, and the sync client also when the reply misses
-//!   the response timeout (by default up to 16 more times). This happens even with retries disabled
-//!   ([`RetryPolicy::disabled`]), so keep writes idempotent where it matters (for example with
-//!   `MERGE`), or leave the sync client's response timeout unset.
+//! - **A write can run more than once.** The redis-rs cluster client sends a command again when
+//!   the node connection drops before the reply arrives, and the sync client also when the reply
+//!   misses the response timeout (by default up to 16 more times). This happens even with retries
+//!   disabled ([`RetryPolicy::disabled`]), so keep writes idempotent where it matters (for example
+//!   with `MERGE`), or leave the sync client's response timeout unset.
 //! - **A sync [`batch`](SyncGraph::batch) takes a round trip per query**: its queries are sent one
 //!   after another, so that each one still reports its own error. Async batches are pipelined.
 //!

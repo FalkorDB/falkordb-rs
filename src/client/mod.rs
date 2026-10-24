@@ -300,9 +300,9 @@ pub(crate) enum FalkorClientProvider {
         /// uses replica-only connection getters (no primary fallback) so the pool is
         /// only built when a replica connection actually succeeds.
         sentinel_replica: Option<redis::sentinel::SentinelClient>,
-        /// Redis Cluster client, set when the server reports `redis_mode:cluster`. Seeded from
-        /// the configured node; the remaining nodes are discovered from the cluster topology.
-        cluster: Option<redis::cluster::ClusterClient>,
+        /// The nodes of the Redis Cluster connections go through, set when the server reports
+        /// `redis_mode:cluster`.
+        cluster: Option<ClusterSeeds>,
         #[cfg(feature = "embedded-core")]
         #[allow(dead_code)]
         embedded_server: Option<std::sync::Arc<crate::embedded::EmbeddedServer>>,
@@ -323,6 +323,107 @@ pub(crate) enum FalkorClientProvider {
         /// answers without making their client impossible to construct.
         connect_timeout: Option<std::time::Duration>,
     },
+}
+
+/// The nodes a Redis Cluster's clients are seeded with: the configured node, then the others the
+/// cluster reported while the client was built. A cluster client needs one live seed to find the
+/// rest, so new connections can still be opened while the configured node is down.
+#[derive(Clone)]
+pub(crate) struct ClusterSeeds {
+    nodes: Vec<redis::ConnectionInfo>,
+    /// The per-node cap on in-flight commands of async connections (`with_max_inflight`).
+    #[cfg_attr(not(feature = "tokio"), allow(dead_code))]
+    concurrency_limit: Option<std::num::NonZeroUsize>,
+}
+
+impl ClusterSeeds {
+    /// `configured`, then every other node of its `CLUSTER SLOTS` reply, each reached the way
+    /// `configured` is: with the same credentials, TLS mode and TCP settings.
+    fn new(
+        configured: &redis::ConnectionInfo,
+        slots: redis::Value,
+        concurrency_limit: Option<std::num::NonZeroUsize>,
+    ) -> Self {
+        let mut nodes = vec![configured.clone()];
+        for (host, port) in slot_nodes(slots) {
+            let addr = match configured.addr() {
+                redis::ConnectionAddr::TcpTls {
+                    insecure,
+                    tls_params,
+                    ..
+                } => redis::ConnectionAddr::TcpTls {
+                    host,
+                    port,
+                    insecure: *insecure,
+                    tls_params: tls_params.clone(),
+                },
+                _ => redis::ConnectionAddr::Tcp(host, port),
+            };
+            if !nodes.iter().any(|node| node.addr() == &addr) {
+                nodes.push(configured.clone().set_addr(addr));
+            }
+        }
+        Self {
+            nodes,
+            concurrency_limit,
+        }
+    }
+
+    /// A cluster client builder seeded with these nodes.
+    fn client_builder(
+        &self,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> redis::cluster::ClusterClientBuilder {
+        redis::cluster::ClusterClient::builder(self.nodes.iter().cloned())
+            // redis-rs does not take the TCP settings from the seeds.
+            .tcp_settings(self.nodes[0].tcp_settings().clone())
+            // Unset, redis-rs would cap each node connection at one second; `MAX` means no limit.
+            .connection_timeout(connect_timeout.unwrap_or(std::time::Duration::MAX))
+    }
+
+    /// The cluster client async connections are opened from. The query response timeout is
+    /// applied per command rather than here, since a client-wide one would also bound setup.
+    #[cfg(feature = "tokio")]
+    fn async_client(
+        &self,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> FalkorResult<redis::cluster::ClusterClient> {
+        let builder = self.client_builder(connect_timeout);
+        match self.concurrency_limit {
+            Some(limit) => builder.connection_concurrency_limit(limit.get()),
+            None => builder,
+        }
+        .build()
+        .map_err(|err| FalkorDBError::RedisError(err.to_string()))
+    }
+}
+
+/// The `(host, port)` of every node in a `CLUSTER SLOTS` reply, primaries and replicas alike. A
+/// node reported without a usable host (empty, or `?` for unknown) is left out.
+fn slot_nodes(reply: redis::Value) -> Vec<(String, u16)> {
+    let redis::Value::Array(ranges) = reply else {
+        return Vec::new();
+    };
+    ranges
+        .into_iter()
+        .filter_map(|range| match range {
+            // A slot range, then its primary and replicas.
+            redis::Value::Array(fields) => Some(fields.into_iter().skip(2)),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|node| match node {
+            redis::Value::Array(node) => match node.as_slice() {
+                [redis::Value::BulkString(host), redis::Value::Int(port), ..] => {
+                    let host = String::from_utf8_lossy(host).into_owned();
+                    let port = u16::try_from(*port).ok()?;
+                    (!host.is_empty() && host != "?").then_some((host, port))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 impl FalkorClientProvider {
@@ -616,20 +717,18 @@ impl FalkorClientProvider {
         deadline: Option<std::time::Instant>,
     ) -> FalkorResult<FalkorSyncConnection> {
         let client = match self {
-            // A sync connection gets a cluster client of its own, seeded with the same node, whose
-            // response timeout bounds the reads of setup (health checks, slot discovery) by what is
-            // left of the deadline. Its node connections are `ClusterNode`s, which also bound what
+            // A sync connection gets a cluster client of its own, whose response timeout bounds the
+            // reads of setup (health checks, slot discovery) by what is left of the deadline. Its node connections are `ClusterNode`s, which also bound what
             // redis-rs leaves unbounded, both now and when it opens node connections while a query
             // runs. The steps are bounded one by one, so setup runs on a helper thread abandoned at
             // the deadline. The query deadline applies once the connection is up.
             FalkorClientProvider::Redis {
                 client,
-                cluster: Some(_),
+                cluster: Some(seeds),
                 connect_timeout,
                 ..
             } => {
-                let builder =
-                    Self::cluster_client_builder(client.get_connection_info(), *connect_timeout);
+                let builder = seeds.client_builder(*connect_timeout);
                 let conn = match Self::remaining(deadline)? {
                     Some(left) => builder.response_timeout(left).build().and_then(|cluster| {
                         setup_thread::run(
@@ -713,11 +812,12 @@ impl FalkorClientProvider {
     ) -> FalkorResult<FalkorAsyncConnection> {
         Ok(match self {
             FalkorClientProvider::Redis {
-                cluster: Some(cluster),
+                cluster: Some(seeds),
                 ..
             } => {
                 // The whole setup, slot discovery included, gets the connect timeout. The query
                 // deadline is enforced per command, so a short one cannot cut setup short.
+                let cluster = seeds.async_client(connect_timeout)?;
                 let connect = cluster.get_async_connection();
                 let conn =
                     match connect_timeout {
@@ -962,10 +1062,10 @@ impl FalkorClientProvider {
 
     pub(crate) fn set_cluster(
         &mut self,
-        cluster_client: redis::cluster::ClusterClient,
+        seeds: ClusterSeeds,
     ) {
         match self {
-            FalkorClientProvider::Redis { cluster, .. } => *cluster = Some(cluster_client),
+            FalkorClientProvider::Redis { cluster, .. } => *cluster = Some(seeds),
             #[cfg(test)]
             FalkorClientProvider::None => {}
         }
@@ -1079,7 +1179,12 @@ impl FalkorClientProvider {
                 Self::remaining(deadline)?;
                 ProbeReply::Sentinel(sentinel_masters)
             }
-            Some("cluster") => ProbeReply::Cluster,
+            Some("cluster") => {
+                conn.set_timeouts(Self::remaining(deadline)?)?;
+                let slots = conn.execute_command(None, "CLUSTER", Some("SLOTS"), None)?;
+                Self::remaining(deadline)?;
+                ProbeReply::Cluster(slots)
+            }
             _ => ProbeReply::Standalone,
         };
         self.topology_from(connection_info, reply, None)
@@ -1115,7 +1220,10 @@ impl FalkorClientProvider {
                         .await
                         .and_then(redis_value_as_vec)?,
                 ),
-                Some("cluster") => ProbeReply::Cluster,
+                Some("cluster") => ProbeReply::Cluster(
+                    conn.execute_command(None, "CLUSTER", Some("SLOTS"), None)
+                        .await?,
+                ),
                 _ => ProbeReply::Standalone,
             })
         };
@@ -1160,12 +1268,15 @@ impl FalkorClientProvider {
             ProbeReply::Sentinel(sentinel_masters) => self
                 .build_sentinel_clients(connection_info, sentinel_masters)
                 .map(Topology::Sentinel),
-            ProbeReply::Cluster => Self::build_cluster_client(
-                connection_info,
-                self.connect_timeout(),
-                cluster_concurrency_limit,
-            )
-            .map(Topology::Cluster),
+            ProbeReply::Cluster(slots) => {
+                let seeds = ClusterSeeds::new(connection_info, slots, cluster_concurrency_limit);
+                // Build a client now, so that unusable seeds fail the client's construction.
+                seeds
+                    .client_builder(self.connect_timeout())
+                    .build()
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+                Ok(Topology::Cluster(seeds))
+            }
         }
     }
 
@@ -1191,39 +1302,6 @@ impl FalkorClientProvider {
 
         Ok(SentinelClients { master, replica })
     }
-
-    /// A [`ClusterClient`](redis::cluster::ClusterClient) builder seeded with the configured
-    /// node. Credentials, TLS mode and protocol come from `connection_info` and its TCP settings
-    /// are forwarded; the other cluster nodes are discovered from the topology the seed node
-    /// reports.
-    fn cluster_client_builder(
-        connection_info: &redis::ConnectionInfo,
-        connect_timeout: Option<std::time::Duration>,
-    ) -> redis::cluster::ClusterClientBuilder {
-        // Unset, redis-rs would cap each node connection at one second; `MAX` means no limit.
-        redis::cluster::ClusterClient::builder([connection_info.clone()])
-            .tcp_settings(connection_info.tcp_settings().clone())
-            .connection_timeout(connect_timeout.unwrap_or(std::time::Duration::MAX))
-    }
-
-    /// The cluster client async connections are opened from. The query response timeout is
-    /// applied per command rather than here, since a client-wide one would also bound setup.
-    #[cfg_attr(not(feature = "tokio"), allow(unused_variables))]
-    fn build_cluster_client(
-        connection_info: &redis::ConnectionInfo,
-        connect_timeout: Option<std::time::Duration>,
-        concurrency_limit: Option<std::num::NonZeroUsize>,
-    ) -> FalkorResult<redis::cluster::ClusterClient> {
-        let builder = Self::cluster_client_builder(connection_info, connect_timeout);
-        #[cfg(feature = "tokio")]
-        let builder = match concurrency_limit {
-            Some(limit) => builder.connection_concurrency_limit(limit.get()),
-            None => builder,
-        };
-        builder
-            .build()
-            .map_err(|err| FalkorDBError::RedisError(err.to_string()))
-    }
 }
 
 /// What the topology probe read from the server, before any client is built from it.
@@ -1231,17 +1309,20 @@ enum ProbeReply {
     Standalone,
     /// The `SENTINEL MASTERS` reply.
     Sentinel(Vec<redis::Value>),
-    Cluster,
+    /// The `CLUSTER SLOTS` reply.
+    Cluster(redis::Value),
 }
 
-/// What the configured address turned out to be.
+/// What the configured address turned out to be. Built once while a client is constructed, so its
+/// size does not matter.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Topology {
     /// A standalone server, used directly.
     Standalone,
     /// A Sentinel, with the master and optional replica clients it resolves.
     Sentinel(SentinelClients),
-    /// A Redis Cluster node, with a client for the whole cluster seeded from it.
-    Cluster(redis::cluster::ClusterClient),
+    /// A Redis Cluster node, with the nodes to seed cluster clients with.
+    Cluster(ClusterSeeds),
 }
 
 #[cfg(test)]
@@ -3143,15 +3224,14 @@ mod tests {
     }
 
     #[cfg(feature = "tokio")]
-    fn unreachable_cluster_client() -> redis::cluster::ClusterClient {
+    fn unreachable_cluster() -> ClusterSeeds {
         // Port 1 is reliably unroutable in test environments.
-        redis::cluster::ClusterClient::new(["redis://127.0.0.1:1"]).unwrap()
+        let info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+        ClusterSeeds::new(&info, redis::Value::Nil, None)
     }
 
     #[cfg(feature = "tokio")]
-    fn provider_with_cluster(
-        cluster: Option<redis::cluster::ClusterClient>
-    ) -> FalkorClientProvider {
+    fn provider_with_cluster(cluster: Option<ClusterSeeds>) -> FalkorClientProvider {
         FalkorClientProvider::Redis {
             client: redis::Client::open("redis://127.0.0.1:6379").unwrap(),
             sentinel: None,
@@ -3169,7 +3249,7 @@ mod tests {
     fn test_set_cluster_on_redis_provider() {
         let mut provider = provider_with_cluster(None);
         assert!(!provider.has_cluster());
-        provider.set_cluster(unreachable_cluster_client());
+        provider.set_cluster(unreachable_cluster());
         assert!(provider.has_cluster());
         // A cluster is not a Sentinel deployment and exposes no replica routing.
         assert!(!provider.has_sentinel());
@@ -3180,7 +3260,7 @@ mod tests {
     #[cfg(feature = "tokio")]
     fn test_set_cluster_on_none_provider_is_a_noop() {
         let mut provider = FalkorClientProvider::None;
-        provider.set_cluster(unreachable_cluster_client());
+        provider.set_cluster(unreachable_cluster());
         assert!(!provider.has_cluster());
     }
 
@@ -3201,35 +3281,222 @@ mod tests {
     }
 
     #[test]
-    fn test_build_cluster_client_applies_response_timeout() {
+    fn test_cluster_seeds_build_clients() {
         let info = redis::ConnectionInfo::from_str("redis://127.0.0.1:7001").unwrap();
-        assert!(FalkorClientProvider::build_cluster_client(&info, None, None).is_ok());
-        assert!(FalkorClientProvider::build_cluster_client(
-            &info,
-            Some(std::time::Duration::from_secs(2)),
-            std::num::NonZeroUsize::new(4)
-        )
-        .is_ok());
+        let seeds = ClusterSeeds::new(&info, redis::Value::Nil, std::num::NonZeroUsize::new(4));
+        assert!(seeds.client_builder(None).build().is_ok());
+        assert!(seeds
+            .client_builder(Some(std::time::Duration::from_secs(2)))
+            .build()
+            .is_ok());
+        #[cfg(feature = "tokio")]
+        assert!(seeds
+            .async_client(Some(std::time::Duration::from_secs(2)))
+            .is_ok());
     }
 
     #[test]
-    fn test_build_cluster_client_accepts_credentials_of_the_seed_node() {
+    fn test_cluster_seeds_accept_credentials_of_the_configured_node() {
         let info = redis::ConnectionInfo::from_str("redis://user:secret@127.0.0.1:7001").unwrap();
-        assert!(FalkorClientProvider::build_cluster_client(&info, None, None).is_ok());
+        let seeds = ClusterSeeds::new(&info, redis::Value::Nil, None);
+        assert!(seeds.client_builder(None).build().is_ok());
     }
 
     #[test]
     #[cfg(any(feature = "native-tls", feature = "rustls"))]
-    fn test_build_cluster_client_accepts_a_tls_seed_node() {
+    fn test_cluster_seeds_reach_reported_nodes_over_tls_too() {
         let info = redis::ConnectionInfo::from_str("rediss://127.0.0.1:7001/#insecure").unwrap();
-        assert!(FalkorClientProvider::build_cluster_client(&info, None, None).is_ok());
+        let seeds = ClusterSeeds::new(&info, slots_reply(&[&[("10.0.0.2", 7002)]]), None);
+        assert!(seeds.client_builder(None).build().is_ok());
+        assert_eq!(
+            seeds
+                .nodes
+                .iter()
+                .map(|node| matches!(
+                    node.addr(),
+                    redis::ConnectionAddr::TcpTls { insecure: true, .. }
+                ))
+                .collect::<Vec<_>>(),
+            [true, true]
+        );
     }
 
     #[test]
-    fn test_build_cluster_client_rejects_unix_sockets() {
+    fn test_cluster_seeds_reject_unix_sockets() {
         // A cluster is only reachable over TCP, so a unix-socket seed cannot be a cluster node.
         let info = redis::ConnectionInfo::from_str("unix:///tmp/redis.sock").unwrap();
-        assert!(FalkorClientProvider::build_cluster_client(&info, None, None).is_err());
+        let seeds = ClusterSeeds::new(&info, redis::Value::Nil, None);
+        assert!(seeds.client_builder(None).build().is_err());
+    }
+
+    /// A `CLUSTER SLOTS` reply: one slot range per entry of `ranges`, each with its nodes, primary
+    /// first.
+    fn slots_reply(ranges: &[&[(&str, i64)]]) -> redis::Value {
+        let node = |&(host, port): &(&str, i64)| {
+            redis::Value::Array(vec![
+                redis::Value::BulkString(host.as_bytes().to_vec()),
+                redis::Value::Int(port),
+                redis::Value::BulkString(b"node-id".to_vec()),
+            ])
+        };
+        redis::Value::Array(
+            ranges
+                .iter()
+                .map(|nodes| {
+                    let mut range = vec![redis::Value::Int(0), redis::Value::Int(16383)];
+                    range.extend(nodes.iter().map(node));
+                    redis::Value::Array(range)
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn test_cluster_seeds_add_every_reported_node_after_the_configured_one() {
+        let info = redis::ConnectionInfo::from_str("redis://user:secret@127.0.0.1:7001").unwrap();
+        let redis::Value::Array(mut ranges) = slots_reply(&[
+            &[("127.0.0.1", 7001), ("10.0.0.2", 7004)],
+            // No usable host, a port out of range, and a node listed twice.
+            &[
+                ("10.0.0.3", 7002),
+                ("", 7005),
+                ("?", 7006),
+                ("10.0.0.4", 70000),
+            ],
+            &[("10.0.0.2", 7004)],
+        ]) else {
+            unreachable!()
+        };
+        // Entries that are not a slot range, or not a node, are skipped too.
+        ranges.push(redis::Value::Okay);
+        ranges.push(redis::Value::Array(vec![
+            redis::Value::Int(0),
+            redis::Value::Int(1),
+            redis::Value::Okay,
+        ]));
+        let seeds = ClusterSeeds::new(&info, redis::Value::Array(ranges), None);
+        assert_eq!(
+            seeds
+                .nodes
+                .iter()
+                .map(|node| node.addr().to_string())
+                .collect::<Vec<_>>(),
+            ["127.0.0.1:7001", "10.0.0.2:7004", "10.0.0.3:7002"]
+        );
+        // Every node is reached with the configured node's credentials.
+        assert!(seeds
+            .nodes
+            .iter()
+            .all(|node| node.redis_settings().password() == Some("secret")));
+        // A reply that is not a slot list adds nothing.
+        assert_eq!(
+            ClusterSeeds::new(&info, redis::Value::Okay, None)
+                .nodes
+                .len(),
+            1
+        );
+    }
+
+    /// The configured node is down, but the cluster reported another while the client was built:
+    /// new connections start from that one.
+    fn provider_seeded_past_a_dead_node() -> FalkorClientProvider {
+        let live = spawn_one_node_cluster(
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            Default::default(),
+        );
+        let live_port: i64 = live.rsplit(':').next().unwrap().parse().unwrap();
+        // Port 1 refuses connections, as a node that is down does.
+        let dead = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
+        FalkorClientProvider::Redis {
+            client: redis::Client::open(dead.clone()).unwrap(),
+            sentinel: None,
+            sentinel_replica: None,
+            cluster: Some(ClusterSeeds::new(
+                &dead,
+                slots_reply(&[&[("127.0.0.1", live_port)]]),
+                None,
+            )),
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout: None,
+            connect_timeout: Some(std::time::Duration::from_secs(5)),
+        }
+    }
+
+    #[test]
+    fn test_sync_cluster_connects_through_a_reported_node_while_the_configured_one_is_down() {
+        let mut conn = provider_seeded_past_a_dead_node()
+            .get_connection()
+            .expect("a connection through the live node");
+        assert_eq!(
+            conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"])),
+            Ok(redis::Value::Int(1))
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_cluster_connects_through_a_reported_node_while_the_configured_one_is_down()
+    {
+        let mut conn = provider_seeded_past_a_dead_node()
+            .get_async_connection()
+            .await
+            .expect("a connection through the live node");
+        assert_eq!(
+            conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"]))
+                .await,
+            Ok(redis::Value::Int(1))
+        );
+    }
+
+    /// A node in cluster mode whose `CLUSTER SLOTS` also reports `10.0.0.9:7009`.
+    fn spawn_cluster_node_reporting_another() -> String {
+        let port = spawn_fake_resp_server(|command| {
+            if command.contains("\r\nINFO\r\n") {
+                let body = "# Server\r\nredis_mode:cluster\r\n";
+                format!("${}\r\n{body}\r\n", body.len())
+            } else if command.contains("\r\nCLUSTER\r\n") {
+                "*1\r\n*3\r\n:0\r\n:16383\r\n*2\r\n$8\r\n10.0.0.9\r\n:7009\r\n".to_string()
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    fn seed_addresses(topology: FalkorResult<Topology>) -> Vec<String> {
+        match topology {
+            Ok(Topology::Cluster(seeds)) => seeds
+                .nodes
+                .iter()
+                .map(|node| node.addr().to_string())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_detect_topology_seeds_the_cluster_with_the_nodes_it_reports() {
+        let url = spawn_cluster_node_reporting_another();
+        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+        let info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert_eq!(
+            seed_addresses(provider.detect_topology(&info)),
+            [info.addr().to_string(), "10.0.0.9:7009".to_string()]
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_detect_topology_async_seeds_the_cluster_with_the_nodes_it_reports() {
+        let url = spawn_cluster_node_reporting_another();
+        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+        let info = redis::ConnectionInfo::from_str(&url).unwrap();
+        assert_eq!(
+            seed_addresses(provider.detect_topology_async(&info, None).await),
+            [info.addr().to_string(), "10.0.0.9:7009".to_string()]
+        );
     }
 
     #[test]
@@ -3248,7 +3515,7 @@ mod tests {
         let info = redis::ConnectionInfo::from_str("redis://127.0.0.1:7001").unwrap();
         for (reply, expected) in [
             (ProbeReply::Standalone, "standalone"),
-            (ProbeReply::Cluster, "cluster"),
+            (ProbeReply::Cluster(redis::Value::Nil), "cluster"),
             (
                 ProbeReply::Sentinel(single_master_reply("mymaster")),
                 "sentinel",
@@ -3363,7 +3630,7 @@ mod tests {
 
             // The plain `client` points at the live test server, so failing proves the
             // (unreachable) cluster was dialled instead.
-            let mut provider = provider_with_cluster(Some(unreachable_cluster_client()));
+            let mut provider = provider_with_cluster(Some(unreachable_cluster()));
             assert!(provider.get_async_connection().await.is_err());
             // The multiplexed backend hands out the cluster connection directly.
             assert!(provider.get_async_connection_manager(None).await.is_err());
@@ -3409,9 +3676,7 @@ mod tests {
             client: redis::Client::open(url).unwrap(),
             sentinel: None,
             sentinel_replica: None,
-            cluster: Some(
-                FalkorClientProvider::build_cluster_client(&info, connect_timeout, None).unwrap(),
-            ),
+            cluster: Some(ClusterSeeds::new(&info, redis::Value::Nil, None)),
             #[cfg(feature = "embedded-core")]
             embedded_server: None,
             response_timeout,
@@ -3539,9 +3804,13 @@ mod tests {
     }
 
     /// A one-node cluster whose first connection serves setup and one `GRAPH.QUERY`, then closes as
-    /// if the node had restarted. Every later connection completes its handshake but leaves `PING`
-    /// unanswered until `release` is dropped: a replacement that accepts connections but stalls.
-    fn spawn_node_stalling_after_a_restart(release: std::sync::mpsc::Receiver<()>) -> String {
+    /// if the node had restarted. Every later connection completes its handshake, then leaves its
+    /// `stalled_ping`th `PING` and any after it unanswered until `release` is dropped: a
+    /// replacement that accepts connections but stalls. Its queries get `:2`.
+    fn spawn_node_stalling_after_a_restart(
+        release: std::sync::mpsc::Receiver<()>,
+        stalled_ping: usize,
+    ) -> String {
         use std::io::{Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake cluster node");
@@ -3555,6 +3824,7 @@ mod tests {
                 std::thread::spawn(move || {
                     let mut pending = String::new();
                     let mut chunk = [0u8; 4096];
+                    let mut pings = 0;
                     while let Ok(read) = stream.read(&mut chunk) {
                         if read == 0 {
                             break;
@@ -3563,7 +3833,8 @@ mod tests {
                         for command in take_commands(&mut pending) {
                             let command = command.to_ascii_uppercase();
                             let reply = if command.contains("\r\nPING\r\n") {
-                                if index > 0 {
+                                pings += 1;
+                                if index > 0 && pings >= stalled_ping {
                                     let _ = release.lock().unwrap().recv();
                                     return;
                                 }
@@ -3571,8 +3842,12 @@ mod tests {
                             } else if command.contains("\r\nCLUSTER\r\n") {
                                 slots.clone()
                             } else if command.contains("\r\nGRAPH.QUERY\r\n") {
-                                let _ = stream.write_all(b":1\r\n");
-                                return;
+                                if index > 0 {
+                                    ":2\r\n".to_string()
+                                } else {
+                                    let _ = stream.write_all(b":1\r\n");
+                                    return;
+                                }
                             } else {
                                 "+OK\r\n".to_string()
                             };
@@ -3585,21 +3860,20 @@ mod tests {
         format!("redis://127.0.0.1:{port}")
     }
 
-    /// Open a sync cluster connection to a node that restarts after one query, then run `request`
-    /// on it. redis-rs reconnects while `request` runs, and the replacement never answers, which
-    /// must fail `request` rather than hang it.
-    fn assert_reconnect_to_a_stalled_node_fails(
+    /// Open a sync cluster connection, without a response timeout, to a node that restarts after
+    /// one query, then run `request` on it and return its outcome. redis-rs reconnects while
+    /// `request` runs, and replacements stall on their `stalled_ping`th `PING`, which must not hang
+    /// `request`.
+    fn request_after_a_restart(
+        stalled_ping: usize,
         request: impl FnOnce(&mut FalkorSyncConnection) -> FalkorResult<Vec<redis::Value>>
             + Send
-            + 'static
-    ) {
+            + 'static,
+    ) -> FalkorResult<Vec<redis::Value>> {
         let (release, stall) = std::sync::mpsc::channel();
-        let url = spawn_node_stalling_after_a_restart(stall);
-        let mut provider = cluster_provider(
-            &url,
-            Some(std::time::Duration::from_secs(1)),
-            Some(std::time::Duration::from_millis(100)),
-        );
+        let url = spawn_node_stalling_after_a_restart(stall, stalled_ping);
+        let mut provider =
+            cluster_provider(&url, None, Some(std::time::Duration::from_millis(100)));
         let mut conn = provider.get_connection().expect("cluster connection");
         assert_eq!(
             conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"])),
@@ -3609,32 +3883,52 @@ mod tests {
         // On a thread, so that a regression fails this test instead of hanging it.
         let (done, outcome) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = done.send(request(&mut conn).is_err());
+            let _ = done.send(request(&mut conn));
         });
-        assert_eq!(
-            outcome.recv_timeout(std::time::Duration::from_secs(30)),
-            Ok(true),
-            "a reconnect to a node that never answers must fail the request"
-        );
+        let outcome = outcome
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("a reconnect to a stalled node must not hang the request");
         drop(release);
+        outcome
     }
 
+    fn query(conn: &mut FalkorSyncConnection) -> FalkorResult<Vec<redis::Value>> {
+        conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"]))
+            .map(|reply| vec![reply])
+    }
+
+    fn batch(conn: &mut FalkorSyncConnection) -> FalkorResult<Vec<redis::Value>> {
+        let mut pipeline = redis::pipe();
+        pipeline.cmd("GRAPH.QUERY").arg("g").arg("RETURN 1");
+        pipeline.cmd("GRAPH.QUERY").arg("g").arg("RETURN 2");
+        conn.execute_pipeline(&pipeline)
+    }
+
+    /// Every replacement leaves the first `PING` redis-rs sends unanswered, so every reconnect
+    /// fails and so does the request.
     #[test]
     fn test_sync_cluster_reconnect_during_a_query_is_bounded() {
-        assert_reconnect_to_a_stalled_node_fails(|conn| {
-            conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"]))
-                .map(|reply| vec![reply])
-        });
+        assert!(request_after_a_restart(1, query).is_err());
     }
 
     #[test]
     fn test_sync_cluster_reconnect_during_a_batch_is_bounded() {
-        assert_reconnect_to_a_stalled_node_fails(|conn| {
-            let mut pipeline = redis::pipe();
-            pipeline.cmd("GRAPH.QUERY").arg("g").arg("RETURN 1");
-            pipeline.cmd("GRAPH.QUERY").arg("g").arg("RETURN 2");
-            conn.execute_pipeline(&pipeline)
-        });
+        assert!(request_after_a_restart(1, batch).is_err());
+    }
+
+    /// Replacements answer the `PING` redis-rs sends while connecting but not the health check it
+    /// runs after installing the query timeouts (none here). The checked replacement is dropped,
+    /// and the request goes through the next one, which redis-rs opens without a check.
+    #[test]
+    fn test_sync_cluster_reconnect_health_check_is_bounded() {
+        assert_eq!(
+            request_after_a_restart(2, query),
+            Ok(vec![redis::Value::Int(2)])
+        );
+        assert_eq!(
+            request_after_a_restart(2, batch),
+            Ok(vec![redis::Value::Int(2), redis::Value::Int(2)])
+        );
     }
 
     #[test]

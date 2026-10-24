@@ -14,13 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and merges their graph names instead of listing a single node's, and `config_set` and the UDF
   load, delete and flush commands run on every primary. `copy_graph` needs both names to share a
   hash tag on a cluster, as its docs now say, and the `CROSSSLOT` error it gets otherwise carries a
-  mitigation hint suggesting one. Connecting to the cluster, including the node connections opened
-  again while queries run, is bounded by the connect timeout and each query by the response
-  timeout, `with_max_inflight` caps every node connection of a multiplexed client, and a batch
-  reports each query's error on its own, as on a single node (a sync batch takes a round trip per
-  query). The redis-rs cluster client can send a write again when a node connection drops, or on
-  the sync client when the reply misses the response timeout, as the crate docs now explain
-  ([#402](https://github.com/FalkorDB/falkordb-rs/pull/402))
+  mitigation hint suggesting one. New connections can start from any node the cluster reported
+  while the client was built, not only the configured one. Connecting to the cluster, including
+  the node connections opened again while queries run, is bounded by the connect timeout and each
+  query by the response timeout, `with_max_inflight` caps every node connection of a multiplexed
+  client, and a batch reports each query's error on its own, as on a single node (a sync batch
+  takes a round trip per query). The redis-rs cluster client can send a write again when a node
+  connection drops, or on the sync client when the reply misses the response timeout, as the crate
+  docs now explain ([#402](https://github.com/FalkorDB/falkordb-rs/pull/402))
 
 ### Fixed
 

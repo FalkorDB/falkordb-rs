@@ -701,6 +701,8 @@
 //! sees that the node reports `redis_mode:cluster`, discovers the other nodes from it, and from then
 //! on sends each graph command to the node that owns the graph's hash slot, following the cluster's
 //! redirects when slots move. The sync client and both async connection strategies work this way.
+//! New connections can start from any node found then, so they do not need the configured node to
+//! be up.
 //!
 //! Commands that act on the whole server are routed for you:
 //!

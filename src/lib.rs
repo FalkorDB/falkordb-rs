@@ -1229,6 +1229,9 @@ pub(crate) mod test_utils {
         const KEY: &'static str = "falkordb-rs:tests:udf-registry-lock";
         const LEASE_MS: u64 = 10_000;
         const RENEW_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+        /// Far longer than every test that takes the lock needs in turn. A test that hangs holding
+        /// it keeps renewing it, so the others fail after this instead of stalling with it.
+        const ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
         /// A plain connection to the server the test clients use, as `FalkorClientBuilder::new`
         /// defaults to.
@@ -1244,6 +1247,7 @@ pub(crate) mod test_utils {
             let mut conn =
                 Self::test_server().expect("connect to the test server for the UDF registry lock");
             let token = format!("{}:{:?}", std::process::id(), std::thread::current().id());
+            let deadline = std::time::Instant::now() + Self::ACQUIRE_TIMEOUT;
             while redis::cmd("SET")
                 .arg(Self::KEY)
                 .arg(&token)
@@ -1254,6 +1258,11 @@ pub(crate) mod test_utils {
                 .expect("try the UDF registry lock")
                 .is_none()
             {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the UDF registry lock was not free within {:?}; a test holding it may be hung",
+                    Self::ACQUIRE_TIMEOUT
+                );
                 std::thread::sleep(RETRY_INTERVAL);
             }
             redis::cmd("GRAPH.UDF")

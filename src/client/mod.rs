@@ -1269,6 +1269,24 @@ impl FalkorClientProvider {
                 .build_sentinel_clients(connection_info, sentinel_masters)
                 .map(Topology::Sentinel),
             ProbeReply::Cluster(slots) => {
+                // The redis-rs cluster client builds every node's TLS settings from its own
+                // options, and the certificates of a connection info cannot be read back out to
+                // pass on, so they would be dropped: nodes would be trusted by the system's root
+                // certificates instead, without a client certificate. Refuse that downgrade.
+                #[cfg(any(feature = "rustls", feature = "tokio-rustls"))]
+                if matches!(
+                    connection_info.addr(),
+                    redis::ConnectionAddr::TcpTls {
+                        tls_params: Some(_),
+                        ..
+                    }
+                ) {
+                    return Err(FalkorDBError::InvalidConnectionInfo(
+                        "TLS certificates set on the connection info cannot be used with Redis \
+                         Cluster; connect with a rediss:// URL and the system's root certificates"
+                            .to_string(),
+                    ));
+                }
                 let seeds = ClusterSeeds::new(connection_info, slots, cluster_concurrency_limit);
                 // Build a client now, so that unusable seeds fail the client's construction.
                 seeds
@@ -3318,6 +3336,50 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
             [true, true]
+        );
+    }
+
+    /// A self-signed certificate, standing in for a private certificate authority.
+    #[cfg(any(feature = "rustls", feature = "tokio-rustls"))]
+    const PRIVATE_ROOT_CERT: &str = "-----BEGIN CERTIFICATE-----
+MIIBdTCCARygAwIBAgIUT1XVRk34dTLjSlw6xCF4Hsr2U/8wCgYIKoZIzj0EAwIw
+IDEeMBwGA1UEAwwVZmFsa29yZGItcnMgdGVzdCByb290MCAXDTI2MTAyNDA4MTQx
+NFoYDzIxMjYwOTMwMDgxNDE0WjAgMR4wHAYDVQQDDBVmYWxrb3JkYi1ycyB0ZXN0
+IHJvb3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATTn1EBZCWzHTcy8QYYtK9f
+E5erJv2p0WTNVMz27tI9aeWdJi0tcZM1GlriTqeuNfGJJNxaBgG82RfUGv12YFXf
+ozIwMDAdBgNVHQ4EFgQU0rAPKPKteQrXbP7evA1OOatfbSgwDwYDVR0TAQH/BAUw
+AwEB/zAKBggqhkjOPQQDAgNHADBEAiBiwk0c9opFvjShETFqzkychu3St+bh7b3G
+EESc65rWTgIgPNOki3CMgUOKKB0XwmbpdKyGZTwcCxFzdhRYGsa/txs=
+-----END CERTIFICATE-----
+";
+
+    #[test]
+    #[cfg(any(feature = "rustls", feature = "tokio-rustls"))]
+    fn test_cluster_refuses_tls_certificates_it_cannot_pass_on() {
+        let provider = FalkorClientProvider::None;
+        let tls = redis::ConnectionInfo::from_str("rediss://127.0.0.1:7001").unwrap();
+        let with_private_root = redis::Client::build_with_tls(
+            tls.clone(),
+            redis::TlsCertificates {
+                client_tls: None,
+                root_cert: Some(PRIVATE_ROOT_CERT.as_bytes().to_vec()),
+            },
+        )
+        .expect("a client trusting the private root");
+        assert!(matches!(
+            provider.topology_from(
+                with_private_root.get_connection_info(),
+                ProbeReply::Cluster(redis::Value::Nil),
+                None
+            ),
+            Err(FalkorDBError::InvalidConnectionInfo(_))
+        ));
+        // TLS with the system's root certificates is fine.
+        assert_eq!(
+            provider
+                .topology_from(&tls, ProbeReply::Cluster(redis::Value::Nil), None)
+                .map(|topology| topology.name()),
+            Ok("cluster")
         );
     }
 

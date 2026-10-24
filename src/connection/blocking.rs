@@ -69,6 +69,25 @@ fn run_pipeline<C: redis::ConnectionLike>(
         .map_err(map_redis_err)
 }
 
+/// Run a pipeline's commands one at a time on a cluster connection. Its own pipelining fails the
+/// whole pipeline when any one command errors, while a pipeline on a single node keeps each
+/// command's server error in that command's slot, so do the same here; a connection failure
+/// still fails them all.
+fn run_cluster_pipeline(
+    conn: &mut redis::cluster::ClusterConnection,
+    pipeline: &redis::Pipeline,
+) -> FalkorResult<Vec<redis::Value>> {
+    use redis::ConnectionLike as _;
+    pipeline
+        .cmd_iter()
+        .map(|cmd| {
+            conn.req_command(cmd)
+                .or_else(|err| redis::ServerError::try_from(err).map(redis::Value::ServerError))
+                .map_err(map_redis_err)
+        })
+        .collect()
+}
+
 impl FalkorSyncConnection {
     #[cfg_attr(
         feature = "tracing",
@@ -110,7 +129,7 @@ impl FalkorSyncConnection {
         match self {
             FalkorSyncConnection::Redis(redis_conn) => run_pipeline(redis_conn, pipeline),
             FalkorSyncConnection::Cluster(cluster_conn) => {
-                run_pipeline(cluster_conn.as_mut(), pipeline)
+                run_cluster_pipeline(cluster_conn, pipeline)
             }
             #[cfg(test)]
             FalkorSyncConnection::None => Ok(Vec::new()),

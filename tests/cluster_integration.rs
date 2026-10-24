@@ -98,6 +98,34 @@ fn sync_batch_is_routed_to_the_owning_node() {
 }
 
 #[test]
+fn sync_batch_reports_each_query_outcome() {
+    let Some(info) = cluster_info() else { return };
+    let client = FalkorClientBuilder::new()
+        .with_connection_info(info)
+        .build()
+        .expect("cluster client");
+
+    // A failing query leaves the results of the others intact, as on a single node.
+    for i in 0..GRAPHS {
+        let mut graph = client.select_graph(graph_name("rs_cluster_mixed", i));
+        let mut batch = graph.batch();
+        batch.query("CREATE (:N)");
+        batch.query("RETURN 1/0");
+        batch.ro_query("MATCH (n:N) RETURN count(n) AS c");
+        let results = batch.execute().expect("batch dispatched");
+        assert!(results[0].is_ok());
+        assert!(results[1]
+            .as_ref()
+            .is_err_and(|err| err.to_string().contains("Division by zero")));
+        let count: i64 = results[2].as_ref().expect("count ok").data[0]
+            .try_get("c")
+            .expect("count");
+        assert_eq!(count, 1);
+        graph.delete().expect("delete");
+    }
+}
+
+#[test]
 fn sync_list_graphs_spans_every_primary() {
     let Some(info) = cluster_info() else { return };
     let client = FalkorClientBuilder::new()
@@ -334,6 +362,61 @@ mod asynchronous {
 
         source.delete().await.expect("delete source");
         copy.delete().await.expect("delete copy");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn batch_reports_each_query_outcome() {
+        let Some(info) = cluster_info() else { return };
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_info(info)
+            .build()
+            .await
+            .expect("cluster client");
+
+        for i in 0..GRAPHS {
+            let mut graph = client.select_graph(graph_name("rs_cluster_mixed_async", i));
+            let mut batch = graph.batch();
+            batch.query("CREATE (:N)");
+            batch.query("RETURN 1/0");
+            batch.ro_query("MATCH (n:N) RETURN count(n) AS c");
+            let results = batch.execute().await.expect("batch dispatched");
+            assert!(results[0].is_ok());
+            assert!(results[1]
+                .as_ref()
+                .is_err_and(|err| err.to_string().contains("Division by zero")));
+            let count: i64 = results[2].as_ref().expect("count ok").data[0]
+                .try_get("c")
+                .expect("count");
+            assert_eq!(count, 1);
+            graph.delete().await.expect("delete");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn max_inflight_applies_to_each_node_connection() {
+        let Some(info) = cluster_info() else { return };
+        let client = FalkorClientBuilder::new_async()
+            .with_connection_info(info)
+            .with_connection_strategy(ConnectionStrategy::Multiplexed {
+                connections: NonZeroU8::new(1).unwrap(),
+            })
+            .with_max_inflight(std::num::NonZeroUsize::new(1).unwrap())
+            .build()
+            .await
+            .expect("cluster client");
+
+        // Concurrent queries for graphs on every node queue on their node's connection.
+        let queries = (0..GRAPHS).map(|i| {
+            let client = &client;
+            async move {
+                let mut graph = client.select_graph(graph_name("rs_cluster_inflight", i));
+                graph.query("CREATE (:N)").execute().await?;
+                graph.delete().await
+            }
+        });
+        for result in futures::future::join_all(queries).await {
+            result.expect("query under the in-flight limit");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

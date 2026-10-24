@@ -20,7 +20,25 @@ pub(crate) enum FalkorAsyncConnection {
     Managed(redis::aio::ConnectionManager),
     /// A connection to a Redis Cluster, routing each command to the node owning the graph's slot.
     /// Like [`Managed`](Self::Managed) it is a cheap, shareable handle over multiplexed sockets.
-    Cluster(redis::cluster_async::ClusterConnection),
+    /// Its query response timeout is enforced per command here, since the connection's own would
+    /// also have bounded its setup.
+    Cluster(
+        redis::cluster_async::ClusterConnection,
+        Option<std::time::Duration>,
+    ),
+}
+
+/// Bound `request` by the query response timeout, failing as a timed-out read does.
+async fn within_response_timeout<T>(
+    timeout: Option<std::time::Duration>,
+    request: impl std::future::Future<Output = redis::RedisResult<T>>,
+) -> redis::RedisResult<T> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, request)
+            .await
+            .unwrap_or_else(|_| Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into())),
+        None => request.await,
+    }
 }
 
 impl FalkorAsyncConnection {
@@ -30,7 +48,9 @@ impl FalkorAsyncConnection {
         match self {
             FalkorAsyncConnection::Redis(conn) => FalkorAsyncConnection::Redis(conn.clone()),
             FalkorAsyncConnection::Managed(conn) => FalkorAsyncConnection::Managed(conn.clone()),
-            FalkorAsyncConnection::Cluster(conn) => FalkorAsyncConnection::Cluster(conn.clone()),
+            FalkorAsyncConnection::Cluster(conn, response_timeout) => {
+                FalkorAsyncConnection::Cluster(conn.clone(), *response_timeout)
+            }
         }
     }
 
@@ -65,16 +85,19 @@ impl FalkorAsyncConnection {
                     .await
                     .map_err(map_redis_err)
             }
-            FalkorAsyncConnection::Cluster(cluster_conn) => {
+            FalkorAsyncConnection::Cluster(cluster_conn, response_timeout) => {
                 use redis::aio::ConnectionLike as _;
                 let route = ClusterRoute::for_command(command, subcommand);
-                match route.routing_info() {
-                    None => cluster_conn.req_packed_command(&cmd).await,
-                    Some(routing) => cluster_conn
-                        .route_command(cmd, routing)
-                        .await
-                        .map(|reply| route.collapse_reply(command, reply)),
-                }
+                within_response_timeout(*response_timeout, async move {
+                    match route.routing_info() {
+                        None => cluster_conn.req_packed_command(&cmd).await,
+                        Some(routing) => cluster_conn
+                            .route_command(cmd, routing)
+                            .await
+                            .map(|reply| route.collapse_reply(command, reply)),
+                    }
+                })
+                .await
                 .map_err(map_redis_err)
             }
         }
@@ -102,10 +125,14 @@ impl FalkorAsyncConnection {
                 .req_packed_commands(pipeline, 0, count)
                 .await
                 .map_err(map_redis_err),
-            FalkorAsyncConnection::Cluster(cluster_conn) => cluster_conn
-                .req_packed_commands(pipeline, 0, count)
+            FalkorAsyncConnection::Cluster(cluster_conn, response_timeout) => {
+                within_response_timeout(
+                    *response_timeout,
+                    cluster_conn.req_packed_commands(pipeline, 0, count),
+                )
                 .await
-                .map_err(map_redis_err),
+                .map_err(map_redis_err)
+            }
         }
     }
 

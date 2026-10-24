@@ -725,6 +725,16 @@
 //! [`mitigation_hint`](FalkorDBError::mitigation_hint) suggests a hash tag. Read-only queries run on
 //! the primaries: [`ReadPreference::PreferReplica`] routes to replicas only behind Redis Sentinel.
 //!
+//! Two things work differently on a cluster:
+//!
+//! - **A write can run more than once.** redis-rs's cluster client sends a command again when the
+//!   node connection drops before the reply arrives, and the sync client also when the reply misses
+//!   the response timeout (by default up to 16 more times). This happens even with retries disabled
+//!   ([`RetryPolicy::disabled`]), so keep writes idempotent where it matters (for example with
+//!   `MERGE`), or leave the sync client's response timeout unset.
+//! - **A sync [`batch`](SyncGraph::batch) takes a round trip per query**: its queries are sent one
+//!   after another, so that each one still reports its own error. Async batches are pipelined.
+//!
 //! ### Resilience and observability
 //!
 //! #### Automatic retries
@@ -756,7 +766,8 @@
 //!
 //! **Write safety.** The only scope available today, `RetryScope::ReadOnly`, retries **read-only /
 //! idempotent** operations only (`ro_query`, `explain`, `list_indices`, `list_constraints`, read-only
-//! procedure calls). **Writes are never retried**, so enabling a policy can never duplicate a write.
+//! procedure calls). **Writes are never retried**, so enabling a policy can never duplicate a write
+//! (on a Redis Cluster, redis-rs itself can send one again; see [Redis Cluster](#redis-cluster)).
 //! Classification is by the API you call, never by inspecting Cypher — `query()` is treated as a write
 //! even when it only reads, so use `ro_query()` for retryable reads.
 //!

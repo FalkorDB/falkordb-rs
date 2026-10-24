@@ -125,15 +125,15 @@ pub enum ReadPreference {
 /// Where the next Sentinel replica lookup starts in the list of eligible replicas.
 static REPLICA_ROTATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// redis-rs 1.7.1's timed native-TLS connect runs the handshake on a socket with no deadline and
-/// `unwrap`s its result, so a failing peer panics and a silent one blocks forever. Rustls
-/// handshakes lazily under the read timeout redis-rs sets during setup, so only native-TLS-only
-/// builds need this.
-#[cfg(all(
-    any(feature = "native-tls", feature = "tokio-native-tls"),
-    not(any(feature = "rustls", feature = "tokio-rustls"))
-))]
-mod native_tls_connect {
+/// Connection setup that redis-rs 1.7.1 cannot bound by itself, run on helper threads the caller
+/// can abandon at its deadline:
+/// - its timed native-TLS connect runs the handshake on a socket with no deadline and `unwrap`s
+///   its result, so a failing peer panics and a silent one blocks forever. Rustls handshakes
+///   lazily under the read timeout redis-rs sets during setup, so only native-TLS-only builds
+///   need this for a single node;
+/// - its sync cluster setup sends a `PING` on each new node connection before setting any read
+///   timeout, and connects each node through that same timed connect.
+mod setup_thread {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Mutex, OnceLock};
@@ -169,6 +169,10 @@ mod native_tls_connect {
     }
 
     #[cfg(test)]
+    #[cfg(all(
+        any(feature = "native-tls", feature = "tokio-native-tls"),
+        not(any(feature = "rustls", feature = "tokio-rustls"))
+    ))]
     pub(super) fn is_tracked(client: &redis::Client) -> bool {
         let redis::ConnectionAddr::TcpTls { host, port, .. } = client.get_connection_info().addr()
         else {
@@ -209,48 +213,74 @@ mod native_tls_connect {
         std::io::Error::new(std::io::ErrorKind::TimedOut, msg.to_string()).into()
     }
 
-    /// Connect `client` on a helper thread and return within `timeout`, turning the handshake
-    /// panic into an error. Capacity is reserved atomically in `in_flight` before spawning and
-    /// released when the worker exits; while `max_in_flight` workers for the target are running
-    /// or stalled, no new thread is spawned.
+    /// Run `setup`, turning a panic into an error. The one panic known on these paths is the
+    /// native-TLS handshake `unwrap`, which cluster node connections reach too, so it is reported
+    /// the way redis-rs reports a failed handshake elsewhere.
+    pub(super) fn catch_panic<T>(
+        setup: impl FnOnce() -> redis::RedisResult<T>
+    ) -> redis::RedisResult<T> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(setup)).unwrap_or_else(|payload| {
+            let detail = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("TLS handshake failed")
+                .to_string();
+            Err(redis::RedisError::from((
+                redis::ErrorKind::Io,
+                "SSL Handshake error",
+                detail,
+            )))
+        })
+    }
+
+    /// Run `setup` on a helper thread and return within `timeout`, turning a panic into an error;
+    /// `what` names the setup in errors. Capacity is reserved atomically in `in_flight` before
+    /// spawning and released when the worker exits; while `max_in_flight` workers for the target
+    /// are running or stalled, no new thread is spawned.
+    pub(super) fn run<T: Send + 'static>(
+        what: &str,
+        timeout: Duration,
+        in_flight: &Arc<AtomicUsize>,
+        max_in_flight: usize,
+        setup: impl FnOnce() -> redis::RedisResult<T> + Send + 'static,
+    ) -> redis::RedisResult<T> {
+        let Some(slot) = try_reserve(in_flight, max_in_flight) else {
+            return Err(timed_out(&format!(
+                "too many earlier {what} attempts are still stalled"
+            )));
+        };
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _slot = slot;
+            // If the caller already gave up, the send fails and the connection is dropped here.
+            let _ = tx.send(catch_panic(setup));
+        });
+
+        rx.recv_timeout(timeout)
+            .unwrap_or_else(|_| Err(timed_out(&format!("{what} setup timed out"))))
+    }
+
+    /// Connect `client` over native TLS on a helper thread, within `timeout`.
+    #[cfg(all(
+        any(feature = "native-tls", feature = "tokio-native-tls"),
+        not(any(feature = "rustls", feature = "tokio-rustls"))
+    ))]
     pub(super) fn connect(
         client: &redis::Client,
         timeout: Duration,
         in_flight: &Arc<AtomicUsize>,
         max_in_flight: usize,
     ) -> redis::RedisResult<redis::Connection> {
-        let Some(slot) = try_reserve(in_flight, max_in_flight) else {
-            return Err(timed_out(
-                "too many earlier TLS connection attempts are still stalled",
-            ));
-        };
-
         let client = client.clone();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _slot = slot;
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                client.get_connection_with_timeout(timeout)
-            }))
-            .unwrap_or_else(|payload| {
-                let detail = payload
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| payload.downcast_ref::<&str>().copied())
-                    .unwrap_or("TLS handshake failed")
-                    .to_string();
-                Err(redis::RedisError::from((
-                    redis::ErrorKind::Io,
-                    "SSL Handshake error",
-                    detail,
-                )))
-            });
-            // If the caller already gave up, the send fails and the connection is dropped here.
-            let _ = tx.send(res);
-        });
-
-        rx.recv_timeout(timeout)
-            .unwrap_or_else(|_| Err(timed_out("TLS connection setup timed out")))
+        run(
+            "TLS connection",
+            timeout,
+            in_flight,
+            max_in_flight,
+            move || client.get_connection_with_timeout(timeout),
+        )
     }
 }
 
@@ -332,12 +362,12 @@ impl FalkorClientProvider {
                     redis::ConnectionAddr::TcpTls { .. }
                 ) =>
             {
-                let counter = native_tls_connect::counter_for(client);
-                native_tls_connect::connect(
+                let counter = setup_thread::counter_for(client);
+                setup_thread::connect(
                     client,
                     timeout,
                     &counter,
-                    native_tls_connect::MAX_IN_FLIGHT_PER_TARGET,
+                    setup_thread::MAX_IN_FLIGHT_PER_TARGET,
                 )
             }
             Some(timeout) => client.get_connection_with_timeout(timeout),
@@ -587,16 +617,39 @@ impl FalkorClientProvider {
         deadline: Option<std::time::Instant>,
     ) -> FalkorResult<FalkorSyncConnection> {
         let client = match self {
-            // The cluster client bounds each node connection by the connect timeout itself.
+            // Node connections, health checks and slot discovery must all fit what is left of the
+            // deadline, but redis-rs leaves some of them unbounded (see `setup_thread`), so the
+            // setup runs on a helper thread abandoned at the deadline. Every step also gets the
+            // time left as its own timeout, so an abandoned thread usually ends soon after. The
+            // query deadline applies once the connection is up.
             FalkorClientProvider::Redis {
+                client,
                 cluster: Some(cluster),
                 ..
             } => {
-                return cluster
-                    .get_connection()
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))
-                    .map(|conn| FalkorSyncConnection::Cluster(Box::new(conn)))
-                    .and_then(|conn| conn.set_timeouts(response_timeout).map(|()| conn));
+                let conn = match Self::remaining(deadline)? {
+                    Some(left) => {
+                        let cluster = cluster.clone();
+                        setup_thread::run(
+                            "cluster connection",
+                            left,
+                            &setup_thread::counter_for(client),
+                            setup_thread::MAX_IN_FLIGHT_PER_TARGET,
+                            move || {
+                                cluster.get_connection_with_config(
+                                    redis::cluster::ClusterConfig::new()
+                                        .set_connection_timeout(left)
+                                        .set_response_timeout(left),
+                                )
+                            },
+                        )
+                    }
+                    None => setup_thread::catch_panic(|| cluster.get_connection()),
+                }
+                .map(|conn| FalkorSyncConnection::Cluster(Box::new(conn)))
+                .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+                conn.set_timeouts(response_timeout)?;
+                return Ok(conn);
             }
             FalkorClientProvider::Redis {
                 client: sentinel_client,
@@ -663,12 +716,26 @@ impl FalkorClientProvider {
             FalkorClientProvider::Redis {
                 cluster: Some(cluster),
                 ..
-            } => FalkorAsyncConnection::Cluster(
-                cluster
-                    .get_async_connection()
-                    .await
-                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?,
-            ),
+            } => {
+                // The whole setup, slot discovery included, gets the connect timeout. The query
+                // deadline is enforced per command, so a short one cannot cut setup short.
+                let connect = cluster.get_async_connection();
+                let conn =
+                    match connect_timeout {
+                        Some(timeout) => tokio::time::timeout(timeout, connect)
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err(std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    "cluster connection setup timed out",
+                                )
+                                .into())
+                            }),
+                        None => connect.await,
+                    }
+                    .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+                FalkorAsyncConnection::Cluster(conn, response_timeout)
+            }
             FalkorClientProvider::Redis {
                 sentinel: Some(sentinel),
                 ..
@@ -1016,10 +1083,11 @@ impl FalkorClientProvider {
             Some("cluster") => ProbeReply::Cluster,
             _ => ProbeReply::Standalone,
         };
-        self.topology_from(connection_info, reply)
+        self.topology_from(connection_info, reply, None)
     }
 
-    /// Async counterpart of [`detect_topology`](Self::detect_topology).
+    /// Async counterpart of [`detect_topology`](Self::detect_topology). A cluster client gets
+    /// `cluster_concurrency_limit` as its per-node cap on in-flight commands.
     #[cfg(feature = "tokio")]
     #[cfg_attr(
         feature = "tracing",
@@ -1028,6 +1096,7 @@ impl FalkorClientProvider {
     pub(crate) async fn detect_topology_async(
         &mut self,
         connection_info: &redis::ConnectionInfo,
+        cluster_concurrency_limit: Option<NonZeroUsize>,
     ) -> FalkorResult<Topology> {
         // Topology detection runs while the client is still being built, so it is bounded by
         // the connect timeout rather than the response timeout: the latter expresses "a query
@@ -1059,7 +1128,7 @@ impl FalkorClientProvider {
             })?,
             None => probe.await,
         }?;
-        self.topology_from(connection_info, reply)
+        self.topology_from(connection_info, reply, cluster_concurrency_limit)
     }
 
     /// Route this provider's connections through what the probe found: Sentinel-resolved
@@ -1085,6 +1154,7 @@ impl FalkorClientProvider {
         &self,
         connection_info: &redis::ConnectionInfo,
         reply: ProbeReply,
+        cluster_concurrency_limit: Option<std::num::NonZeroUsize>,
     ) -> FalkorResult<Topology> {
         match reply {
             ProbeReply::Standalone => Ok(Topology::Standalone),
@@ -1093,8 +1163,8 @@ impl FalkorClientProvider {
                 .map(Topology::Sentinel),
             ProbeReply::Cluster => Self::build_cluster_client(
                 connection_info,
-                self.response_timeout(),
                 self.connect_timeout(),
+                cluster_concurrency_limit,
             )
             .map(Topology::Cluster),
         }
@@ -1126,18 +1196,23 @@ impl FalkorClientProvider {
     /// Build a [`ClusterClient`](redis::cluster::ClusterClient) seeded with the configured node.
     /// Credentials, TLS mode and protocol come from `connection_info` and its TCP settings are
     /// forwarded; the other cluster nodes are discovered from the topology the seed node reports.
+    /// The query response timeout is applied per connection rather than here, since a
+    /// client-wide one would also bound the connection's setup.
+    #[cfg_attr(not(feature = "tokio"), allow(unused_variables))]
     fn build_cluster_client(
         connection_info: &redis::ConnectionInfo,
-        response_timeout: Option<std::time::Duration>,
         connect_timeout: Option<std::time::Duration>,
+        concurrency_limit: Option<std::num::NonZeroUsize>,
     ) -> FalkorResult<redis::cluster::ClusterClient> {
         // Unset, redis-rs would cap each node connection at one second; `None` means no limit.
-        let mut builder = redis::cluster::ClusterClient::builder([connection_info.clone()])
+        let builder = redis::cluster::ClusterClient::builder([connection_info.clone()])
             .tcp_settings(connection_info.tcp_settings().clone())
             .connection_timeout(connect_timeout.unwrap_or(std::time::Duration::MAX));
-        if let Some(timeout) = response_timeout {
-            builder = builder.response_timeout(timeout);
-        }
+        #[cfg(feature = "tokio")]
+        let builder = match concurrency_limit {
+            Some(limit) => builder.connection_concurrency_limit(limit.get()),
+            None => builder,
+        };
         builder
             .build()
             .map_err(|err| FalkorDBError::RedisError(err.to_string()))
@@ -1338,7 +1413,7 @@ mod tests {
 
         let connection_info =
             redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
-        let probe = provider.detect_topology_async(&connection_info).await;
+        let probe = provider.detect_topology_async(&connection_info, None).await;
 
         assert!(
             probe.is_err(),
@@ -1370,7 +1445,7 @@ mod tests {
         let connection_info =
             redis::ConnectionInfo::from_str(url.as_str()).expect("parse the fake server url");
         let topology = provider
-            .detect_topology_async(&connection_info)
+            .detect_topology_async(&connection_info, None)
             .await
             .expect("detection must outlive the 5ms query response timeout");
 
@@ -1489,7 +1564,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
         assert!(
             provider
-                .detect_topology_async(&connection_info)
+                .detect_topology_async(&connection_info, None)
                 .await
                 .is_err(),
             "120ms + 120ms of setup must not fit a 200ms connect timeout"
@@ -1559,7 +1634,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
         let start = std::time::Instant::now();
         assert!(provider
-            .detect_topology_async(&connection_info)
+            .detect_topology_async(&connection_info, None)
             .await
             .is_err());
         assert!(
@@ -1598,7 +1673,7 @@ mod tests {
         let connection_info = redis::ConnectionInfo::from_str(&url).unwrap();
         assert_eq!(
             provider
-                .detect_topology_async(&connection_info)
+                .detect_topology_async(&connection_info, None)
                 .await
                 .expect("a standalone server is detected without a deadline")
                 .name(),
@@ -2511,8 +2586,8 @@ mod tests {
         });
 
         let client = silent_tls_client(port);
-        let in_flight = native_tls_connect::counter_for(&client);
-        assert!(native_tls_connect::connect(
+        let in_flight = setup_thread::counter_for(&client);
+        assert!(setup_thread::connect(
             &client,
             std::time::Duration::from_millis(60),
             &in_flight,
@@ -2536,16 +2611,16 @@ mod tests {
         }
 
         // Still referenced here, so no concurrent lookup can have pruned it.
-        assert!(native_tls_connect::is_tracked(&client));
+        assert!(setup_thread::is_tracked(&client));
         drop(in_flight);
         // The worker may still hold its last reference for a moment after the count hits zero,
         // so keep triggering pruning until the idle counter is dropped.
-        while native_tls_connect::is_tracked(&client) {
+        while setup_thread::is_tracked(&client) {
             assert!(
                 std::time::Instant::now() < deadline,
                 "idle per-target counters must not accumulate"
             );
-            drop(native_tls_connect::counter_for(&silent_tls_client(1)));
+            drop(setup_thread::counter_for(&silent_tls_client(1)));
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
@@ -2582,12 +2657,7 @@ mod tests {
                 let b = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     b.wait();
-                    native_tls_connect::connect(
-                        &c,
-                        std::time::Duration::from_millis(60),
-                        &counter,
-                        2,
-                    )
+                    setup_thread::connect(&c, std::time::Duration::from_millis(60), &counter, 2)
                 })
             })
             .collect();
@@ -2605,7 +2675,7 @@ mod tests {
         unaccepted.set_nonblocking(true).unwrap();
         let unaccepted_port = unaccepted.local_addr().unwrap().port();
         let saturated = Arc::new(AtomicUsize::new(2));
-        assert!(native_tls_connect::connect(
+        assert!(setup_thread::connect(
             &silent_tls_client(unaccepted_port),
             std::time::Duration::from_secs(5),
             &saturated,
@@ -2618,8 +2688,7 @@ mod tests {
             "no connection is attempted while the target cap is reached"
         );
         assert_eq!(
-            native_tls_connect::counter_for(&silent_tls_client(unaccepted_port))
-                .load(Ordering::Acquire),
+            setup_thread::counter_for(&silent_tls_client(unaccepted_port)).load(Ordering::Acquire),
             0,
             "an unrelated target has its own counter and is not blocked by another peer"
         );
@@ -3120,8 +3189,8 @@ mod tests {
         assert!(FalkorClientProvider::build_cluster_client(&info, None, None).is_ok());
         assert!(FalkorClientProvider::build_cluster_client(
             &info,
-            Some(std::time::Duration::from_secs(5)),
-            Some(std::time::Duration::from_secs(2))
+            Some(std::time::Duration::from_secs(2)),
+            std::num::NonZeroUsize::new(4)
         )
         .is_ok());
     }
@@ -3170,7 +3239,7 @@ mod tests {
         ] {
             assert_eq!(
                 provider
-                    .topology_from(&info, reply)
+                    .topology_from(&info, reply, None)
                     .map(|topology| topology.name()),
                 Ok(expected)
             );
@@ -3240,7 +3309,7 @@ mod tests {
         let info = redis::ConnectionInfo::from_str(&url).unwrap();
         assert_eq!(
             provider
-                .detect_topology_async(&info)
+                .detect_topology_async(&info, None)
                 .await
                 .map(|topology| topology.name()),
             Ok("sentinel")
@@ -3255,7 +3324,7 @@ mod tests {
         let info = redis::ConnectionInfo::from_str(&url).unwrap();
         assert_eq!(
             provider
-                .detect_topology_async(&info)
+                .detect_topology_async(&info, None)
                 .await
                 .map(|topology| topology.name()),
             Ok("cluster")
@@ -3271,7 +3340,7 @@ mod tests {
             let info = redis::ConnectionInfo::from_str("redis://127.0.0.1:6379").unwrap();
             let mut none = FalkorClientProvider::None;
             assert_eq!(
-                none.detect_topology_async(&info).await.err(),
+                none.detect_topology_async(&info, None).await.err(),
                 Some(FalkorDBError::UnavailableProvider)
             );
 
@@ -3282,5 +3351,266 @@ mod tests {
             // The multiplexed backend hands out the cluster connection directly.
             assert!(provider.get_async_connection_manager(None).await.is_err());
         });
+    }
+
+    #[test]
+    fn test_setup_thread_reports_panics_stalls_and_saturation_as_errors() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let error = |timeout: std::time::Duration, setup: fn() -> redis::RedisResult<()>| {
+            setup_thread::run("test", timeout, &in_flight, 16, setup)
+                .err()
+                .map(|err| err.to_string())
+                .unwrap_or_default()
+        };
+        let ample = std::time::Duration::from_secs(5);
+        assert!(error(ample, || panic!("a static detail")).contains("a static detail"));
+        assert!(error(ample, || panic!("a {} detail", "formatted")).contains("a formatted detail"));
+        assert!(error(ample, || std::panic::panic_any(7)).contains("TLS handshake failed"));
+        let stalled = error(std::time::Duration::from_millis(20), || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            Ok(())
+        });
+        assert!(stalled.contains("test setup timed out"), "{stalled}");
+
+        let saturated = Arc::new(AtomicUsize::new(1));
+        assert!(setup_thread::run("test", ample, &saturated, 1, || Ok(()))
+            .err()
+            .is_some_and(|err| err.to_string().contains("too many earlier test attempts")));
+    }
+
+    /// A provider whose connections go through a cluster client seeded with `url`.
+    fn cluster_provider(
+        url: &str,
+        response_timeout: Option<std::time::Duration>,
+        connect_timeout: Option<std::time::Duration>,
+    ) -> FalkorClientProvider {
+        let info = redis::ConnectionInfo::from_str(url).unwrap();
+        FalkorClientProvider::Redis {
+            client: redis::Client::open(url).unwrap(),
+            sentinel: None,
+            sentinel_replica: None,
+            cluster: Some(
+                FalkorClientProvider::build_cluster_client(&info, connect_timeout, None).unwrap(),
+            ),
+            #[cfg(feature = "embedded-core")]
+            embedded_server: None,
+            response_timeout,
+            connect_timeout,
+        }
+    }
+
+    /// A node that completes the connection handshake, then leaves `PING` unanswered until
+    /// `release` is dropped. redis-rs sends one on each new cluster node connection before it sets
+    /// any read timeout.
+    fn spawn_node_stalling_on_ping(release: std::sync::mpsc::Receiver<()>) -> String {
+        let release = std::sync::Mutex::new(release);
+        let port = spawn_fake_resp_server(move |command| {
+            if command.contains("\r\nPING\r\n") {
+                let _ = release.lock().unwrap().recv();
+                "-ERR released\r\n".to_string()
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    /// A one-node cluster. `PING` and `CLUSTER SLOTS`, which gives the node every slot, answer
+    /// after `setup_delay`; `GRAPH.QUERY` answers `:1` after `query_delay`; `INFO` reports
+    /// `redis_mode:cluster` and anything else gets `+OK`. Each read off a connection that carries
+    /// queries records how many it carried in `query_reads`.
+    fn spawn_one_node_cluster(
+        setup_delay: std::time::Duration,
+        query_delay: std::time::Duration,
+        query_reads: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+    ) -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake cluster node");
+        let port = listener.local_addr().unwrap().port();
+        let slots = format!("*1\r\n*3\r\n:0\r\n:16383\r\n*2\r\n$9\r\n127.0.0.1\r\n:{port}\r\n");
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let slots = slots.clone();
+                let query_reads = std::sync::Arc::clone(&query_reads);
+                std::thread::spawn(move || {
+                    let mut pending = String::new();
+                    let mut chunk = [0u8; 4096];
+                    while let Ok(read) = stream.read(&mut chunk) {
+                        if read == 0 {
+                            break;
+                        }
+                        pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                        let commands: Vec<String> = take_commands(&mut pending)
+                            .iter()
+                            .map(|command| command.to_ascii_uppercase())
+                            .collect();
+                        let queries = commands
+                            .iter()
+                            .filter(|command| command.contains("\r\nGRAPH.QUERY\r\n"))
+                            .count();
+                        if queries > 0 {
+                            query_reads.lock().unwrap().push(queries);
+                        }
+                        for command in commands {
+                            let reply = if command.contains("\r\nGRAPH.QUERY\r\n") {
+                                std::thread::sleep(query_delay);
+                                ":1\r\n".to_string()
+                            } else if command.contains("\r\nCLUSTER\r\n") {
+                                std::thread::sleep(setup_delay);
+                                slots.clone()
+                            } else if command.contains("\r\nPING\r\n") {
+                                std::thread::sleep(setup_delay);
+                                "+PONG\r\n".to_string()
+                            } else if command.contains("\r\nINFO\r\n") {
+                                let body = "# Server\r\nredis_mode:cluster\r\n";
+                                format!("${}\r\n{body}\r\n", body.len())
+                            } else {
+                                "+OK\r\n".to_string()
+                            };
+                            let _ = stream.write_all(reply.as_bytes());
+                        }
+                    }
+                });
+            }
+        });
+        format!("redis://127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn test_sync_cluster_setup_is_bounded_by_the_connect_timeout() {
+        let (release, stalled) = std::sync::mpsc::channel();
+        let url = spawn_node_stalling_on_ping(stalled);
+        let mut provider =
+            cluster_provider(&url, None, Some(std::time::Duration::from_millis(200)));
+
+        let start = std::time::Instant::now();
+        assert!(provider.get_connection().is_err());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "a node that never answers its health check must not outlast the connect timeout"
+        );
+        drop(release);
+    }
+
+    /// Each setup step outlasts the query response timeout, yet the connection opens: setup gets
+    /// the connect timeout, and only queries get the response timeout.
+    #[test]
+    fn test_sync_cluster_setup_is_not_bounded_by_the_response_timeout() {
+        let url = spawn_one_node_cluster(
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_secs(10),
+            Default::default(),
+        );
+        let mut provider = cluster_provider(
+            &url,
+            Some(std::time::Duration::from_millis(50)),
+            Some(std::time::Duration::from_secs(5)),
+        );
+
+        let mut conn = provider
+            .get_connection()
+            .expect("setup steps of 100ms fit the 5s connect timeout");
+        let start = std::time::Instant::now();
+        assert!(conn
+            .execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"]))
+            .is_err());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "a query slower than the 50ms response timeout must fail long before its 10s reply"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_cluster_setup_is_bounded_by_the_connect_timeout() {
+        let (release, stalled) = std::sync::mpsc::channel();
+        let url = spawn_node_stalling_on_ping(stalled);
+        let mut provider =
+            cluster_provider(&url, None, Some(std::time::Duration::from_millis(200)));
+
+        let start = std::time::Instant::now();
+        assert!(provider.get_async_connection().await.is_err());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "a node that never answers its health check must not outlast the connect timeout"
+        );
+        drop(release);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_cluster_setup_is_not_bounded_by_the_response_timeout() {
+        let url = spawn_one_node_cluster(
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_secs(10),
+            Default::default(),
+        );
+        let mut provider = cluster_provider(
+            &url,
+            Some(std::time::Duration::from_millis(50)),
+            Some(std::time::Duration::from_secs(5)),
+        );
+
+        let mut conn = provider
+            .get_async_connection()
+            .await
+            .expect("setup steps of 100ms fit the 5s connect timeout");
+        let start = std::time::Instant::now();
+        assert_eq!(
+            conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"]))
+                .await
+                .err(),
+            Some(FalkorDBError::ConnectionDown)
+        );
+        let mut pipeline = redis::pipe();
+        pipeline.cmd("GRAPH.QUERY").arg("g").arg("RETURN 1");
+        assert_eq!(
+            conn.execute_pipeline(&pipeline).await.err(),
+            Some(FalkorDBError::ConnectionDown)
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "queries slower than the 50ms response timeout must fail long before their 10s reply"
+        );
+    }
+
+    /// `with_max_inflight` caps each node connection of a cluster: with a limit of one, the
+    /// client never has a second query in flight on a connection.
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_cluster_concurrency_limit_caps_in_flight_queries_per_node() {
+        let query_reads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let url = spawn_one_node_cluster(
+            std::time::Duration::ZERO,
+            std::time::Duration::from_millis(50),
+            std::sync::Arc::clone(&query_reads),
+        );
+        let mut provider = provider_for(&url, std::time::Duration::from_secs(5));
+        let info = redis::ConnectionInfo::from_str(&url).unwrap();
+        let topology = provider
+            .detect_topology_async(&info, NonZeroUsize::new(1))
+            .await
+            .expect("a cluster node is detected");
+        provider.apply_topology(topology);
+        let conn = provider
+            .get_async_connection()
+            .await
+            .expect("cluster connection");
+
+        let queries = (0..4).map(|_| {
+            let mut conn = conn.clone_handle();
+            async move {
+                conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"]))
+                    .await
+            }
+        });
+        for result in futures::future::join_all(queries).await {
+            assert_eq!(result, Ok(redis::Value::Int(1)));
+        }
+        assert_eq!(*query_reads.lock().unwrap(), vec![1, 1, 1, 1]);
     }
 }

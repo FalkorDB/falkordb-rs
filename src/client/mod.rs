@@ -3794,13 +3794,15 @@ mod tests {
             Some(vec![pong.clone(), pong.clone()])
         );
         assert!(node
-            .send_packed_command(&redis::cmd("PING").get_packed_command())
-            .is_ok());
-        assert_eq!(node.recv_response().ok(), Some(pong));
-        assert!(node
             .set_read_timeout(Some(std::time::Duration::from_secs(1)))
             .is_ok());
         assert!(node.set_write_timeout(None).is_ok());
+        // A health check swaps in the connect timeout, then puts these back for what follows.
+        assert!(node.check_connection());
+        assert!(node
+            .send_packed_command(&redis::cmd("PING").get_packed_command())
+            .is_ok());
+        assert_eq!(node.recv_response().ok(), Some(pong));
     }
 
     /// A one-node cluster whose first connection serves setup and one `GRAPH.QUERY`, then closes as

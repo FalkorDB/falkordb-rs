@@ -36,8 +36,20 @@ pub(crate) enum FalkorSyncConnection {
 pub(crate) struct ClusterNode {
     conn: redis::Connection,
     connect_timeout: Option<std::time::Duration>,
-    /// The read timeout installed last, put back after a health check.
+    /// The read and write timeouts installed last, put back after a health check.
     read_timeout: std::cell::Cell<Option<std::time::Duration>>,
+    write_timeout: std::cell::Cell<Option<std::time::Duration>>,
+}
+
+impl ClusterNode {
+    /// Set both socket timeouts, reporting whether that worked.
+    fn set_socket_timeouts(
+        &self,
+        read: Option<std::time::Duration>,
+        write: Option<std::time::Duration>,
+    ) -> bool {
+        self.conn.set_read_timeout(read).is_ok() && self.conn.set_write_timeout(write).is_ok()
+    }
 }
 
 impl redis::cluster::Connect for ClusterNode {
@@ -58,6 +70,7 @@ impl redis::cluster::Connect for ClusterNode {
             conn,
             connect_timeout: timeout,
             read_timeout: std::cell::Cell::new(timeout),
+            write_timeout: std::cell::Cell::new(timeout),
         })
     }
 
@@ -72,7 +85,9 @@ impl redis::cluster::Connect for ClusterNode {
         &self,
         dur: Option<std::time::Duration>,
     ) -> redis::RedisResult<()> {
-        self.conn.set_write_timeout(dur)
+        self.conn.set_write_timeout(dur)?;
+        self.write_timeout.set(dur);
+        Ok(())
     }
 
     fn set_read_timeout(
@@ -110,12 +125,13 @@ impl redis::ConnectionLike for ClusterNode {
         self.conn.get_db()
     }
 
-    /// A health check is part of opening a node connection, so it gets the connect timeout rather
-    /// than the query timeout redis-rs may have installed by then.
+    /// A health check is part of opening a node connection, so it gets the connect timeout, for
+    /// sending its `PING` and for the reply, rather than the query timeouts redis-rs may have
+    /// installed by then.
     fn check_connection(&mut self) -> bool {
-        self.conn.set_read_timeout(self.connect_timeout).is_ok()
+        self.set_socket_timeouts(self.connect_timeout, self.connect_timeout)
             && self.conn.check_connection()
-            && self.conn.set_read_timeout(self.read_timeout.get()).is_ok()
+            && self.set_socket_timeouts(self.read_timeout.get(), self.write_timeout.get())
     }
 
     fn is_open(&self) -> bool {

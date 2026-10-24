@@ -1278,10 +1278,14 @@ pub(crate) mod test_utils {
                         "redis.call('pexpire', KEYS[1], ARGV[2])",
                     ) == Some(false);
                 }
-                // A release the server did not answer is retried once on a fresh connection.
+                // A release the server did not answer is retried once on a fresh connection, for
+                // cleanup only: if the first one did delete the key, the retry finds it gone,
+                // which says nothing about the lease.
                 let release = "redis.call('del', KEYS[1])";
-                let released = Self::if_held(&mut conn, &keeper_token, release)
-                    .or_else(|| Self::if_held(&mut conn, &keeper_token, release));
+                let released = Self::if_held(&mut conn, &keeper_token, release);
+                if released.is_none() {
+                    Self::if_held(&mut conn, &keeper_token, release);
+                }
                 !lost && released != Some(false)
             });
             Self {
@@ -1337,14 +1341,33 @@ pub(crate) mod test_utils {
     #[test]
     fn udf_registry_lock_renews_its_lease_and_releases_it() {
         let lock = UdfRegistryLock::acquire();
-        std::thread::sleep(UdfRegistryLock::RENEW_EVERY + std::time::Duration::from_millis(500));
+        let acquired = std::time::Instant::now();
         let mut conn = UdfRegistryLock::test_server().expect("connect to the test server");
-        let ttl: i64 = redis::cmd("PTTL")
-            .arg(UdfRegistryLock::KEY)
-            .query(&mut conn)
-            .expect("read the lease");
-        // Unrenewed, 2.5s into a 10s lease would leave about 7.5s.
-        assert!(ttl > 8_000, "the lease was not renewed: {ttl}ms left");
+        // Unrenewed, the lease has at most `LEASE_MS` less the time since it was acquired left, so
+        // more than that (with a margin for clock drift) shows the keeper renewed it. Poll rather
+        // than read once at a fixed time: the keeper may be scheduled late, and only has to renew
+        // before the lease runs out.
+        let lease = UdfRegistryLock::LEASE_MS as i64;
+        let renewed = |&(elapsed, ttl): &(i64, i64)| ttl > lease - elapsed + 500;
+        let reading = retry_until_with_timeout(
+            std::time::Duration::from_millis(UdfRegistryLock::LEASE_MS)
+                - UdfRegistryLock::RENEW_EVERY,
+            || {
+                let elapsed = acquired.elapsed().as_millis() as i64;
+                let ttl: i64 = redis::cmd("PTTL")
+                    .arg(UdfRegistryLock::KEY)
+                    .query(&mut conn)
+                    .expect("read the lease");
+                (elapsed, ttl)
+            },
+            renewed,
+        );
+        assert!(
+            renewed(&reading),
+            "the lease was not renewed: {}ms left after {}ms",
+            reading.1,
+            reading.0
+        );
 
         // Another test may take the lock as soon as it is released, so check only that it no
         // longer holds this guard's token.

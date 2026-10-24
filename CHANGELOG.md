@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.6](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.5...v0.10.6) - 2026-10-24
+
 ### Added
 
 - Support Redis Cluster deployments. Point the client at any node of the cluster: it detects the

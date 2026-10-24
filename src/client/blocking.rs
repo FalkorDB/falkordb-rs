@@ -522,7 +522,8 @@ mod tests {
     use crate::{
         test_utils::{
             create_test_client, default_on_connection_down, imdb_test_client,
-            retry_until_with_timeout, TestSyncGraphHandle, COPY_RETRY_TIMEOUT,
+            open_empty_test_graph, retry_until_with_timeout, udf_script, TestSyncGraphHandle,
+            UdfRegistryLock, COPY_RETRY_TIMEOUT,
         },
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
     };
@@ -963,101 +964,126 @@ mod tests {
     }
 
     #[test]
-    fn test_udf_operations() {
+    fn test_server_error_replies_are_errors() {
         let client = create_test_client();
+        // The error a command failed with (empty if it succeeded). Tests check only a stable part
+        // of the server's message, whose exact wording varies between server versions.
+        let error =
+            |result: FalkorResult<()>| result.err().map(|err| err.to_string()).unwrap_or_default();
 
-        // Test UDF load
-        let script = r#"
-#!js api_version=1.0 name=mylib
-
-redis.registerFunction('my_func', function(a, b) {
-    return a + b;
-});
-"#;
-
-        // Load a UDF library
-        let result = client.udf_load("mylib", script, false);
-        assert!(result.is_ok(), "Failed to load UDF library: {:?}", result);
-
-        // List UDF libraries
-        let list_result = client.udf_list(None, false);
-        assert!(list_result.is_ok(), "Failed to list UDF libraries");
-
-        // List specific library with code
-        let list_with_code = client.udf_list(Some("mylib"), true);
+        // These replies used to be ignored, so the commands reported success.
+        let copy = error(
+            client
+                .copy_graph("rs_missing_graph", "rs_missing_graph_copy")
+                .map(|_| ()),
+        );
         assert!(
-            list_with_code.is_ok(),
+            copy.contains("Invalid graph operation on empty key"),
+            "{copy:?}"
+        );
+        let delete = error(client.select_graph("rs_missing_graph").delete());
+        assert!(
+            delete.contains("Invalid graph operation on empty key"),
+            "{delete:?}"
+        );
+        let config = error(client.config_set("NO_SUCH_CONFIG_KEY", 1).map(|_| ()));
+        assert!(config.contains("Unknown configuration field"), "{config:?}");
+
+        // A query error keeps the server's whole message, first word included.
+        let mut graph = open_empty_test_graph("test_server_error_replies_sync");
+        let query = error(graph.inner.query("RETURN 1/0").execute().map(|_| ()));
+        assert!(query.contains("Division by zero"), "{query:?}");
+    }
+
+    /// The single integer `query` returns.
+    fn scalar(
+        graph: &mut SyncGraph,
+        query: &str,
+    ) -> FalkorResult<i64> {
+        graph.query(query).execute().and_then(|mut result| {
+            result
+                .data
+                .next()
+                .expect("a row")
+                .and_then(|row| row.try_get_at::<i64>(0))
+        })
+    }
+
+    #[test]
+    fn test_udf_operations() {
+        let _registry = UdfRegistryLock::acquire();
+        let client = create_test_client();
+        let mut graph = open_empty_test_graph("test_udf_operations_sync");
+
+        client
+            .udf_load("rs_udf_sync_ops", &udf_script("add", "a + b"), false)
+            .expect("Failed to load UDF library");
+        assert_eq!(
+            scalar(&mut graph.inner, "RETURN rs_udf_sync_ops.add(1, 2)"),
+            Ok(3)
+        );
+        assert!(
+            client.udf_list(None, false).is_ok(),
+            "Failed to list UDF libraries"
+        );
+        assert!(
+            client.udf_list(Some("rs_udf_sync_ops"), true).is_ok(),
             "Failed to list UDF library with code"
         );
 
-        // Delete the UDF library
-        let delete_result = client.udf_delete("mylib");
-        assert!(delete_result.is_ok(), "Failed to delete UDF library");
-
-        // Verify library was deleted
-        let list_after_delete = client.udf_list(None, false);
-        assert!(
-            list_after_delete.is_ok(),
-            "Failed to list UDF libraries after delete"
-        );
+        client
+            .udf_delete("rs_udf_sync_ops")
+            .expect("Failed to delete UDF library");
+        // Once deleted, the library's function is gone and the library cannot be deleted again.
+        assert!(scalar(&mut graph.inner, "RETURN rs_udf_sync_ops.add(3, 4)").is_err());
+        assert!(client.udf_delete("rs_udf_sync_ops").is_err());
     }
 
     #[test]
     fn test_udf_load_replace() {
+        let _registry = UdfRegistryLock::acquire();
         let client = create_test_client();
+        let mut graph = open_empty_test_graph("test_udf_load_replace_sync");
 
-        let script = r#"
-#!js api_version=1.0 name=replacelib
+        client
+            .udf_load("rs_udf_sync_replace", &udf_script("calc", "a * 2"), false)
+            .expect("Failed to load UDF library");
+        assert_eq!(
+            scalar(&mut graph.inner, "RETURN rs_udf_sync_replace.calc(5, 0)"),
+            Ok(10)
+        );
 
-redis.registerFunction('func1', function(x) {
-    return x * 2;
-});
-"#;
+        // An existing library is only overwritten when `replace` is set.
+        let updated = udf_script("calc", "a * 3");
+        assert!(client
+            .udf_load("rs_udf_sync_replace", &updated, false)
+            .is_err());
+        client
+            .udf_load("rs_udf_sync_replace", &updated, true)
+            .expect("Failed to replace UDF library");
+        assert_eq!(
+            scalar(&mut graph.inner, "RETURN rs_udf_sync_replace.calc(5, 1)"),
+            Ok(15)
+        );
 
-        // Load a UDF library
-        let result = client.udf_load("replacelib", script, false);
-        assert!(result.is_ok(), "Failed to load UDF library");
-
-        let updated_script = r#"
-#!js api_version=1.0 name=replacelib
-
-redis.registerFunction('func1', function(x) {
-    return x * 3;
-});
-"#;
-
-        // Replace the library
-        let replace_result = client.udf_load("replacelib", updated_script, true);
-        assert!(replace_result.is_ok(), "Failed to replace UDF library");
-
-        // Clean up
-        client.udf_delete("replacelib").ok();
+        client
+            .udf_delete("rs_udf_sync_replace")
+            .expect("Failed to delete UDF library");
     }
 
     #[test]
     fn test_udf_flush() {
+        let _registry = UdfRegistryLock::acquire();
         let client = create_test_client();
 
-        let script = r#"
-#!js api_version=1.0 name=flushlib
-
-redis.registerFunction('test_func', function() {
-    return 42;
-});
-"#;
-
-        // Load a UDF library
-        client.udf_load("flushlib", script, false).ok();
-
-        // Flush all UDF libraries
-        let flush_result = client.udf_flush();
-        assert!(flush_result.is_ok(), "Failed to flush UDF libraries");
-
-        // Verify all libraries were flushed
-        let list_after_flush = client.udf_list(None, false);
-        assert!(
-            list_after_flush.is_ok(),
-            "Failed to list UDF libraries after flush"
+        client
+            .udf_load("rs_udf_sync_flush", &udf_script("f", "a"), false)
+            .expect("Failed to load UDF library");
+        client.udf_flush().expect("Failed to flush UDF libraries");
+        assert_eq!(
+            client.udf_list(None, false),
+            Ok(redis::Value::Array(vec![])),
+            "flush removes every library"
         );
     }
 }

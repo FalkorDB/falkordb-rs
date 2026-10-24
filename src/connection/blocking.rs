@@ -5,7 +5,7 @@
 
 use crate::{
     client::{blocking::FalkorSyncClientInner, ProvidesSyncConnections},
-    connection::map_redis_err,
+    connection::{map_redis_err, reject_server_error},
     parser::parse_redis_info,
     FalkorDBError, FalkorResult,
 };
@@ -44,7 +44,10 @@ impl FalkorSyncConnection {
                         cmd.arg(param.to_string());
                     }
                 }
-                redis_conn.req_command(&cmd).map_err(map_redis_err)
+                redis_conn
+                    .req_command(&cmd)
+                    .map_err(map_redis_err)
+                    .and_then(reject_server_error)
             }
             #[cfg(test)]
             FalkorSyncConnection::None => Ok(redis::Value::Nil),

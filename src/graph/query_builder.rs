@@ -4,6 +4,7 @@
  */
 
 use crate::{
+    connection::reject_server_error,
     graph::HasGraphSchema,
     parser::{parse_header, redis_value_as_vec, SchemaParsable},
     retry::{op_kind_for_command, run_with_retry_blocking, OpKind},
@@ -65,15 +66,11 @@ pub(crate) fn build_vec_rows(
     QueryResult::from_response(header, data, stats)
 }
 
-/// Unwraps a top-level query reply: a `ServerError` becomes a [`FalkorDBError::RedisError`],
-/// otherwise the reply is read as the response array.
+/// Unwraps a top-level query reply: a server error becomes an `Err` (as for any command, see
+/// [`reject_server_error`]), otherwise the reply is read as the response array. Batch replies come
+/// through here per command, since a pipeline keeps each command's error in its own slot.
 pub(crate) fn unwrap_query_response(value: redis::Value) -> FalkorResult<Vec<redis::Value>> {
-    if let redis::Value::ServerError(e) = value {
-        return Err(FalkorDBError::RedisError(
-            e.details().unwrap_or("Unknown error").to_string(),
-        ));
-    }
-    redis_value_as_vec(value)
+    reject_server_error(value).and_then(redis_value_as_vec)
 }
 
 /// Turns the top-level query response array into a [`QueryResult`]: one element is stats only, two

@@ -200,10 +200,12 @@ impl QueryResult<crate::RowStream> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::open_empty_test_graph;
+    use crate::test_utils::{open_empty_test_graph, UdfRegistryLock};
 
     #[test]
     fn test_get_statistics() {
+        // Expects a repeated query to hit the plan cache, which any UDF change clears.
+        let _registry = UdfRegistryLock::acquire();
         let mut graph = open_empty_test_graph("imdb_stats_test");
         {
             let query_result = graph

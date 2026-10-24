@@ -1212,6 +1212,201 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// Holds a server-wide lock while a test changes the shared UDF registry, so that one test's
+    /// `udf_flush` cannot remove a library another test, in this or another test process, is still
+    /// using. Any registry change also clears every graph's cached query plans, so a test that
+    /// expects a cached plan holds the lock too. A keeper thread renews the lease until the guard drops; if it ever finds the lock
+    /// gone, the test fails rather than racing on. The key expires on its own if a test process
+    /// dies holding it, and the registry is emptied on acquire, so a library a failed test left
+    /// behind cannot break the next one.
+    pub(crate) struct UdfRegistryLock {
+        token: String,
+        release: Option<std::sync::mpsc::Sender<()>>,
+        keeper: Option<std::thread::JoinHandle<bool>>,
+    }
+
+    impl UdfRegistryLock {
+        const KEY: &'static str = "falkordb-rs:tests:udf-registry-lock";
+        const LEASE_MS: u64 = 10_000;
+        const RENEW_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+        /// Far longer than every test that takes the lock needs in turn. A test that hangs holding
+        /// it keeps renewing it, so the others fail after this instead of stalling with it.
+        const ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+        /// Bound on each request about the lock, so a stalled server cannot hold up `acquire`
+        /// past its timeout (by more than one request) or the keeper past a renewal.
+        const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+        /// A plain connection to the server the test clients use, as `FalkorClientBuilder::new`
+        /// defaults to, with every request on it bounded by `REQUEST_TIMEOUT`.
+        fn test_server() -> redis::RedisResult<redis::Connection> {
+            let address = FalkorConnectionInfo::try_from(client::builder::DEFAULT_CONNECTION_URL)
+                .expect("the default connection info is valid")
+                .address();
+            let conn = redis::Client::open(format!("redis://{address}"))?
+                .get_connection_with_timeout(Self::REQUEST_TIMEOUT)?;
+            conn.set_read_timeout(Some(Self::REQUEST_TIMEOUT))?;
+            conn.set_write_timeout(Some(Self::REQUEST_TIMEOUT))?;
+            Ok(conn)
+        }
+
+        pub(crate) fn acquire() -> Self {
+            let mut conn =
+                Self::test_server().expect("connect to the test server for the UDF registry lock");
+            let token = format!("{}:{:?}", std::process::id(), std::thread::current().id());
+            let deadline = std::time::Instant::now() + Self::ACQUIRE_TIMEOUT;
+            while redis::cmd("SET")
+                .arg(Self::KEY)
+                .arg(&token)
+                .arg("NX")
+                .arg("PX")
+                .arg(Self::LEASE_MS)
+                .query::<Option<String>>(&mut conn)
+                .expect("try the UDF registry lock")
+                .is_none()
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the UDF registry lock was not free within {:?}; a test holding it may be hung",
+                    Self::ACQUIRE_TIMEOUT
+                );
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            redis::cmd("GRAPH.UDF")
+                .arg("FLUSH")
+                .query::<()>(&mut conn)
+                .expect("start from an empty UDF registry");
+
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let keeper_token = token.clone();
+            let keeper = std::thread::spawn(move || {
+                let mut conn = Some(conn);
+                // Only a server's answer can show the lock was lost; a failed round trip cannot.
+                let mut lost = false;
+                while !lost
+                    && released
+                        .recv_timeout(Self::RENEW_EVERY)
+                        .is_err_and(|err| err == std::sync::mpsc::RecvTimeoutError::Timeout)
+                {
+                    lost = Self::if_held(
+                        &mut conn,
+                        &keeper_token,
+                        "redis.call('pexpire', KEYS[1], ARGV[2])",
+                    ) == Some(false);
+                }
+                // A release the server did not answer is retried once on a fresh connection, for
+                // cleanup only: if the first one did delete the key, the retry finds it gone,
+                // which says nothing about the lease.
+                let release = "redis.call('del', KEYS[1])";
+                let released = Self::if_held(&mut conn, &keeper_token, release);
+                if released.is_none() {
+                    Self::if_held(&mut conn, &keeper_token, release);
+                }
+                !lost && released != Some(false)
+            });
+            Self {
+                token,
+                release: Some(release),
+                keeper: Some(keeper),
+            }
+        }
+
+        /// Run `action` on the lock key if `token` still holds it: `Some(held)` when the server
+        /// answered, `None` when it could not be reached. A failed round trip drops the
+        /// connection, so the next call opens a fresh one.
+        fn if_held(
+            conn: &mut Option<redis::Connection>,
+            token: &str,
+            action: &str,
+        ) -> Option<bool> {
+            let connection = match conn {
+                Some(connection) => connection,
+                None => conn.insert(Self::test_server().ok()?),
+            };
+            let held = redis::cmd("EVAL")
+                .arg(format!(
+                    "if redis.call('get', KEYS[1]) == ARGV[1] then {action} return 1 else return 0 end"
+                ))
+                .arg(1)
+                .arg(Self::KEY)
+                .arg(token)
+                .arg(Self::LEASE_MS)
+                .query::<i64>(connection)
+                .map(|done| done == 1)
+                .ok();
+            if held.is_none() {
+                *conn = None;
+            }
+            held
+        }
+    }
+
+    impl Drop for UdfRegistryLock {
+        fn drop(&mut self) {
+            drop(self.release.take());
+            let held = self
+                .keeper
+                .take()
+                .is_some_and(|keeper| keeper.join().unwrap_or(false));
+            if !held && !std::thread::panicking() {
+                panic!("the UDF registry lock expired while the test held it");
+            }
+        }
+    }
+
+    #[test]
+    fn udf_registry_lock_renews_its_lease_and_releases_it() {
+        let lock = UdfRegistryLock::acquire();
+        let acquired = std::time::Instant::now();
+        let mut conn = UdfRegistryLock::test_server().expect("connect to the test server");
+        // Unrenewed, the lease has at most `LEASE_MS` less the time since it was acquired left, so
+        // more than that (with a margin for clock drift) shows the keeper renewed it. Poll rather
+        // than read once at a fixed time: the keeper may be scheduled late, and only has to renew
+        // before the lease runs out.
+        let lease = UdfRegistryLock::LEASE_MS as i64;
+        let renewed = |&(elapsed, ttl): &(i64, i64)| ttl > lease - elapsed + 500;
+        let reading = retry_until_with_timeout(
+            std::time::Duration::from_millis(UdfRegistryLock::LEASE_MS)
+                - UdfRegistryLock::RENEW_EVERY,
+            || {
+                let elapsed = acquired.elapsed().as_millis() as i64;
+                let ttl: i64 = redis::cmd("PTTL")
+                    .arg(UdfRegistryLock::KEY)
+                    .query(&mut conn)
+                    .expect("read the lease");
+                (elapsed, ttl)
+            },
+            renewed,
+        );
+        assert!(
+            renewed(&reading),
+            "the lease was not renewed: {}ms left after {}ms",
+            reading.1,
+            reading.0
+        );
+
+        // Another test may take the lock as soon as it is released, so check only that it no
+        // longer holds this guard's token.
+        let token = lock.token.clone();
+        drop(lock);
+        let owner: Option<String> = redis::cmd("GET")
+            .arg(UdfRegistryLock::KEY)
+            .query(&mut conn)
+            .expect("read the lock");
+        assert_ne!(
+            owner.as_deref(),
+            Some(token.as_str()),
+            "the lock must be released on drop"
+        );
+    }
+
+    /// A FalkorDB UDF library script registering `name(a, b)`, which returns `body`.
+    pub(crate) fn udf_script(
+        name: &str,
+        body: &str,
+    ) -> String {
+        format!("function {name}(a, b) {{ return {body}; }}\nfalkor.register('{name}', {name});\n")
+    }
+
     const RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
     /// `GRAPH.COPY` is performed by a background fork on the server, which can take

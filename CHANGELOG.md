@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Report a server's error reply as an error for every command. redis-rs hands error replies back
+  as ordinary values and only query replies were checked for one, so `copy_graph`, `delete`,
+  `config_set`, the UDF commands and every other command whose reply isn't a result set
+  reported success when the server refused it; for example, deleting or copying a graph that
+  doesn't exist now returns the server's error. Error messages also keep the server's whole
+  text (`Division by zero` instead of `by zero`), so the `query timed out` mitigation hint now
+  matches real timeouts, and a `CLUSTERDOWN` or `MASTERDOWN` reply is a `ConnectionDown` error,
+  as it already was when it arrived as a transport error. The UDF tests and the `udf_usage`
+  example now use the FalkorDB UDF format (`falkor.register`); they had been loading nothing
+  ([#401](https://github.com/FalkorDB/falkordb-rs/pull/401))
 - Never hand a dead pooled connection to the next command. When a command failed with
   `ConnectionDown` and no replacement connection could be opened (for example while the server
   was restarting), the dead connection went back into the pool, so the first command after the

@@ -42,8 +42,8 @@ async fn within_response_timeout<T>(
 }
 
 impl FalkorAsyncConnection {
-    /// Clone this connection handle. Both variants are cheap, reference-counted handles
-    /// over a shared multiplexed socket, so the clone can carry commands concurrently.
+    /// Clone this connection handle. Every variant is a cheap, reference-counted handle over
+    /// shared multiplexed sockets, so the clone can carry commands concurrently.
     pub(crate) fn clone_handle(&self) -> Self {
         match self {
             FalkorAsyncConnection::Redis(conn) => FalkorAsyncConnection::Redis(conn.clone()),

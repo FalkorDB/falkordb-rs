@@ -107,7 +107,10 @@ jobs:
       # The cluster suite is skipped unless FALKORDB_CLUSTER_URL is set, so start a cluster
       # to measure the Redis Cluster code paths.
       - name: Start FalkorDB cluster
-        run: just image=falkordb/falkordb:${{ needs.falkordb-version.outputs.version }} cluster-up
+        # The tag can come from a manual run's input, so it reaches the shell as data only.
+        env:
+          FALKORDB_IMAGE: falkordb/falkordb:${{ needs.falkordb-version.outputs.version }}
+        run: just "image=$FALKORDB_IMAGE" cluster-up
 
       - name: Generate Code Coverage
         env:

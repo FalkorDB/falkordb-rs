@@ -302,7 +302,7 @@ fn server_message_hint(message: &str) -> Option<&'static str> {
             "the query exceeded its timeout — raise it with `QueryBuilder::with_timeout(ms)` (or the \
              batch query's `with_timeout(ms)`)",
         )
-    } else if message.contains("crossslot") {
+    } else if message.contains("crossslot keys") {
         Some(
             "the keys hash to different Redis Cluster slots — give the graph names a shared hash \
              tag, e.g. `{tenant}:source` and `{tenant}:copy`, so one node owns both",
@@ -434,7 +434,7 @@ mod tests {
             ),
             ("ERR unknown command 'GRAPH.QUERY'", "FalkorDB"),
             (
-                "CROSSSLOT: Keys in request don't hash to the same slot",
+                "CROSSSLOT Keys in request don't hash to the same slot",
                 "hash tag",
             ),
         ];
@@ -461,6 +461,12 @@ mod tests {
         );
         // A variant with no specific guidance.
         assert_eq!(FalkorDBError::InvalidDataReceived.mitigation_hint(), None);
+        // A graph whose name merely contains `crossslot` gets no hash-tag hint.
+        assert_eq!(
+            FalkorDBError::RedisError("Invalid graph operation on crossslot_demo".into())
+                .mitigation_hint(),
+            None
+        );
         // A non-graph Redis arity error must not get the graph-command hint.
         assert_eq!(
             FalkorDBError::RedisError("ERR wrong number of arguments for 'AUTH' command".into())

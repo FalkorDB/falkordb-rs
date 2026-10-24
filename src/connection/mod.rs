@@ -12,13 +12,14 @@ pub(crate) mod asynchronous;
 
 /// Where a command must go in a Redis Cluster. Graph commands carry the graph name as their key,
 /// so they follow the default key-based routing; the few keyless commands below need an explicit
-/// choice (a single arbitrary node, or every primary).
+/// choice (a single arbitrary primary, or every primary).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClusterRoute {
     /// Route by the command's key (the graph name).
     ByKey,
-    /// Any single node can answer.
-    AnyNode,
+    /// Any single primary can answer. A replica could still lag behind a write made on every
+    /// primary, such as `GRAPH.CONFIG SET`.
+    AnyPrimary,
     /// Every primary must receive the command, e.g. server-wide state such as UDF libraries.
     AllPrimaries,
 }
@@ -30,7 +31,7 @@ impl ClusterRoute {
     ) -> Self {
         match (command, subcommand) {
             ("INFO", _) | ("GRAPH.CONFIG", Some("GET")) | ("GRAPH.UDF", Some("LIST")) => {
-                Self::AnyNode
+                Self::AnyPrimary
             }
             ("GRAPH.LIST", _)
             | ("GRAPH.CONFIG", Some("SET"))
@@ -44,7 +45,9 @@ impl ClusterRoute {
         use redis::cluster_routing::{MultipleNodeRoutingInfo, RoutingInfo, SingleNodeRoutingInfo};
         match self {
             Self::ByKey => None,
-            Self::AnyNode => Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random)),
+            Self::AnyPrimary => Some(RoutingInfo::SingleNode(
+                SingleNodeRoutingInfo::RandomPrimary,
+            )),
             Self::AllPrimaries => Some(RoutingInfo::MultiNode((
                 MultipleNodeRoutingInfo::AllMasters,
                 None,
@@ -261,9 +264,9 @@ mod tests {
     fn cluster_route_keyless_commands_get_an_explicit_route() {
         use ClusterRoute::*;
         for (command, subcommand, expected) in [
-            ("INFO", Some("server"), AnyNode),
-            ("GRAPH.CONFIG", Some("GET"), AnyNode),
-            ("GRAPH.UDF", Some("LIST"), AnyNode),
+            ("INFO", Some("server"), AnyPrimary),
+            ("GRAPH.CONFIG", Some("GET"), AnyPrimary),
+            ("GRAPH.UDF", Some("LIST"), AnyPrimary),
             ("GRAPH.LIST", None, AllPrimaries),
             ("GRAPH.CONFIG", Some("SET"), AllPrimaries),
             ("GRAPH.UDF", Some("LOAD"), AllPrimaries),
@@ -286,8 +289,10 @@ mod tests {
         use redis::cluster_routing::{MultipleNodeRoutingInfo, RoutingInfo, SingleNodeRoutingInfo};
         assert_eq!(ClusterRoute::ByKey.routing_info(), None);
         assert_eq!(
-            ClusterRoute::AnyNode.routing_info(),
-            Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random))
+            ClusterRoute::AnyPrimary.routing_info(),
+            Some(RoutingInfo::SingleNode(
+                SingleNodeRoutingInfo::RandomPrimary
+            ))
         );
         assert_eq!(
             ClusterRoute::AllPrimaries.routing_info(),
@@ -365,7 +370,7 @@ mod tests {
     fn collapse_reply_leaves_other_replies_untouched() {
         let map = redis::Value::Map(vec![node("a:1", redis::Value::Okay)]);
         assert_eq!(
-            ClusterRoute::AnyNode.collapse_reply("INFO", map.clone()),
+            ClusterRoute::AnyPrimary.collapse_reply("INFO", map.clone()),
             map
         );
         assert_eq!(

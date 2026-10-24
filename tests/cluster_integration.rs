@@ -34,6 +34,17 @@ fn graph_name(
     format!("{prefix}_{i}")
 }
 
+/// Select `name`, first deleting whatever an interrupted earlier run may have left in it.
+fn fresh_graph(
+    client: &falkordb::FalkorSyncClient,
+    name: &str,
+) -> falkordb::SyncGraph {
+    let mut graph = client.select_graph(name);
+    // Usually there is nothing to delete, which the server reports as an error.
+    let _ = graph.delete();
+    graph
+}
+
 #[test]
 fn sync_client_routes_commands_across_cluster_nodes() {
     let Some(info) = cluster_info() else { return };
@@ -53,7 +64,7 @@ fn sync_client_routes_commands_across_cluster_nodes() {
     );
 
     for i in 0..GRAPHS {
-        let mut graph = client.select_graph(graph_name("rs_cluster_sync", i));
+        let mut graph = fresh_graph(&client, &graph_name("rs_cluster_sync", i));
         graph
             .query("CREATE (:N {v: $v})")
             .with_param("v", i as i64)
@@ -83,7 +94,7 @@ fn sync_batch_is_routed_to_the_owning_node() {
         .expect("cluster client");
 
     for i in 0..GRAPHS {
-        let mut graph = client.select_graph(graph_name("rs_cluster_batch", i));
+        let mut graph = fresh_graph(&client, &graph_name("rs_cluster_batch", i));
         let mut batch = graph.batch();
         batch.query("CREATE (:N)");
         batch.query("CREATE (:N)");
@@ -107,7 +118,7 @@ fn sync_batch_reports_each_query_outcome() {
 
     // A failing query leaves the results of the others intact, as on a single node.
     for i in 0..GRAPHS {
-        let mut graph = client.select_graph(graph_name("rs_cluster_mixed", i));
+        let mut graph = fresh_graph(&client, &graph_name("rs_cluster_mixed", i));
         let mut batch = graph.batch();
         batch.query("CREATE (:N)");
         batch.query("RETURN 1/0");
@@ -134,7 +145,7 @@ fn sync_list_graphs_spans_every_primary() {
         .expect("cluster client");
 
     let mut graphs: Vec<_> = (0..GRAPHS)
-        .map(|i| client.select_graph(graph_name("rs_cluster_list", i)))
+        .map(|i| fresh_graph(&client, &graph_name("rs_cluster_list", i)))
         .collect();
     for graph in &mut graphs {
         graph.query("CREATE (:N)").execute().expect("create");
@@ -165,7 +176,8 @@ fn sync_copy_graph_needs_a_shared_hash_tag() {
         .expect("cluster client");
 
     // The `{rs_copy}` hash tag puts both graphs in one slot, owned by one node.
-    let mut source = client.select_graph("{rs_copy}:source");
+    let mut source = fresh_graph(&client, "{rs_copy}:source");
+    let _ = fresh_graph(&client, "{rs_copy}:copy");
     source
         .query("CREATE (:N {v: 7})")
         .execute()
@@ -210,6 +222,11 @@ fn sync_config_and_udf_commands_reach_the_cluster() {
         .build()
         .expect("cluster client");
 
+    let original = client
+        .config_get("RESULTSET_SIZE")
+        .expect("config get")
+        .remove("RESULTSET_SIZE")
+        .expect("RESULTSET_SIZE is reported");
     client
         .config_set("RESULTSET_SIZE", 1234)
         .expect("config set on every primary");
@@ -218,9 +235,11 @@ fn sync_config_and_udf_commands_reach_the_cluster() {
         falkordb::ConfigValue::Int64(1234)
     );
     client
-        .config_set("RESULTSET_SIZE", -1)
+        .config_set("RESULTSET_SIZE", original)
         .expect("restore config");
 
+    // The only test in this suite that touches the UDF registry, on a cluster the suite has to
+    // itself, so the flush below cannot remove another test's libraries.
     let script = "function f(a, b) { return a + b; }\nfalkor.register('f', f);\n";
     client
         .udf_load("rs_cluster_lib", script, true)
@@ -239,6 +258,16 @@ mod asynchronous {
     use futures::StreamExt;
     use std::num::NonZeroU8;
 
+    /// Async counterpart of [`fresh_graph`](super::fresh_graph).
+    async fn fresh_graph(
+        client: &falkordb::FalkorAsyncClient,
+        name: &str,
+    ) -> falkordb::AsyncGraph {
+        let mut graph = client.select_graph(name);
+        let _ = graph.delete().await;
+        graph
+    }
+
     async fn exercise(
         prefix: &str,
         strategy: ConnectionStrategy,
@@ -252,7 +281,7 @@ mod asynchronous {
             .expect("cluster client");
 
         for i in 0..GRAPHS {
-            let mut graph = client.select_graph(graph_name(prefix, i));
+            let mut graph = fresh_graph(&client, &graph_name(prefix, i)).await;
             graph
                 .query("CREATE (:N {v: $v})")
                 .with_param("v", i as i64)
@@ -296,9 +325,10 @@ mod asynchronous {
             .await
             .expect("cluster client");
 
-        let mut graphs: Vec<_> = (0..GRAPHS)
-            .map(|i| client.select_graph(graph_name("rs_cluster_list_async", i)))
-            .collect();
+        let mut graphs = Vec::new();
+        for i in 0..GRAPHS {
+            graphs.push(fresh_graph(&client, &graph_name("rs_cluster_list_async", i)).await);
+        }
         for graph in &mut graphs {
             graph.query("CREATE (:N)").execute().await.expect("create");
         }
@@ -325,7 +355,8 @@ mod asynchronous {
             .await
             .expect("cluster client");
 
-        let mut source = client.select_graph("{rs_copy_async}:source");
+        let mut source = fresh_graph(&client, "{rs_copy_async}:source").await;
+        let _ = fresh_graph(&client, "{rs_copy_async}:copy").await;
         source
             .query("CREATE (:N {v: 7})")
             .execute()
@@ -374,7 +405,7 @@ mod asynchronous {
             .expect("cluster client");
 
         for i in 0..GRAPHS {
-            let mut graph = client.select_graph(graph_name("rs_cluster_mixed_async", i));
+            let mut graph = fresh_graph(&client, &graph_name("rs_cluster_mixed_async", i)).await;
             let mut batch = graph.batch();
             batch.query("CREATE (:N)");
             batch.query("RETURN 1/0");
@@ -392,8 +423,12 @@ mod asynchronous {
         }
     }
 
+    /// Concurrent queries for graphs on every node still complete when `with_max_inflight` caps
+    /// each node connection at one command. That the cap holds is checked against a fake node in
+    /// the unit test `test_cluster_concurrency_limit_caps_in_flight_queries_per_node`, which can
+    /// see every query arrive.
     #[tokio::test(flavor = "multi_thread")]
-    async fn max_inflight_applies_to_each_node_connection() {
+    async fn concurrent_queries_complete_under_max_inflight() {
         let Some(info) = cluster_info() else { return };
         let client = FalkorClientBuilder::new_async()
             .with_connection_info(info)
@@ -409,7 +444,7 @@ mod asynchronous {
         let queries = (0..GRAPHS).map(|i| {
             let client = &client;
             async move {
-                let mut graph = client.select_graph(graph_name("rs_cluster_inflight", i));
+                let mut graph = fresh_graph(client, &graph_name("rs_cluster_inflight", i)).await;
                 graph.query("CREATE (:N)").execute().await?;
                 graph.delete().await
             }

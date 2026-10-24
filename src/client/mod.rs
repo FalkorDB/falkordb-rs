@@ -648,6 +648,7 @@ impl FalkorClientProvider {
                 }
                 .map(|conn| FalkorSyncConnection::Cluster(Box::new(conn)))
                 .map_err(|err| FalkorDBError::RedisError(err.to_string()))?;
+                // redis-rs keeps these for the node connections it opens later, too.
                 conn.set_timeouts(response_timeout)?;
                 return Ok(conn);
             }
@@ -3575,6 +3576,30 @@ mod tests {
         assert!(
             start.elapsed() < std::time::Duration::from_secs(5),
             "queries slower than the 50ms response timeout must fail long before their 10s reply"
+        );
+    }
+
+    /// Without a response timeout, cluster setup and queries take as long as they need: redis-rs
+    /// 1.x gives other async connections a 500ms default unless it is turned off.
+    #[cfg(feature = "tokio")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_async_cluster_has_no_default_response_timeout() {
+        let url = spawn_one_node_cluster(
+            std::time::Duration::from_millis(600),
+            std::time::Duration::from_millis(600),
+            Default::default(),
+        );
+        let mut provider = cluster_provider(&url, None, Some(std::time::Duration::from_secs(10)));
+
+        let mut conn = provider
+            .get_async_connection()
+            .await
+            .expect("setup steps of 600ms are not cut off");
+        assert_eq!(
+            conn.execute_command(Some("g"), "GRAPH.QUERY", None, Some(&["RETURN 1"]))
+                .await,
+            Ok(redis::Value::Int(1)),
+            "a query answering after 600ms is not cut off"
         );
     }
 

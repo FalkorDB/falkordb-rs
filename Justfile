@@ -369,7 +369,7 @@ cluster-up:
     set -euo pipefail
     docker rm -f {{cluster_container}} >/dev/null 2>&1 || true
     docker run -d --name {{cluster_container}} -p 7001-7003:7001-7003 -p 17001-17003:17001-17003 \
-        --entrypoint sleep {{image}} infinity >/dev/null
+        --entrypoint sleep {{quote(image)}} infinity >/dev/null
     for p in 7001 7002 7003; do
         docker exec -d {{cluster_container}} redis-server --port $p --cluster-enabled yes \
             --cluster-announce-ip 127.0.0.1 --cluster-announce-port $p \

@@ -713,7 +713,7 @@ Commands that act on the whole server are routed for you:
 - `list_graphs` asks every primary and merges their answers, so
   it lists the graphs of the whole cluster.
 - `config_set`, `udf_load`, `udf_delete` and `udf_flush` run on every primary and fail if any
-  of them refuses; `config_get`, `udf_list` and `redis_info` ask a single node.
+  of them refuses; `config_get`, `udf_list` and `redis_info` ask a single primary.
 
 `copy_graph` makes the copy on the node that owns the source
 graph, so both names must hash to the same slot. Give them a shared hash tag (the part in braces,

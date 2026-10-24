@@ -330,7 +330,9 @@ fn weave_replies(
 impl BatchBuilder<'_, SyncGraph> {
     /// Dispatch all queued queries over one pipelined round-trip and return their results in
     /// submission order. An empty batch (or one whose every query failed to encode) returns without
-    /// a round-trip.
+    /// a round-trip. On a Redis Cluster the queries are sent one after another instead, a round
+    /// trip each, since the redis-rs sync cluster pipeline fails the whole batch when any one query
+    /// fails.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "Execute Batch", skip_all, level = "info")

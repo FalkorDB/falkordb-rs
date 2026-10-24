@@ -5,7 +5,7 @@
 
 use crate::{
     client::asynchronous::FalkorAsyncClientInner,
-    connection::{map_redis_err, reject_server_error},
+    connection::{map_redis_err, reject_server_error, ClusterRoute},
     parser::parse_redis_info,
     FalkorDBError, FalkorResult,
 };
@@ -18,15 +18,39 @@ pub(crate) enum FalkorAsyncConnection {
     /// clone shares the same underlying socket and routes responses back to the right
     /// caller, so many clones can have commands in flight concurrently.
     Managed(redis::aio::ConnectionManager),
+    /// A connection to a Redis Cluster, routing each command to the node owning the graph's slot.
+    /// Like [`Managed`](Self::Managed) it is a cheap, shareable handle over multiplexed sockets.
+    /// Its query response timeout is enforced per command here, since the connection's own would
+    /// also have bounded its setup.
+    Cluster(
+        redis::cluster_async::ClusterConnection,
+        Option<std::time::Duration>,
+    ),
+}
+
+/// Bound `request` by the query response timeout, failing as a timed-out read does.
+async fn within_response_timeout<T>(
+    timeout: Option<std::time::Duration>,
+    request: impl std::future::Future<Output = redis::RedisResult<T>>,
+) -> redis::RedisResult<T> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, request)
+            .await
+            .unwrap_or_else(|_| Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into())),
+        None => request.await,
+    }
 }
 
 impl FalkorAsyncConnection {
-    /// Clone this connection handle. Both variants are cheap, reference-counted handles
-    /// over a shared multiplexed socket, so the clone can carry commands concurrently.
+    /// Clone this connection handle. Every variant is a cheap, reference-counted handle over
+    /// shared multiplexed sockets, so the clone can carry commands concurrently.
     pub(crate) fn clone_handle(&self) -> Self {
         match self {
             FalkorAsyncConnection::Redis(conn) => FalkorAsyncConnection::Redis(conn.clone()),
             FalkorAsyncConnection::Managed(conn) => FalkorAsyncConnection::Managed(conn.clone()),
+            FalkorAsyncConnection::Cluster(conn, response_timeout) => {
+                FalkorAsyncConnection::Cluster(conn.clone(), *response_timeout)
+            }
         }
     }
 
@@ -61,6 +85,18 @@ impl FalkorAsyncConnection {
                     .await
                     .map_err(map_redis_err)
             }
+            FalkorAsyncConnection::Cluster(cluster_conn, response_timeout) => {
+                let route = ClusterRoute::for_command(command, subcommand);
+                let routing = route.routing_info(graph_name);
+                within_response_timeout(*response_timeout, async move {
+                    cluster_conn
+                        .route_command(cmd, routing)
+                        .await
+                        .map(|reply| route.collapse_reply(command, reply))
+                })
+                .await
+                .map_err(map_redis_err)
+            }
         }
         .and_then(reject_server_error)
     }
@@ -86,6 +122,14 @@ impl FalkorAsyncConnection {
                 .req_packed_commands(pipeline, 0, count)
                 .await
                 .map_err(map_redis_err),
+            FalkorAsyncConnection::Cluster(cluster_conn, response_timeout) => {
+                within_response_timeout(
+                    *response_timeout,
+                    cluster_conn.req_packed_commands(pipeline, 0, count),
+                )
+                .await
+                .map_err(map_redis_err)
+            }
         }
     }
 
@@ -102,12 +146,11 @@ impl FalkorAsyncConnection {
             .and_then(parse_redis_info)
     }
 
-    pub(crate) async fn check_is_redis_sentinel(&mut self) -> FalkorResult<bool> {
-        let info_map = self.get_redis_info(Some("server")).await?;
-        Ok(info_map
-            .get("redis_mode")
-            .map(|redis_mode| redis_mode == "sentinel")
-            .unwrap_or_default())
+    /// The server's `redis_mode` from `INFO server`: `standalone`, `sentinel` or `cluster`.
+    pub(crate) async fn redis_mode(&mut self) -> FalkorResult<Option<String>> {
+        self.get_redis_info(Some("server"))
+            .await
+            .map(|mut info_map| info_map.remove("redis_mode"))
     }
 }
 
@@ -255,8 +298,8 @@ impl BorrowedAsyncConnection {
     /// On a dead pooled connection, drop it and swap in a fresh one so a live one is returned to the
     /// pool, then re-surface `ConnectionDown`. If no replacement can be opened, the slot is left
     /// empty for the next command to reconnect and `NoConnection` is returned. A multiplexed
-    /// clone is left alone: its `ConnectionManager` reconnects on its own, and the clone is
-    /// discarded on drop anyway. Other results pass through unchanged.
+    /// clone is left alone: its `ConnectionManager` or cluster connection reconnects on its own,
+    /// and the clone is discarded on drop anyway. Other results pass through unchanged.
     async fn recover_on_connection_down<T>(
         &mut self,
         result: FalkorResult<T>,

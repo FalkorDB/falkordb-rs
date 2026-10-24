@@ -16,6 +16,9 @@ port := env_var_or_default("FALKORDB_PORT", "6379")
 image := "falkordb/falkordb:edge"
 container := "falkordb-rs-dev"
 
+# Container hosting the local three-node Redis Cluster (nodes on ports 7001-7003).
+cluster_container := "falkordb-rs-cluster"
+
 # Feature set exercised by the full local suite (mirrors the coverage CI job).
 features := "tokio,embedded,serde,tracing,metrics"
 
@@ -359,6 +362,51 @@ db-up:
             echo "FalkorDB is ready."; exit 0; \
         fi; sleep 1; \
     done; echo "FalkorDB did not become ready in time" >&2; exit 1
+
+# Start a local three-node FalkorDB Redis Cluster (ports 7001-7003) and wait until it is ready.
+cluster-up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    docker rm -f {{cluster_container}} >/dev/null 2>&1 || true
+    docker run -d --name {{cluster_container}} -p 7001-7003:7001-7003 -p 17001-17003:17001-17003 \
+        --entrypoint sleep {{quote(image)}} infinity >/dev/null
+    for p in 7001 7002 7003; do
+        docker exec -d {{cluster_container}} redis-server --port $p --cluster-enabled yes \
+            --cluster-announce-ip 127.0.0.1 --cluster-announce-port $p \
+            --cluster-announce-bus-port $((p + 10000)) --cluster-config-file /tmp/nodes-$p.conf \
+            --cluster-node-timeout 5000 --dir /tmp --loadmodule /var/lib/falkordb/bin/falkordb.so
+    done
+    # The nodes start in parallel and load the module before they answer, so wait for each.
+    for p in 7001 7002 7003; do
+        for i in $(seq 1 30); do
+            [ "$(docker exec {{cluster_container}} redis-cli -p $p ping 2>/dev/null)" = PONG ] && continue 2
+            sleep 1
+        done
+        echo "FalkorDB cluster node $p did not answer in time" >&2; exit 1
+    done
+    docker exec {{cluster_container}} redis-cli -p 7001 --cluster create \
+        127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003 --cluster-yes >/dev/null
+    for i in $(seq 1 30); do
+        if docker exec {{cluster_container}} redis-cli -p 7001 cluster info | grep -q cluster_state:ok; then
+            echo "FalkorDB cluster is ready on 127.0.0.1:7001-7003."; exit 0
+        fi
+        sleep 1
+    done
+    echo "FalkorDB cluster did not become ready in time" >&2; exit 1
+
+# Stop and remove the local FalkorDB cluster.
+cluster-down:
+    docker rm -f {{cluster_container}} >/dev/null 2>&1 || true
+
+# Run only the Redis Cluster integration suite against a running cluster (see `cluster-up`).
+test-cluster:
+    FALKORDB_CLUSTER_URL=falkor://127.0.0.1:7001 \
+        cargo nextest run --features {{features}} --test cluster_integration
+
+# Spin up a local cluster, run the cluster suite, tear it down.
+test-cluster-local: cluster-up
+    @just test-cluster || (just cluster-down && exit 1)
+    @just cluster-down
 
 # Stop and remove the FalkorDB container.
 db-down:

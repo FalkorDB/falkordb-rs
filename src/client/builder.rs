@@ -327,6 +327,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                     client,
                     sentinel: None,
                     sentinel_replica: None,
+                    cluster: None,
                     embedded_server: Some(embedded_server),
                     response_timeout,
                     connect_timeout,
@@ -351,6 +352,7 @@ impl<const R: char> FalkorClientBuilder<R> {
                         client,
                         sentinel: None,
                         sentinel_replica: None,
+                        cluster: None,
                         #[cfg(feature = "embedded-core")]
                         embedded_server: None,
                         response_timeout,
@@ -405,12 +407,8 @@ impl FalkorClientBuilder<'S'> {
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
-            if let Some(sentinels) = client.get_sentinel_client(redis_conn_info)? {
-                client.set_sentinel(sentinels.master);
-                if let Some(replica) = sentinels.replica {
-                    client.set_sentinel_replica(replica);
-                }
-            }
+            let topology = client.detect_topology(redis_conn_info)?;
+            client.apply_topology(topology);
         }
         FalkorSyncClient::create(
             client,
@@ -486,10 +484,10 @@ impl FalkorClientBuilder<'A'> {
 
     /// Bound the number of concurrently in-flight commands per multiplexed socket.
     ///
-    /// Maps to the underlying `ConnectionManager` concurrency limit and only affects the
-    /// [`ConnectionStrategy::Multiplexed`] strategy (it is ignored for
-    /// [`ConnectionStrategy::Pooled`], whose pool size already caps in-flight commands).
-    /// Use it to apply backpressure; without it, multiplexed mode does not bound the
+    /// Maps to the underlying `ConnectionManager` concurrency limit, or on a Redis Cluster to that
+    /// of each node connection, and only affects the [`ConnectionStrategy::Multiplexed`] strategy
+    /// (it is ignored for [`ConnectionStrategy::Pooled`], whose pool size already caps in-flight
+    /// commands). Use it to apply backpressure; without it, multiplexed mode does not bound the
     /// number of outstanding requests.
     ///
     /// A limit of zero would permanently stall the socket (no commands could ever
@@ -529,12 +527,15 @@ impl FalkorClientBuilder<'A'> {
 
         #[allow(irrefutable_let_patterns)]
         if let FalkorConnectionInfo::Redis(redis_conn_info) = &actual_connection_info {
-            if let Some(sentinels) = client.get_sentinel_client_async(redis_conn_info).await? {
-                client.set_sentinel(sentinels.master);
-                if let Some(replica) = sentinels.replica {
-                    client.set_sentinel_replica(replica);
-                }
-            }
+            // On a cluster, `with_max_inflight` caps each node connection of a multiplexed client.
+            let concurrency_limit = match self.strategy {
+                ConnectionStrategy::Multiplexed { .. } => self.max_inflight,
+                ConnectionStrategy::Pooled { .. } => None,
+            };
+            let topology = client
+                .detect_topology_async(redis_conn_info, concurrency_limit)
+                .await?;
+            client.apply_topology(topology);
         }
         FalkorAsyncClient::create(
             client,

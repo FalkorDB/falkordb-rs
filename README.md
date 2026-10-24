@@ -32,6 +32,8 @@ OpenTelemetry-aligned tracing and metrics.
 - **Resilient** — opt-in `RetryPolicy` with bounded backoff for transient failures; writes are never retried.
 - **Observable** — OpenTelemetry-aligned `tracing` spans and `metrics` counters/histograms, privacy-safe by default.
 - **Replica-aware** — opt in to routing read-only queries to replicas behind Redis Sentinel.
+- **Cluster-aware** — connect to any node of a Redis Cluster; each graph command goes to the node
+  that owns the graph.
 - **Embedded server** — spin up a self-contained FalkorDB for tests and prototyping, with an
   optional build-time bundle mode that runs fully offline.
 
@@ -699,6 +701,48 @@ Against a single node (or any deployment without readable replicas),
 use the primary. See [`examples/readonly_replica.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/readonly_replica.rs)
 for a complete working example.
 
+#### Redis Cluster
+
+Point the client at any node of a Redis Cluster running FalkorDB. While the client is built it
+sees that the node reports `redis_mode:cluster`, discovers the other nodes from it, and from then
+on sends each graph command to the node that owns the graph's hash slot, following the cluster's
+redirects when slots move. The sync client and both async connection strategies work this way.
+New connections can start from any node found then, so they do not need the configured node to
+be up. TLS works with a `rediss://` URL and the system's root certificates. TLS settings made on a
+connection info, such as a private root, a client certificate or not checking host names, are
+refused for a cluster: the redis-rs cluster client cannot take them from it, and would silently
+connect without them.
+
+Commands that act on the whole server are routed for you:
+
+- `list_graphs` asks every primary and merges their answers, so
+  it lists the graphs of the whole cluster.
+- `config_set`, `udf_load`, `udf_delete` and `udf_flush` run on every primary and fail if any
+  of them refuses; `config_get`, `udf_list` and `redis_info` ask a single primary.
+
+`copy_graph` makes the copy on the node that owns the source
+graph, so both names must hash to the same slot. Give them a shared hash tag (the part in braces,
+which is all Redis hashes):
+
+```rust
+// `{tenant42}` puts both graphs in one slot.
+client.copy_graph("{tenant42}:graph", "{tenant42}:copy")?;
+```
+
+Without one, the server rejects the copy with a `CROSSSLOT` error, whose
+`mitigation_hint` suggests a hash tag. Read-only queries run on
+the primaries: `ReadPreference::PreferReplica` routes to replicas only behind Redis Sentinel.
+
+Two things work differently on a cluster:
+
+- **A write can run more than once.** The redis-rs cluster client sends a command again when
+  the node connection drops before the reply arrives, and the sync client also when the reply
+  misses the response timeout (by default up to 16 more times). This happens even with retries
+  disabled (`RetryPolicy::disabled`), so keep writes idempotent where it matters (for example
+  with `MERGE`), or leave the sync client's response timeout unset.
+- **A sync `batch` takes a round trip per query**: its queries are sent one
+  after another, so that each one still reports its own error. Async batches are pipelined.
+
 ### Resilience and observability
 
 #### Automatic retries
@@ -726,7 +770,8 @@ The same `with_retry_policy(..)` is available on the async builder
 
 **Write safety.** The only scope available today, `RetryScope::ReadOnly`, retries **read-only /
 idempotent** operations only (`ro_query`, `explain`, `list_indices`, `list_constraints`, read-only
-procedure calls). **Writes are never retried**, so enabling a policy can never duplicate a write.
+procedure calls). **Writes are never retried**, so enabling a policy can never duplicate a write
+(on a Redis Cluster, redis-rs itself can send one again; see [Redis Cluster](#redis-cluster)).
 Classification is by the API you call, never by inspecting Cypher — `query()` is treated as a write
 even when it only reads, so use `ro_query()` for retryable reads.
 

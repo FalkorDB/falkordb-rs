@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hash tag on a cluster, as its docs now say, and the `CROSSSLOT` error it gets otherwise carries a
   mitigation hint suggesting one. New connections can start from any node the cluster reported
   while the client was built, not only the configured one. A cluster accepts TLS from a
-  `rediss://` URL and refuses certificates set on the connection info, which the redis-rs cluster
+  `rediss://` URL and refuses TLS settings made on the connection info, which the redis-rs cluster
   client cannot take from it. Connecting to the cluster, including
   the node connections opened again while queries run, is bounded by the connect timeout and each
   query by the response timeout, `with_max_inflight` caps every node connection of a multiplexed

@@ -1270,10 +1270,16 @@ impl FalkorClientProvider {
                 .map(Topology::Sentinel),
             ProbeReply::Cluster(slots) => {
                 // The redis-rs cluster client builds every node's TLS settings from its own
-                // options, and the certificates of a connection info cannot be read back out to
-                // pass on, so they would be dropped: nodes would be trusted by the system's root
-                // certificates instead, without a client certificate. Refuse that downgrade.
-                #[cfg(any(feature = "rustls", feature = "tokio-rustls"))]
+                // options, and the TLS settings of a connection info (certificates, or accepting
+                // invalid hostnames) cannot be read back out to pass on, so they would be dropped
+                // silently: nodes would be verified against the system's root certificates, without
+                // a client certificate. Refuse instead. Only TLS builds can make these settings.
+                #[cfg(any(
+                    feature = "native-tls",
+                    feature = "tokio-native-tls",
+                    feature = "rustls",
+                    feature = "tokio-rustls"
+                ))]
                 if matches!(
                     connection_info.addr(),
                     redis::ConnectionAddr::TcpTls {
@@ -1282,8 +1288,9 @@ impl FalkorClientProvider {
                     }
                 ) {
                     return Err(FalkorDBError::InvalidConnectionInfo(
-                        "TLS certificates set on the connection info cannot be used with Redis \
-                         Cluster; connect with a rediss:// URL and the system's root certificates"
+                        "TLS settings made on the connection info (certificates, or accepting \
+                         invalid hostnames) cannot be used with Redis Cluster; connect with a \
+                         rediss:// URL and the system's root certificates"
                             .to_string(),
                     ));
                 }
@@ -3381,6 +3388,22 @@ EESc65rWTgIgPNOki3CMgUOKKB0XwmbpdKyGZTwcCxFzdhRYGsa/txs=
                 .map(|topology| topology.name()),
             Ok("cluster")
         );
+    }
+
+    #[test]
+    #[cfg(any(feature = "native-tls", feature = "tokio-native-tls"))]
+    fn test_cluster_refuses_accepting_invalid_hostnames_it_cannot_pass_on() {
+        let info = redis::ConnectionInfo::from_str("rediss://127.0.0.1:7001").unwrap();
+        let mut addr = info.addr().clone();
+        addr.set_danger_accept_invalid_hostnames(true);
+        assert!(matches!(
+            FalkorClientProvider::None.topology_from(
+                &info.set_addr(addr),
+                ProbeReply::Cluster(redis::Value::Nil),
+                None
+            ),
+            Err(FalkorDBError::InvalidConnectionInfo(_))
+        ));
     }
 
     #[test]

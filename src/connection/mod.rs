@@ -10,9 +10,8 @@ pub(crate) mod blocking;
 #[cfg(feature = "tokio")]
 pub(crate) mod asynchronous;
 
-/// Where a command must go in a Redis Cluster. Graph commands carry the graph name as their key,
-/// so they follow the default key-based routing; the few keyless commands below need an explicit
-/// choice (a single arbitrary primary, or every primary).
+/// Where a command must go in a Redis Cluster: a graph command to the primary owning the graph's
+/// slot, and the few keyless commands below to a single arbitrary primary or to every primary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClusterRoute {
     /// Route by the graph name, to the primary owning its slot.

@@ -379,9 +379,10 @@ cluster-up:
     # The nodes start in parallel and load the module before they answer, so wait for each.
     for p in 7001 7002 7003; do
         for i in $(seq 1 30); do
-            [ "$(docker exec {{cluster_container}} redis-cli -p $p ping 2>/dev/null)" = PONG ] && break
+            [ "$(docker exec {{cluster_container}} redis-cli -p $p ping 2>/dev/null)" = PONG ] && continue 2
             sleep 1
         done
+        echo "FalkorDB cluster node $p did not answer in time" >&2; exit 1
     done
     docker exec {{cluster_container}} redis-cli -p 7001 --cluster create \
         127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003 --cluster-yes >/dev/null

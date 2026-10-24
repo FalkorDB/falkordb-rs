@@ -1232,15 +1232,21 @@ pub(crate) mod test_utils {
         /// Far longer than every test that takes the lock needs in turn. A test that hangs holding
         /// it keeps renewing it, so the others fail after this instead of stalling with it.
         const ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+        /// Bound on each request about the lock, so a stalled server cannot hold up `acquire`
+        /// past its timeout (by more than one request) or the keeper past a renewal.
+        const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
         /// A plain connection to the server the test clients use, as `FalkorClientBuilder::new`
-        /// defaults to.
+        /// defaults to, with every request on it bounded by `REQUEST_TIMEOUT`.
         fn test_server() -> redis::RedisResult<redis::Connection> {
             let address = FalkorConnectionInfo::try_from(client::builder::DEFAULT_CONNECTION_URL)
                 .expect("the default connection info is valid")
                 .address();
-            redis::Client::open(format!("redis://{address}"))
-                .and_then(|client| client.get_connection())
+            let conn = redis::Client::open(format!("redis://{address}"))?
+                .get_connection_with_timeout(Self::REQUEST_TIMEOUT)?;
+            conn.set_read_timeout(Some(Self::REQUEST_TIMEOUT))?;
+            conn.set_write_timeout(Some(Self::REQUEST_TIMEOUT))?;
+            Ok(conn)
         }
 
         pub(crate) fn acquire() -> Self {

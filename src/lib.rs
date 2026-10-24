@@ -1278,8 +1278,10 @@ pub(crate) mod test_utils {
                         "redis.call('pexpire', KEYS[1], ARGV[2])",
                     ) == Some(false);
                 }
-                let released =
-                    Self::if_held(&mut conn, &keeper_token, "redis.call('del', KEYS[1])");
+                // A release the server did not answer is retried once on a fresh connection.
+                let release = "redis.call('del', KEYS[1])";
+                let released = Self::if_held(&mut conn, &keeper_token, release)
+                    .or_else(|| Self::if_held(&mut conn, &keeper_token, release));
                 !lost && released != Some(false)
             });
             Self {

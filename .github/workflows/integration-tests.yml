@@ -103,7 +103,7 @@ jobs:
           done
           redis-cli -h 127.0.0.1 -p 6379 ping
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -176,7 +176,7 @@ jobs:
           done
           redis-cli -h 127.0.0.1 -p 6379 ping
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
           # prevents the crates.io refetch that flaked, with no stale-artifact risk.
@@ -215,7 +215,7 @@ jobs:
         with:
           tool: just,nextest
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: "false"
           cache-bin: "false"

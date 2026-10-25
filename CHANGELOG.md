@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection drops, or on the sync client when the reply misses the response timeout, as the crate
   docs now explain ([#402](https://github.com/FalkorDB/falkordb-rs/pull/402))
 
+### Changed
+
+- Require Rust 1.95 or newer, which the `parking_lot` 0.13 dependency needs, and declare it as the
+  crate's `rust-version`, so Cargo's MSRV-aware resolver (the default for edition 2024 projects)
+  keeps projects on an older compiler on an earlier release
+  ([#410](https://github.com/FalkorDB/falkordb-rs/pull/410))
+
 ### Fixed
 
 - Report a server's error reply as an error for every command. redis-rs hands error replies back
@@ -74,6 +81,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holding the `GraphSchema` write lock. `FalkorAsyncClient` and `AsyncGraph` now work on the
   Tokio `current_thread` runtime as well as the multi-thread scheduler
   ([#394](https://github.com/FalkorDB/falkordb-rs/pull/394))
+
+### Other
+
+- Bump the `parking_lot` crate (0.12.5 → 0.13.0, bringing `lock_api` 0.5.0, `parking_lot_core`
+  0.10.0, `redox_syscall` 0.9.5 and `smallvec` 1.16.4), the `tokio` crate (1.53.3 → 1.54.1), the
+  `libc` crate (0.2.190 → 0.2.191), the `github/codeql-action` (`init` and `analyze`) GitHub
+  Action (4.39.0 → 4.39.1, pinned SHA `6f2ac81` → `9b32540`), the `MarcoIeni/release-plz-action`
+  GitHub Action (0.5.142 → 0.5.144, pinned SHA `8921286` → `8b5bf23`) and the
+  `Swatinem/rust-cache` GitHub Action (2.9.2 → 2.9.3, pinned SHA `6323deb` → `d1527c8`),
+  combining the Dependabot updates from [#403](https://github.com/FalkorDB/falkordb-rs/pull/403)
+  through [#409](https://github.com/FalkorDB/falkordb-rs/pull/409) into one change
+  ([#410](https://github.com/FalkorDB/falkordb-rs/pull/410))
 
 ## [0.10.5](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.4...v0.10.5) - 2026-10-19
 

@@ -124,7 +124,12 @@ pub(crate) fn parse_config_hashmap(
 ) -> FalkorResult<HashMap<String, ConfigValue>> {
     let config = redis_value_as_vec(value)?;
 
-    if config.len() == 2 {
+    // A single option comes back as its `[name, value]` pair, and `*` as an array of such pairs.
+    // Two options are two elements as well, so tell the pair apart by its first element.
+    let single_option = config
+        .first()
+        .is_some_and(|first| !matches!(first, redis::Value::Array(_)));
+    if single_option {
         let [key, val]: [redis::Value; 2] = config.try_into().map_err(|_| {
             FalkorDBError::ParsingArrayToStructElementCount(
                 "Expected exactly 2 elements for configuration option",
@@ -394,6 +399,44 @@ mod tests {
         .unwrap();
         assert_eq!(config.len(), 3);
         assert_eq!(config["K1"], ConfigValue::Int64(1));
+    }
+
+    #[test]
+    fn test_parse_config_hashmap_reply_shapes() {
+        let option = |key: &str, value: i64| {
+            redis::Value::Array(vec![
+                redis::Value::SimpleString(key.to_string()),
+                redis::Value::Int(value),
+            ])
+        };
+
+        // Two options are two elements too, which used to be read as a single `[name, value]`
+        // pair and fail on the first option not being a name.
+        let config = parse_config_hashmap(redis::Value::Array(vec![
+            option("RESULTSET_SIZE", 1000),
+            option("TIMEOUT", 0),
+        ]))
+        .unwrap();
+        assert_eq!(config.len(), 2);
+        assert_eq!(config["RESULTSET_SIZE"], ConfigValue::Int64(1000));
+        assert_eq!(config["TIMEOUT"], ConfigValue::Int64(0));
+
+        // A single option, as the server answers a name.
+        let config = parse_config_hashmap(option("TIMEOUT", 0)).unwrap();
+        assert_eq!(
+            config,
+            HashMap::from([("TIMEOUT".to_string(), ConfigValue::Int64(0))])
+        );
+
+        // One option, and none, in the array form `*` is answered with.
+        let config = parse_config_hashmap(redis::Value::Array(vec![option("TIMEOUT", 0)])).unwrap();
+        assert_eq!(
+            config,
+            HashMap::from([("TIMEOUT".to_string(), ConfigValue::Int64(0))])
+        );
+        assert!(parse_config_hashmap(redis::Value::Array(vec![]))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

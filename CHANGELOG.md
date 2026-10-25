@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Read a `config_get` reply that holds exactly two options as two options. A single option comes
+  back as a `[name, value]` pair and several as an array of pairs, and the parser told them apart
+  by length, so two options looked like one pair and failed with `ParsingString`
+  ([#413](https://github.com/FalkorDB/falkordb-rs/pull/413))
 - Keep literals out of the `db.query.fingerprint` span field. Redaction now reads the query in one
   pass that keeps quoted identifiers whole. A quote inside an identifier or a comment, as in the
   label `` `it's` ``, opened a string that ran to the next quote, so the literal after it was hashed

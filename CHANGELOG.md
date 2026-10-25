@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (behavior):** a procedure call accepts only a procedure name made of Cypher
+  identifiers joined by dots, such as `db.labels`, and `with_yields` only Cypher identifiers.
+  Anything else, including a `YIELD x AS y` alias, a quoted procedure name or a clause added after
+  either, now fails with the new `FalkorDBError::InvalidIdentifier` when `execute()` is called,
+  before anything is sent ([#414](https://github.com/FalkorDB/falkordb-rs/pull/414))
 - **Breaking:** `ExecutionPlan` and `Operation` are now `Send` and `Sync`, so a plan from
   `AsyncGraph::explain` or `AsyncGraph::profile` can be held across an `.await` or moved into
   `tokio::spawn`. They share operations through `Arc` instead of `Rc`: `Operation::children`,
@@ -44,14 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `create_index`, `drop_index` and the helpers built on them wrote label, relationship type and
   property names into the query as given, so a name with a space, such as `first name`, was a
   syntax error, and a crafted label could point the index at another label. Such names are now
-  quoted (`` `first name` ``), and only a name that can't be quoted is rejected: an empty one, or
-  one containing a `` ` `` or a NUL byte. Procedure calls wrote the procedure and `YIELD` column
-  names as given too, so either could add clauses to the call, even one deleting every node. A
-  procedure name must now be Cypher identifiers joined by dots, and a `YIELD` column a Cypher
-  identifier, which rules out an `x AS y` alias. A rejected name fails with the new
-  `FalkorDBError::InvalidIdentifier` before anything is sent, and an index with no properties with
-  the new `FalkorDBError::EmptyIndexProperties`. The range index `DROP INDEX` query also loses its
-  doubled space and lowercase `for` ([#414](https://github.com/FalkorDB/falkordb-rs/pull/414))
+  quoted (`` `first name` ``), and only a name that can't be quoted fails, with the new
+  `FalkorDBError::InvalidIdentifier` and before anything is sent: an empty one, or one containing
+  a `` ` `` or a NUL byte. An index with no properties fails with the new
+  `FalkorDBError::EmptyIndexProperties`. Procedure calls wrote the procedure and `YIELD` column
+  names as given too, so either could add clauses to the call, even one deleting every node; both
+  are now checked, as the Changed section describes. The range index `DROP INDEX` query also loses
+  its doubled space and lowercase `for` ([#414](https://github.com/FalkorDB/falkordb-rs/pull/414))
 - Read a `config_get` reply that holds exactly two options as two options. A single option comes
   back as a `[name, value]` pair and several as an array of pairs, and the parser told them apart
   by length, so two options looked like one pair and failed with `ParsingString`

@@ -973,6 +973,28 @@ mod tests {
     }
 
     #[test]
+    fn test_explain_keeps_every_operation() {
+        let mut graph = imdb_test_client().select_graph("imdb");
+
+        // Both scans belong under the Cartesian Product. The second used to be dropped, or nested
+        // under the first because the four spaces in its label counted as indentation.
+        let execution_plan = graph
+            .explain("MATCH (a:actor), (n:`a    b`) RETURN a, n")
+            .execute()
+            .expect("Could not create execution plan");
+
+        let product = &execution_plan.operations()["Cartesian Product"][0];
+        let mut labels = Vec::new();
+        for scan in &product.children {
+            assert_eq!(scan.name, "Node By Label Scan");
+            assert!(scan.children.is_empty());
+            labels.extend(scan.args.iter().flatten().map(|arg| arg.trim()));
+        }
+        labels.sort_unstable();
+        assert_eq!(labels, ["(a:actor)", "(n:a    b)"]);
+    }
+
+    #[test]
     fn test_profile() {
         let mut graph = open_empty_test_graph("test_profile");
 

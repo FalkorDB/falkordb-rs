@@ -1434,6 +1434,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_explain_keeps_every_operation() {
+        let mut graph = imdb_async_test_client().await.select_graph("imdb");
+
+        // As in the sync test, both scans belong under the Cartesian Product.
+        let execution_plan = graph
+            .explain("MATCH (a:actor), (n:`a    b`) RETURN a, n")
+            .execute()
+            .await
+            .expect("Could not create execution plan");
+
+        // The plan is `Send`, so it can move to another task.
+        let mut labels = tokio::spawn(async move {
+            let product = &execution_plan.operations()["Cartesian Product"][0];
+            let mut labels = Vec::new();
+            for scan in &product.children {
+                assert_eq!(scan.name, "Node By Label Scan");
+                assert!(scan.children.is_empty());
+                labels.extend(scan.args.iter().flatten().map(|arg| arg.trim().to_string()));
+            }
+            labels
+        })
+        .await
+        .expect("the task completes");
+        labels.sort_unstable();
+        assert_eq!(labels, ["(a:actor)", "(n:a    b)"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_profile() {
         let mut graph = open_empty_async_test_graph("test_profile_async").await;
 

@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `ExecutionPlan` and `Operation` are now `Send` and `Sync`, so a plan from
+  `AsyncGraph::explain` or `AsyncGraph::profile` can be held across an `.await` or moved into
+  `tokio::spawn`. They share operations through `Arc` instead of `Rc`: `Operation::children`,
+  `ExecutionPlan::operations` and `ExecutionPlan::operation_tree` hold `Arc<Operation>` now, so
+  code that names `Rc<Operation>` must name `Arc<Operation>` instead
+  ([#411](https://github.com/FalkorDB/falkordb-rs/pull/411))
 - Require Rust 1.95 or newer, which the `parking_lot` 0.13 dependency needs, and declare it as the
   crate's `rust-version`, so Cargo's MSRV-aware resolver (the default for edition 2024 projects)
   keeps projects on an older compiler on an earlier release
@@ -34,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Read each execution plan step's depth from its leading indentation alone, and attach every
+  operation to its parent. Four spaces in a row inside an argument (a label written `` `a    b` ``,
+  say) counted as a level of indentation, so `explain` and `profile` failed with
+  `CorruptExecutionPlan` or nested the operation under the wrong parent, and every child after an
+  operation's first, such as the second scan of a Cartesian Product, was missing from
+  `operation_tree()` and `operations()`. A plan with an indented or a second root, or with
+  indentation that isn't a whole number of levels, is rejected as corrupt instead of being
+  misread. Execution times written as integers or with an exponent parse too, and the regular
+  expressions that read the statistics are compiled once instead of for every operation
+  ([#411](https://github.com/FalkorDB/falkordb-rs/pull/411))
 - Report a server's error reply as an error for every command. redis-rs hands error replies back
   as ordinary values and only query replies were checked for one, so `copy_graph`, `delete`,
   `config_set`, the UDF commands and every other command whose reply isn't a result set

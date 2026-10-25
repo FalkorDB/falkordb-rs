@@ -28,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Require Rust 1.95 or newer, which the `parking_lot` 0.13 dependency needs, and declare it as the
-  crate's `rust-version`, so Cargo's MSRV-aware resolver keeps projects on an older compiler on an
-  earlier release ([#410](https://github.com/FalkorDB/falkordb-rs/pull/410))
+  crate's `rust-version`, so Cargo's MSRV-aware resolver (the default for edition 2024 projects)
+  keeps projects on an older compiler on an earlier release
+  ([#410](https://github.com/FalkorDB/falkordb-rs/pull/410))
 
 ### Fixed
 

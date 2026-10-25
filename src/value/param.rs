@@ -155,34 +155,39 @@ pub(crate) fn is_bare_identifier(key: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Encode a map key. Cypher map keys must be identifiers; non-identifier keys are backtick-quoted.
-/// Keys containing a backtick can't be encoded (verified: the server rejects the doubled-backtick
-/// escape in a parameter value), and empty keys are invalid.
+/// Encode a Cypher name: a map key, label, relationship type or property. An identifier is written
+/// as it is and any other name in backticks, inside which FalkorDB reads every character literally,
+/// backslashes and quotes included. A name containing a backtick can't be encoded (verified: the
+/// server rejects the doubled-backtick escape), and an empty name or a NUL byte is invalid, so those
+/// fail with the reason.
+pub(crate) fn encode_name(
+    name: &str,
+    out: &mut String,
+) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("is empty");
+    }
+    if name.contains('`') {
+        return Err("contains a backtick, which FalkorDB cannot encode");
+    }
+    if name.contains('\0') {
+        return Err("contains a NUL byte, which FalkorDB cannot encode");
+    }
+    if is_bare_identifier(name) {
+        out.push_str(name);
+    } else {
+        out.push('`');
+        out.push_str(name);
+        out.push('`');
+    }
+    Ok(())
+}
+
 fn encode_map_key(
     key: &str,
     out: &mut String,
 ) -> FalkorResult<()> {
-    if key.is_empty() {
-        return Err(param_err("map parameter has an empty key"));
-    }
-    if key.contains('`') {
-        return Err(param_err(
-            "map parameter key contains a backtick, which FalkorDB cannot encode",
-        ));
-    }
-    if key.contains('\0') {
-        return Err(param_err(
-            "map parameter key contains a NUL byte, which FalkorDB cannot encode",
-        ));
-    }
-    if is_bare_identifier(key) {
-        out.push_str(key);
-    } else {
-        out.push('`');
-        out.push_str(key);
-        out.push('`');
-    }
-    Ok(())
+    encode_name(key, out).map_err(|reason| param_err(format!("map parameter key {reason}")))
 }
 
 fn encode_list<T: IntoFalkorParam>(

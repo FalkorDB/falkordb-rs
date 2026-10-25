@@ -177,6 +177,23 @@ pub enum FalkorDBError {
         /// A human-readable description of why the key is invalid.
         message: String,
     },
+    /// A name could not be written into a generated index or procedure query. Labels, relationship
+    /// types and properties are backtick-quoted when they aren't Cypher identifiers, so only an
+    /// empty name or one containing a backtick or a NUL byte is rejected. Procedure names must be
+    /// Cypher identifiers joined by dots, and `YIELD` columns must be Cypher identifiers.
+    #[error("invalid {kind} name '{name}': {message}")]
+    InvalidIdentifier {
+        /// What the name is for: `"label"`, `"relationship type"`, `"property"`, `"procedure"` or
+        /// `"yield column"`.
+        kind: &'static str,
+        /// The offending name.
+        name: String,
+        /// Why the name was rejected.
+        message: &'static str,
+    },
+    /// An index was created or dropped without naming any property.
+    #[error("an index needs at least one property")]
+    EmptyIndexProperties,
     /// A result row did not contain a column with the requested name.
     #[error("result row has no column named '{name}'")]
     MissingColumn {

@@ -35,6 +35,63 @@ pub enum VectorSimilarity {
     Cosine,
 }
 
+/// The keyword, with its trailing space, that an index query names the index type with.
+fn index_type_keyword(index_type: IndexType) -> &'static str {
+    match index_type {
+        IndexType::Range => "",
+        IndexType::Vector => "VECTOR ",
+        IndexType::Fulltext => "FULLTEXT ",
+    }
+}
+
+/// Writes a label, relationship type or property name for an index query, in backticks unless it
+/// is a Cypher identifier, so that a name such as `first name` neither breaks the query nor changes
+/// what it does.
+fn index_name(
+    kind: &'static str,
+    name: &str,
+) -> FalkorResult<String> {
+    let mut out = String::new();
+    crate::value::param::encode_name(name, &mut out).map_err(|message| {
+        FalkorDBError::InvalidIdentifier {
+            kind,
+            name: name.to_string(),
+            message,
+        }
+    })?;
+    Ok(out)
+}
+
+/// The `FOR <pattern> ON (<properties>)` part of an index query, binding the entity to `alias`.
+fn index_target<P: Display>(
+    entity_type: EntityType,
+    label: &str,
+    properties: &[P],
+    alias: char,
+) -> FalkorResult<String> {
+    if properties.is_empty() {
+        return Err(FalkorDBError::EmptyIndexProperties);
+    }
+
+    let pattern = match entity_type {
+        EntityType::Node => format!("({alias}:{})", index_name("label", label)?),
+        EntityType::Edge => format!(
+            "()-[{alias}:{}]->()",
+            index_name("relationship type", label)?
+        ),
+    };
+
+    let properties = properties
+        .iter()
+        .map(|property| {
+            index_name("property", &property.to_string()).map(|name| format!("{alias}.{name}"))
+        })
+        .collect::<FalkorResult<Vec<_>>>()?
+        .join(", ");
+
+    Ok(format!("FOR {pattern} ON ({properties})"))
+}
+
 pub(crate) fn generate_create_index_query<P: Display>(
     index_field_type: IndexType,
     entity_type: EntityType,
@@ -42,22 +99,7 @@ pub(crate) fn generate_create_index_query<P: Display>(
     properties: &[P],
     options: Option<&HashMap<String, String>>,
 ) -> FalkorResult<String> {
-    let properties_string = properties
-        .iter()
-        .map(|element| format!("l.{}", element))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let pattern = match entity_type {
-        EntityType::Node => format!("(l:{})", label),
-        EntityType::Edge => format!("()-[l:{}]->()", label),
-    };
-
-    let idx_type = match index_field_type {
-        IndexType::Range => "",
-        IndexType::Vector => "VECTOR ",
-        IndexType::Fulltext => "FULLTEXT ",
-    };
+    let target = index_target(entity_type, label, properties, 'l')?;
 
     let options_string = match options {
         Some(hashmap) => {
@@ -84,8 +126,8 @@ pub(crate) fn generate_create_index_query<P: Display>(
     };
 
     Ok(format!(
-        "CREATE {idx_type}INDEX FOR {pattern} ON ({}){}",
-        properties_string, options_string
+        "CREATE {}INDEX {target}{options_string}",
+        index_type_keyword(index_field_type)
     ))
 }
 
@@ -126,29 +168,12 @@ pub(crate) fn generate_drop_index_query<P: Display>(
     entity_type: EntityType,
     label: &str,
     properties: &[P],
-) -> String {
-    let properties_string = properties
-        .iter()
-        .map(|element| format!("e.{}", element))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let pattern = match entity_type {
-        EntityType::Node => format!("(e:{})", label),
-        EntityType::Edge => format!("()-[e:{}]->()", label),
-    };
-
-    let idx_type = match index_field_type {
-        IndexType::Range => "",
-        IndexType::Vector => "VECTOR",
-        IndexType::Fulltext => "FULLTEXT",
-    }
-    .to_string();
-
-    format!(
-        "DROP {idx_type} INDEX for {pattern} ON ({})",
-        properties_string
-    )
+) -> FalkorResult<String> {
+    Ok(format!(
+        "DROP {}INDEX {}",
+        index_type_keyword(index_field_type),
+        index_target(entity_type, label, properties, 'e')?
+    ))
 }
 
 #[cfg(test)]
@@ -332,56 +357,165 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_drop_index_query_range_node() {
-        let query =
-            generate_drop_index_query(IndexType::Range, EntityType::Node, "Person", &["name"]);
-        assert!(query.contains("DROP"));
-        assert!(query.contains("INDEX"));
-        assert!(query.contains("(e:Person)"));
-        assert!(query.contains("e.name"));
+    fn test_generate_drop_index_query_formatting() {
+        // One space after `DROP` and an uppercase `FOR`, for every index type and entity.
+        let drop = |index_type, entity_type, label, properties: &[&str]| {
+            generate_drop_index_query(index_type, entity_type, label, properties).unwrap()
+        };
+        assert_eq!(
+            drop(IndexType::Range, EntityType::Node, "Person", &["name"]),
+            "DROP INDEX FOR (e:Person) ON (e.name)"
+        );
+        assert_eq!(
+            drop(IndexType::Range, EntityType::Edge, "KNOWS", &["since"]),
+            "DROP INDEX FOR ()-[e:KNOWS]->() ON (e.since)"
+        );
+        assert_eq!(
+            drop(IndexType::Vector, EntityType::Node, "Item", &["embedding"]),
+            "DROP VECTOR INDEX FOR (e:Item) ON (e.embedding)"
+        );
+        assert_eq!(
+            drop(
+                IndexType::Fulltext,
+                EntityType::Node,
+                "Document",
+                &["content"]
+            ),
+            "DROP FULLTEXT INDEX FOR (e:Document) ON (e.content)"
+        );
+        assert_eq!(
+            drop(
+                IndexType::Range,
+                EntityType::Node,
+                "Person",
+                &["firstName", "lastName"]
+            ),
+            "DROP INDEX FOR (e:Person) ON (e.firstName, e.lastName)"
+        );
     }
 
     #[test]
-    fn test_generate_drop_index_query_range_edge() {
-        let query =
-            generate_drop_index_query(IndexType::Range, EntityType::Edge, "KNOWS", &["since"]);
-        assert!(query.contains("DROP"));
-        assert!(query.contains("INDEX"));
-        assert!(query.contains("()-[e:KNOWS]->()"));
-        assert!(query.contains("e.since"));
-    }
-
-    #[test]
-    fn test_generate_drop_index_query_vector() {
-        let query =
-            generate_drop_index_query(IndexType::Vector, EntityType::Node, "Item", &["embedding"]);
-        assert!(query.contains("DROP VECTOR INDEX"));
-        assert!(query.contains("(e:Item)"));
-        assert!(query.contains("e.embedding"));
-    }
-
-    #[test]
-    fn test_generate_drop_index_query_fulltext() {
+    fn test_index_queries_quote_names_that_are_not_identifiers() {
+        let query = generate_create_index_query(
+            IndexType::Range,
+            EntityType::Node,
+            "Person Of Interest",
+            &["first name", "age"],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            query,
+            "CREATE INDEX FOR (l:`Person Of Interest`) ON (l.`first name`, l.age)"
+        );
         let query = generate_drop_index_query(
             IndexType::Fulltext,
-            EntityType::Node,
-            "Document",
-            &["content"],
+            EntityType::Edge,
+            "WORKS WITH",
+            &["start date"],
+        )
+        .unwrap();
+        assert_eq!(
+            query,
+            "DROP FULLTEXT INDEX FOR ()-[e:`WORKS WITH`]->() ON (e.`start date`)"
         );
-        assert!(query.contains("DROP FULLTEXT INDEX"));
-        assert!(query.contains("(e:Document)"));
-        assert!(query.contains("e.content"));
-    }
 
-    #[test]
-    fn test_generate_drop_index_query_multiple_properties() {
+        // The issue's payloads stay inside the names instead of adding to the query.
+        let query = generate_create_index_query(
+            IndexType::Range,
+            EntityType::Node,
+            "Person) RETURN 1 //",
+            &["name) RETURN 1 //"],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            query,
+            "CREATE INDEX FOR (l:`Person) RETURN 1 //`) ON (l.`name) RETURN 1 //`)"
+        );
+
+        // FalkorDB reads backslashes and quotes literally inside backticks, and accepts keywords as
+        // bare names.
         let query = generate_drop_index_query(
             IndexType::Range,
             EntityType::Node,
-            "Person",
-            &["firstName", "lastName"],
+            "back\\",
+            &["it's", "MATCH"],
+        )
+        .unwrap();
+        assert_eq!(query, "DROP INDEX FOR (e:`back\\`) ON (e.`it's`, e.MATCH)");
+    }
+
+    #[test]
+    fn test_index_queries_reject_names_that_cannot_be_quoted() {
+        let generators: [fn(EntityType, &str, &str) -> FalkorDBError; 2] = [
+            |entity_type, label, property| {
+                generate_create_index_query(IndexType::Range, entity_type, label, &[property], None)
+                    .unwrap_err()
+            },
+            |entity_type, label, property| {
+                generate_drop_index_query(IndexType::Range, entity_type, label, &[property])
+                    .unwrap_err()
+            },
+        ];
+        let backtick = "contains a backtick, which FalkorDB cannot encode";
+        let nul = "contains a NUL byte, which FalkorDB cannot encode";
+        let cases = [
+            (EntityType::Node, "a`b", "name", "label", "a`b", backtick),
+            (
+                EntityType::Edge,
+                "a`b",
+                "name",
+                "relationship type",
+                "a`b",
+                backtick,
+            ),
+            (EntityType::Node, "", "name", "label", "", "is empty"),
+            (
+                EntityType::Node,
+                "Person",
+                "x` RETURN 1 //",
+                "property",
+                "x` RETURN 1 //",
+                backtick,
+            ),
+            (EntityType::Node, "Person", "a\0b", "property", "a\0b", nul),
+            (EntityType::Edge, "KNOWS", "", "property", "", "is empty"),
+        ];
+        for generate in generators {
+            for (entity_type, label, property, kind, name, message) in cases {
+                assert_eq!(
+                    generate(entity_type, label, property),
+                    FalkorDBError::InvalidIdentifier {
+                        kind,
+                        name: name.to_string(),
+                        message,
+                    }
+                );
+            }
+        }
+        assert_eq!(
+            generators[0](EntityType::Node, "a`b", "name").to_string(),
+            "invalid label name 'a`b': contains a backtick, which FalkorDB cannot encode"
         );
-        assert!(query.contains("e.firstName"));
-        assert!(query.contains("e.lastName"));
+    }
+
+    #[test]
+    fn test_index_queries_reject_empty_properties() {
+        let no_properties: &[&str] = &[];
+        assert_eq!(
+            generate_create_index_query(
+                IndexType::Range,
+                EntityType::Node,
+                "Person",
+                no_properties,
+                None
+            ),
+            Err(FalkorDBError::EmptyIndexProperties)
+        );
+        assert_eq!(
+            generate_drop_index_query(IndexType::Vector, EntityType::Edge, "KNOWS", no_properties),
+            Err(FalkorDBError::EmptyIndexProperties)
+        );
     }
 }

@@ -19,31 +19,47 @@ use std::sync::OnceLock;
 
 /// Compute a privacy-safe, stable fingerprint of a Cypher query.
 ///
-/// Literals (quoted strings, numbers, `true`/`false`/`null`) are redacted to `?` before hashing, so
-/// the fingerprint depends only on the query *shape* — two calls that differ only in their literal
-/// or parameter values share a fingerprint, and no sensitive value enters the hash. Redaction is
-/// best-effort (a regex, not a full Cypher parser). The value is an FNV-1a hash rendered as 16 hex
-/// digits; it is **not** guaranteed stable across crate versions (group within a deployment).
+/// Literals (quoted strings, numbers, `true`/`false`/`null`) are redacted to `?` and comments
+/// dropped before hashing, so the fingerprint depends only on the query *shape* — two calls that
+/// differ only in their literal or parameter values share a fingerprint, and no sensitive value
+/// enters the hash. Redaction is best-effort (a regex, not a full Cypher parser). The value is an
+/// FNV-1a hash rendered as 16 hex digits; it is **not** guaranteed stable across crate versions
+/// (group within a deployment).
 #[cfg(feature = "tracing")]
 pub(crate) fn query_fingerprint(query: &str) -> String {
     let normalized = redact_literals(query);
     format!("{:016x}", fnv1a_64(normalized.as_bytes()))
 }
 
-/// Replace string / numeric / boolean / null literals with `?`. Identifiers, labels, property
-/// names, keywords and structure are preserved, so the redacted text captures the query shape.
+/// Replace string / numeric / boolean / null literals with `?` and drop comments. Identifiers,
+/// labels, property names, keywords and structure are preserved, so the redacted text captures the
+/// query shape.
 #[cfg(feature = "tracing")]
 fn redact_literals(query: &str) -> String {
     static LITERAL: OnceLock<regex::Regex> = OnceLock::new();
     let re = LITERAL.get_or_init(|| {
-        // Order matters: match whole quoted strings first so literals inside them are not matched
-        // again, then numbers, then the boolean/null keywords (word-bounded, case-insensitive).
-        regex::Regex::new(
-            r#"'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\b\d+(?:\.\d+)?\b|(?i)\b(?:true|false|null)\b"#,
-        )
+        // One left-to-right pass, so a quote or digit inside a backticked identifier, a comment or
+        // a string is never read as the start of another token. In order: backticked identifiers
+        // (a doubled backtick escapes one), line and block comments, quoted strings, numbers (hex,
+        // octal, then decimal with an optional exponent) and the boolean/null keywords.
+        regex::Regex::new(concat!(
+            r"`(?:[^`]|``)*`",
+            r"|//[^\n]*|/\*(?s:.)*?\*/",
+            r#"|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*""#,
+            r"|\b(?:0[xX][0-9a-fA-F]+|0[oO][0-7]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b",
+            r"|(?i:\b(?:true|false|null)\b)",
+        ))
         .expect("the literal-redaction regex is a valid, fixed pattern")
     });
-    re.replace_all(query, "?").into_owned()
+    re.replace_all(query, |token: &regex::Captures<'_>| {
+        match token[0].as_bytes()[0] {
+            // A backticked identifier is part of the shape; a comment is not.
+            b'`' => token[0].to_owned(),
+            b'/' => " ".to_owned(),
+            _ => "?".to_owned(),
+        }
+    })
+    .into_owned()
 }
 
 /// FNV-1a 64-bit hash. Deterministic and dependency-free; adequate for a grouping fingerprint.
@@ -370,6 +386,67 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn redaction_keeps_backticked_identifiers_whole() {
+        // Identifiers that look like literals stay, as part of the shape.
+        assert_eq!(
+            redact_literals("MATCH (n:`true` {`123`: 'secret', `it's`: 42}) RETURN n"),
+            "MATCH (n:`true` {`123`: ?, `it's`: ?}) RETURN n",
+        );
+        // The quote in the label used to open a string that ran to the next quote, which left the
+        // password itself outside any string and in the fingerprint.
+        assert_eq!(
+            redact_literals("MATCH (n:`it's_a_label`) WHERE n.secret = 'my_password' RETURN n"),
+            "MATCH (n:`it's_a_label`) WHERE n.secret = ? RETURN n",
+        );
+        // openCypher escapes a backtick inside an identifier by doubling it.
+        assert_eq!(
+            redact_literals("MATCH (n:`a``'b`) RETURN 'x'"),
+            "MATCH (n:`a``'b`) RETURN ?",
+        );
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn redaction_covers_every_number_form() {
+        assert_eq!(
+            redact_literals("RETURN 1e-5, 2.5E+10, 0x1a, 0X1A, 0o17, 017, .5, -42"),
+            "RETURN ?, ?, ?, ?, ?, ?, .?, -?",
+        );
+        // A range keeps its shape.
+        assert_eq!(
+            redact_literals("MATCH (a)-[*1..3]->(b) RETURN b"),
+            "MATCH (a)-[*?..?]->(b) RETURN b",
+        );
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn redaction_drops_comments() {
+        // A quote in a comment used to open a string that swallowed the query up to the literal.
+        assert_eq!(
+            redact_literals(
+                "// comment with 'unclosed quote\nMATCH (n {secret: ' Hunter2 '}) RETURN n"
+            ),
+            " \nMATCH (n {secret: ?}) RETURN n",
+        );
+        assert_eq!(
+            redact_literals("MATCH (n)/* don't */WHERE n.pin = 1234 RETURN n"),
+            "MATCH (n) WHERE n.pin = ? RETURN n",
+        );
+        // A comment's text doesn't change the fingerprint.
+        assert_eq!(
+            query_fingerprint("MATCH (n) RETURN n /* request 1 */"),
+            query_fingerprint("MATCH (n) RETURN n /* request 2 */"),
+        );
+        // Two slashes in a string are part of the string.
+        assert_eq!(
+            redact_literals("RETURN 'http://example.com', 1"),
+            "RETURN ?, ?"
+        );
+    }
+
     #[test]
     fn error_kind_is_bounded_and_payload_free() {
         // A String-carrying variant must map to a fixed label, never echoing the payload.
@@ -570,6 +647,29 @@ mod span_capture_tests {
         assert_eq!(
             fields.get("error").map(String::as_str),
             Some(error.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn records_one_fingerprint_for_queries_that_differ_only_in_a_literal() {
+        let fingerprint = |query| {
+            let fields = capture(|| {
+                let span = tracing::trace_span!(
+                    "test",
+                    db.falkordb.strategy = tracing::field::Empty,
+                    db.falkordb.read_only = tracing::field::Empty,
+                    db.query.fingerprint = tracing::field::Empty,
+                );
+                let _enter = span.enter();
+                super::record_request("pooled", true, query, false);
+            });
+            fields["db.query.fingerprint"].clone()
+        };
+        // The quote in the label used to swallow the query up to the password, which then went
+        // into the hash as written, so each password got a fingerprint of its own.
+        assert_eq!(
+            fingerprint("MATCH (n:`it's`) WHERE n.password = 'hunter2' RETURN n"),
+            fingerprint("MATCH (n:`it's`) WHERE n.password = 'letmein' RETURN n"),
         );
     }
 

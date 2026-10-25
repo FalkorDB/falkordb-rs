@@ -41,12 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Keep literals out of the `db.query.fingerprint` span field. Redaction now reads the query in one
-  pass that keeps quoted identifiers whole and drops comments. A quote inside an identifier or a
-  comment, as in the label `` `it's` ``, opened a string that ran to the next quote, so the literal
-  after it was hashed as written; identifiers that look like literals (`` `true` ``, `` `123` ``)
-  were redacted; and hex and octal numbers, and the exponent of numbers such as `1e-5`, went into
-  the hash too. Comments no longer change the fingerprint
-  ([#412](https://github.com/FalkorDB/falkordb-rs/pull/412))
+  pass that keeps quoted identifiers whole. A quote inside an identifier or a comment, as in the
+  label `` `it's` ``, opened a string that ran to the next quote, so the literal after it was hashed
+  as written; identifiers that look like literals (`` `true` ``, `` `123` ``) were redacted; and hex
+  and octal numbers, and the exponent of numbers such as `1e-5`, went into the hash too. Comments
+  and runs of whitespace now count as a single space, so tagging a query with a comment doesn't
+  change its fingerprint ([#412](https://github.com/FalkorDB/falkordb-rs/pull/412))
 - Read each execution plan step's depth from its leading indentation alone, and attach every
   operation to its parent. Four spaces in a row inside an argument (a label written `` `a    b` ``,
   say) counted as a level of indentation, so `explain` and `profile` failed with

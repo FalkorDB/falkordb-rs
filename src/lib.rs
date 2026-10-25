@@ -822,9 +822,10 @@
 //!
 //! **Privacy by default.** The raw query text and parameter values are **never** recorded by default —
 //! only the `db.query.fingerprint`, which is a hash of the query with all literals (strings, numbers,
-//! `true`/`false`/`null`) redacted and comments dropped, so two queries that differ only in their
-//! values or comments share a fingerprint and no value ever enters a span. If you need the raw Cypher for debugging in a trusted environment,
-//! opt in explicitly:
+//! `true`/`false`/`null`) redacted, so two queries that differ only in their values share a fingerprint
+//! and no value ever enters a span. Comments and runs of whitespace count as a single space, so
+//! tagging a query with a comment doesn't change its fingerprint. If you need the raw Cypher for
+//! debugging in a trusted environment, opt in explicitly:
 //!
 //! ```no_run
 //! use falkordb::FalkorClientBuilder;

@@ -19,47 +19,58 @@ use std::sync::OnceLock;
 
 /// Compute a privacy-safe, stable fingerprint of a Cypher query.
 ///
-/// Literals (quoted strings, numbers, `true`/`false`/`null`) are redacted to `?` and comments
-/// dropped before hashing, so the fingerprint depends only on the query *shape* — two calls that
-/// differ only in their literal or parameter values share a fingerprint, and no sensitive value
-/// enters the hash. Redaction is best-effort (a regex, not a full Cypher parser). The value is an
-/// FNV-1a hash rendered as 16 hex digits; it is **not** guaranteed stable across crate versions
-/// (group within a deployment).
+/// Literals (quoted strings, numbers, `true`/`false`/`null`) are redacted to `?` before hashing,
+/// and comments and whitespace between tokens collapse to one space, so the fingerprint depends only
+/// on the query *shape* — two calls that differ only in their literal or parameter values share a
+/// fingerprint, and no sensitive value enters the hash. Redaction is best-effort (a regex, not a
+/// full Cypher parser). The value is an FNV-1a hash rendered as 16 hex digits; it is **not**
+/// guaranteed stable across crate versions (group within a deployment).
 #[cfg(feature = "tracing")]
 pub(crate) fn query_fingerprint(query: &str) -> String {
     let normalized = redact_literals(query);
     format!("{:016x}", fnv1a_64(normalized.as_bytes()))
 }
 
-/// Replace string / numeric / boolean / null literals with `?` and drop comments. Identifiers,
-/// labels, property names, keywords and structure are preserved, so the redacted text captures the
-/// query shape.
+/// Replace string / numeric / boolean / null literals with `?`, and each run of whitespace and
+/// comments with one space. Identifiers, labels, property names, keywords and structure are
+/// preserved, so the redacted text captures the query shape.
 #[cfg(feature = "tracing")]
 fn redact_literals(query: &str) -> String {
     static LITERAL: OnceLock<regex::Regex> = OnceLock::new();
     let re = LITERAL.get_or_init(|| {
-        // One left-to-right pass, so a quote or digit inside a backticked identifier, a comment or
-        // a string is never read as the start of another token. In order: backticked identifiers
-        // (a doubled backtick escapes one), line and block comments, quoted strings, numbers (hex,
-        // octal, then decimal with an optional exponent) and the boolean/null keywords.
+        // One left-to-right pass, so a quote or digit inside an identifier, a comment or a string
+        // is never read as the start of another token.
         regex::Regex::new(concat!(
-            r"`(?:[^`]|``)*`",
-            r"|//[^\n]*|/\*(?s:.)*?\*/",
+            // Kept: backticked identifiers (a doubled backtick escapes one) and the range operator,
+            // which would otherwise read as a number starting with a dot.
+            r"(?P<keep>`(?:[^`]|``)*`|\.\.)",
+            // One space: a run of whitespace and line or block comments.
+            r"|(?P<space>(?:\s|//[^\n]*|/\*(?s:.)*?\*/)+)",
+            // `?`: quoted strings, numbers (hex, octal, then decimal with an optional exponent, its
+            // integer part optional) and the boolean/null keywords.
             r#"|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*""#,
             r"|\b(?:0[xX][0-9a-fA-F]+|0[oO][0-7]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b",
+            r"|\.\d+(?:[eE][+-]?\d+)?\b",
             r"|(?i:\b(?:true|false|null)\b)",
         ))
         .expect("the literal-redaction regex is a valid, fixed pattern")
     });
-    re.replace_all(query, |token: &regex::Captures<'_>| {
-        match token[0].as_bytes()[0] {
-            // A backticked identifier is part of the shape; a comment is not.
-            b'`' => token[0].to_owned(),
-            b'/' => " ".to_owned(),
-            _ => "?".to_owned(),
+    let mut redacted = String::with_capacity(query.len());
+    let mut copied = 0;
+    for token in re.captures_iter(query) {
+        let whole = token.get(0).expect("a match has a whole-match group");
+        redacted.push_str(&query[copied..whole.start()]);
+        copied = whole.end();
+        if token.name("keep").is_some() {
+            redacted.push_str(whole.as_str());
+        } else if token.name("space").is_some() {
+            redacted.push(' ');
+        } else {
+            redacted.push('?');
         }
-    })
-    .into_owned()
+    }
+    redacted.push_str(&query[copied..]);
+    redacted.trim().to_owned()
 }
 
 /// FNV-1a 64-bit hash. Deterministic and dependency-free; adequate for a grouping fingerprint.
@@ -411,39 +422,46 @@ mod tests {
     #[test]
     fn redaction_covers_every_number_form() {
         assert_eq!(
-            redact_literals("RETURN 1e-5, 2.5E+10, 0x1a, 0X1A, 0o17, 017, .5, -42"),
-            "RETURN ?, ?, ?, ?, ?, ?, .?, -?",
+            redact_literals("RETURN 1e-5, 2.5E+10, 0x1a, 0X1A, 0o17, 017, .5, .5e3, -42"),
+            "RETURN ?, ?, ?, ?, ?, ?, ?, ?, -?",
         );
-        // A range keeps its shape.
+        // Ranges keep their shape.
         assert_eq!(
-            redact_literals("MATCH (a)-[*1..3]->(b) RETURN b"),
-            "MATCH (a)-[*?..?]->(b) RETURN b",
+            redact_literals("MATCH (a)-[*1..3]->(b) RETURN [1, 2, 3][..2]"),
+            "MATCH (a)-[*?..?]->(b) RETURN [?, ?, ?][..?]",
         );
+        // The server reads `1.e5` as the property `e5` of `1`, not as a number.
+        assert_eq!(redact_literals("RETURN 1.e5"), "RETURN ?.e5");
     }
 
     #[cfg(feature = "tracing")]
     #[test]
-    fn redaction_drops_comments() {
+    fn redaction_collapses_comments_and_whitespace() {
         // A quote in a comment used to open a string that swallowed the query up to the literal.
         assert_eq!(
             redact_literals(
                 "// comment with 'unclosed quote\nMATCH (n {secret: ' Hunter2 '}) RETURN n"
             ),
-            " \nMATCH (n {secret: ?}) RETURN n",
+            "MATCH (n {secret: ?}) RETURN n",
         );
         assert_eq!(
-            redact_literals("MATCH (n)/* don't */WHERE n.pin = 1234 RETURN n"),
+            redact_literals("MATCH (n)/* don't */WHERE n.pin = 1234\n  RETURN n // done\n"),
             "MATCH (n) WHERE n.pin = ? RETURN n",
         );
-        // A comment's text doesn't change the fingerprint.
+        // Tagging a query with a comment doesn't change its fingerprint.
+        let untagged = query_fingerprint("MATCH (n) RETURN n");
         assert_eq!(
             query_fingerprint("MATCH (n) RETURN n /* request 1 */"),
-            query_fingerprint("MATCH (n) RETURN n /* request 2 */"),
+            untagged
         );
-        // Two slashes in a string are part of the string.
         assert_eq!(
-            redact_literals("RETURN 'http://example.com', 1"),
-            "RETURN ?, ?"
+            query_fingerprint("/* request 2 */\nMATCH (n)\nRETURN n"),
+            untagged
+        );
+        // Whitespace inside identifiers is part of the name, and slashes in a string part of it.
+        assert_eq!(
+            redact_literals("MATCH (n:`a  b`) RETURN 'http://example.com'"),
+            "MATCH (n:`a  b`) RETURN ?"
         );
     }
 

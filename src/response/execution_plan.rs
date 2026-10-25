@@ -10,10 +10,10 @@ use crate::{
 use regex::Regex;
 use std::{
     cell::RefCell,
-    cmp::Ordering,
     collections::{HashMap, VecDeque},
     ops::Not,
     rc::Rc,
+    sync::{Arc, LazyLock},
 };
 
 #[derive(Debug)]
@@ -35,6 +35,16 @@ impl IntermediateOperation {
         depth: usize,
         operation_string: &str,
     ) -> FalkorResult<IntermediateOperation> {
+        static RECORDS_PRODUCED: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"Records produced: (\d+)")
+                .expect("the records-produced regex is a valid, fixed pattern")
+        });
+        // The server prints the time with six decimals; accept integers and exponents as well.
+        static EXECUTION_TIME: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"Execution time: (\d+(?:\.\d+)?(?:[eE][+-]?\d+)?) ms")
+                .expect("the execution-time regex is a valid, fixed pattern")
+        });
+
         let mut args = operation_string.split('|').collect::<VecDeque<_>>();
         let name = args
             .pop_front()
@@ -43,18 +53,12 @@ impl IntermediateOperation {
 
         let (records_produced, execution_time) = match args.pop_back() {
             Some(last_arg) if last_arg.contains("Records produced") => (
-                Regex::new(r"Records produced: (\d+)")
-                    .map_err(|err| {
-                        FalkorDBError::ParsingError(format!("Error constructing regex: {err}"))
-                    })?
-                    .captures(last_arg.trim())
+                RECORDS_PRODUCED
+                    .captures(last_arg)
                     .and_then(|cap| cap.get(1))
                     .and_then(|m| m.as_str().parse().ok()),
-                Regex::new(r"Execution time: (\d+\.\d+) ms")
-                    .map_err(|err| {
-                        FalkorDBError::ParsingError(format!("Error constructing regex: {err}"))
-                    })?
-                    .captures(last_arg.trim())
+                EXECUTION_TIME
+                    .captures(last_arg)
                     .and_then(|cap| cap.get(1))
                     .and_then(|m| m.as_str().parse().ok()),
             ),
@@ -91,7 +95,7 @@ pub struct Operation {
     /// The time it took to execute this operation, if available
     pub execution_time: Option<f64>,
     /// all child operations performed on data retrieved, filtered or aggregated by this operation
-    pub children: Vec<Rc<Operation>>,
+    pub children: Vec<Arc<Operation>>,
     depth: usize,
 }
 
@@ -100,8 +104,8 @@ pub struct Operation {
 pub struct ExecutionPlan {
     string_representation: String,
     plan: Vec<String>,
-    operations: HashMap<String, Vec<Rc<Operation>>>,
-    operation_tree: Rc<Operation>,
+    operations: HashMap<String, Vec<Arc<Operation>>>,
+    operation_tree: Arc<Operation>,
 }
 
 impl ExecutionPlan {
@@ -111,12 +115,12 @@ impl ExecutionPlan {
     }
 
     /// Returns a slice of strings representing each step in the execution plan, which can be iterated.
-    pub fn operations(&self) -> &HashMap<String, Vec<Rc<Operation>>> {
+    pub fn operations(&self) -> &HashMap<String, Vec<Arc<Operation>>> {
         &self.operations
     }
 
     /// Returns a shared pointer to the operation tree, allowing easy immutable traversal
-    pub fn operation_tree(&self) -> &Rc<Operation> {
+    pub fn operation_tree(&self) -> &Arc<Operation> {
         &self.operation_tree
     }
 
@@ -127,35 +131,17 @@ impl ExecutionPlan {
 
     #[cfg_attr(
         feature = "tracing",
-        tracing::instrument(name = "Create Node", skip_all, level = "debug")
-    )]
-    fn create_node(
-        depth: usize,
-        operation_string: &str,
-        traversal_stack: &mut Vec<Rc<RefCell<IntermediateOperation>>>,
-    ) -> FalkorResult<()> {
-        let new_node = Rc::new(RefCell::new(IntermediateOperation::new(
-            depth,
-            operation_string,
-        )?));
-
-        traversal_stack.push(Rc::clone(&new_node));
-        Ok(())
-    }
-
-    #[cfg_attr(
-        feature = "tracing",
         tracing::instrument(name = "Finalize Operation", skip_all, level = "debug")
     )]
     fn finalize_operation(
         current_refcell: Rc<RefCell<IntermediateOperation>>
-    ) -> FalkorResult<Rc<Operation>> {
+    ) -> FalkorResult<Arc<Operation>> {
         let current_op = Rc::try_unwrap(current_refcell)
             .map_err(|_| FalkorDBError::RefCountBooBoo)?
             .into_inner();
 
         let children_count = current_op.children.len();
-        Ok(Rc::new(Operation {
+        Ok(Arc::new(Operation {
             name: current_op.name,
             args: current_op.args,
             records_produced: current_op.records_produced,
@@ -176,12 +162,12 @@ impl ExecutionPlan {
         tracing::instrument(name = "Parse Operation Tree To Map", skip_all, level = "trace")
     )]
     fn operations_map_from_tree(
-        current_branch: &Rc<Operation>,
-        map: &mut HashMap<String, Vec<Rc<Operation>>>,
+        current_branch: &Arc<Operation>,
+        map: &mut HashMap<String, Vec<Arc<Operation>>>,
     ) {
         map.entry(current_branch.name.clone())
             .or_default()
-            .push(Rc::clone(current_branch));
+            .push(Arc::clone(current_branch));
 
         for child in &current_branch.children {
             Self::operations_map_from_tree(child, map);
@@ -196,66 +182,46 @@ impl ExecutionPlan {
         let redis_value_vec = redis_value_as_vec(value)?;
 
         let mut string_representation = Vec::with_capacity(redis_value_vec.len() + 1);
-        let mut current_traversal_stack = vec![];
+        let mut root_node = None;
+        // The last operation parsed and its ancestors, one per level of the plan.
+        let mut current_traversal_stack: Vec<Rc<RefCell<IntermediateOperation>>> = vec![];
         for node in redis_value_vec {
             let node_string = redis_value_as_string(node)?;
 
-            let depth = node_string.matches("    ").count();
-            let node = node_string.trim();
+            // The server indents each level by four spaces. Count only the leading ones: an
+            // argument can hold four spaces in a row too.
+            let depth = (node_string.len() - node_string.trim_start_matches(' ').len()) / 4;
+            let new_node = Rc::new(RefCell::new(IntermediateOperation::new(
+                depth,
+                node_string.trim(),
+            )?));
 
-            let current_node = match current_traversal_stack.last().cloned() {
-                None => {
-                    current_traversal_stack.push(Rc::new(RefCell::new(
-                        IntermediateOperation::new(depth, node)?,
-                    )));
-                    string_representation.push(node_string);
-                    continue;
-                }
-                Some(current_node) => current_node,
-            };
-
-            let current_depth = current_node.borrow().depth;
-            match depth.cmp(&current_depth) {
-                Ordering::Less => {
-                    let times_to_pop = (current_depth - depth) + 1;
-                    if times_to_pop > current_traversal_stack.len() {
-                        return Err(FalkorDBError::CorruptExecutionPlan);
-                    }
-                    for _ in 0..times_to_pop {
-                        current_traversal_stack.pop();
-                    }
-
-                    // Create this node as a child to the last node with one less depth than the new node
-                    Self::create_node(depth, node, &mut current_traversal_stack)?;
-                }
-                Ordering::Equal => {
-                    // Push new node to the parent node
-                    current_traversal_stack.pop();
-                    Self::create_node(depth, node, &mut current_traversal_stack)?;
-                }
-                Ordering::Greater => {
-                    if depth - current_depth > 1 {
-                        // Too big a skip
-                        return Err(FalkorDBError::CorruptExecutionPlan);
-                    }
-
-                    let new_node = Rc::new(RefCell::new(IntermediateOperation::new(depth, node)?));
-                    current_traversal_stack.push(Rc::clone(&new_node));
-
-                    // New node is a child of the current node, so we will push it as a child
-                    current_node.borrow_mut().children.push(new_node);
-                }
+            // The parent is the closest operation above this one with a smaller depth.
+            while current_traversal_stack
+                .last()
+                .is_some_and(|operation| operation.borrow().depth >= depth)
+            {
+                current_traversal_stack.pop();
             }
+            match current_traversal_stack.last() {
+                // Too big a skip
+                Some(parent) if depth - parent.borrow().depth > 1 => {
+                    return Err(FalkorDBError::CorruptExecutionPlan);
+                }
+                Some(parent) => parent.borrow_mut().children.push(Rc::clone(&new_node)),
+                None if root_node.is_none() => root_node = Some(Rc::clone(&new_node)),
+                // A second root, or an operation above the root
+                None => return Err(FalkorDBError::CorruptExecutionPlan),
+            }
+            current_traversal_stack.push(new_node);
 
             string_representation.push(node_string);
         }
 
         // Must drop traversal stack first
-        let root_node = current_traversal_stack
-            .into_iter()
-            .next()
-            .ok_or(FalkorDBError::CorruptExecutionPlan)?;
-        let operation_tree = Self::finalize_operation(root_node)?;
+        drop(current_traversal_stack);
+        let operation_tree =
+            Self::finalize_operation(root_node.ok_or(FalkorDBError::CorruptExecutionPlan)?)?;
 
         let mut operations = HashMap::new();
         Self::operations_map_from_tree(&operation_tree, &mut operations);
@@ -328,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_operation_with_children() {
-        let child = Rc::new(Operation {
+        let child = Arc::new(Operation {
             name: "Child".to_string(),
             args: None,
             records_produced: None,
@@ -352,7 +318,7 @@ mod tests {
 
     #[test]
     fn test_execution_plan_methods() {
-        let op = Rc::new(Operation::default());
+        let op = Arc::new(Operation::default());
         let plan = ExecutionPlan {
             string_representation: "Test Plan".to_string(),
             plan: vec!["Step 1".to_string(), "Step 2".to_string()],
@@ -369,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_execution_plan_clone() {
-        let op = Rc::new(Operation {
+        let op = Arc::new(Operation {
             name: "Root".to_string(),
             args: None,
             records_produced: None,
@@ -391,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_execution_plan_debug() {
-        let op = Rc::new(Operation::default());
+        let op = Arc::new(Operation::default());
         let plan = ExecutionPlan {
             string_representation: "Debug Test".to_string(),
             plan: vec![],
@@ -405,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_execution_plan_with_operations_map() {
-        let op1 = Rc::new(Operation {
+        let op1 = Arc::new(Operation {
             name: "Scan".to_string(),
             args: None,
             records_produced: Some(100),
@@ -414,7 +380,7 @@ mod tests {
             depth: 0,
         });
 
-        let op2 = Rc::new(Operation {
+        let op2 = Arc::new(Operation {
             name: "Filter".to_string(),
             args: None,
             records_produced: Some(50),
@@ -464,5 +430,125 @@ mod tests {
             ["Project", "    Unwind"]
         );
         assert_eq!(skip_results_root(&steps(&["ResultsFoo"])), ["ResultsFoo"]);
+    }
+
+    #[test]
+    fn test_execution_plan_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ExecutionPlan>();
+        assert_send_sync::<Operation>();
+    }
+
+    fn plan_reply(steps: &[&str]) -> redis::Value {
+        redis::Value::Array(
+            steps
+                .iter()
+                .map(|step| redis::Value::BulkString(step.as_bytes().to_vec()))
+                .collect(),
+        )
+    }
+
+    /// `operation` and its descendants, as `name(child, child)`.
+    fn shape(operation: &Operation) -> String {
+        if operation.children.is_empty() {
+            return operation.name.clone();
+        }
+        let children: Vec<_> = operation
+            .children
+            .iter()
+            .map(|child| shape(child))
+            .collect();
+        format!("{}({})", operation.name, children.join(", "))
+    }
+
+    #[test]
+    fn test_parse_builds_the_tree_from_indentation() {
+        let plan = ExecutionPlan::parse(plan_reply(&[
+            "Root",
+            "    A",
+            "        B",
+            "            C",
+            "            D",
+            "    E",
+        ]))
+        .expect("the plan parses");
+
+        // Only the first child of each operation used to make it into the tree: D and E were lost.
+        assert_eq!(shape(plan.operation_tree()), "Root(A(B(C, D)), E)");
+        assert_eq!(plan.operations().values().map(Vec::len).sum::<usize>(), 6);
+        assert_eq!(plan.plan().len(), 6);
+    }
+
+    #[test]
+    fn test_parse_counts_only_leading_indentation() {
+        // Four spaces inside an argument counted as a level of indentation, so the second scan
+        // became a child of the first.
+        let plan = ExecutionPlan::parse(plan_reply(&[
+            "Project",
+            "    Cartesian Product",
+            "        Node By Label Scan | (a:actor)",
+            "        Node By Label Scan | (n:a    b)",
+        ]))
+        .expect("the plan parses");
+        assert_eq!(
+            shape(plan.operation_tree()),
+            "Project(Cartesian Product(Node By Label Scan, Node By Label Scan))"
+        );
+        assert_eq!(
+            plan.operation_tree().children[0].children[1].args,
+            Some(vec![" (n:a    b)".to_string()])
+        );
+
+        // Two levels too deep, the filter was rejected as a corrupt plan.
+        let plan = ExecutionPlan::parse(plan_reply(&[
+            "Results",
+            "    Filter | (n.pad = '        ')",
+        ]))
+        .expect("the plan parses");
+        assert_eq!(shape(plan.operation_tree()), "Results(Filter)");
+    }
+
+    #[test]
+    fn test_parse_rejects_corrupt_plans() {
+        for steps in [
+            &[][..],
+            // A step two levels below the previous one.
+            &["Project", "        Unwind"],
+            // A second root.
+            &["Project", "Unwind"],
+            // A step above the root.
+            &["    Project", "Unwind"],
+        ] {
+            assert!(
+                matches!(
+                    ExecutionPlan::parse(plan_reply(steps)),
+                    Err(FalkorDBError::CorruptExecutionPlan)
+                ),
+                "{steps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_operation_statistics() {
+        let stats = |step: &str| {
+            let operation = IntermediateOperation::new(0, step).expect("the step parses");
+            (operation.records_produced, operation.execution_time)
+        };
+
+        assert_eq!(
+            stats("Node By Label Scan | (a:actor) | Records produced: 1317, Execution time: 0.113417 ms"),
+            (Some(1317), Some(0.113417))
+        );
+        // The server prints the time with six decimals, but integers and exponents parse as well.
+        assert_eq!(
+            stats("Scan | Records produced: 0, Execution time: 1 ms"),
+            (Some(0), Some(1.0))
+        );
+        assert_eq!(
+            stats("Scan | Records produced: 10, Execution time: 1e-4 ms"),
+            (Some(10), Some(1e-4))
+        );
+        assert_eq!(stats("Scan | (a:actor)"), (None, None));
     }
 }

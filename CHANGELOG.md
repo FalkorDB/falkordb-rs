@@ -45,10 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   say) counted as a level of indentation, so `explain` and `profile` failed with
   `CorruptExecutionPlan` or nested the operation under the wrong parent, and every child after an
   operation's first, such as the second scan of a Cartesian Product, was missing from
-  `operation_tree()` and `operations()`. A plan with a second root is rejected as corrupt instead
-  of replacing the first. Execution times written as integers or with an exponent parse too, and
-  the regular expressions that read the statistics are compiled once instead of for every
-  operation ([#411](https://github.com/FalkorDB/falkordb-rs/pull/411))
+  `operation_tree()` and `operations()`. A plan with an indented or a second root, or with
+  indentation that isn't a whole number of levels, is rejected as corrupt instead of being
+  misread. Execution times written as integers or with an exponent parse too, and the regular
+  expressions that read the statistics are compiled once instead of for every operation
+  ([#411](https://github.com/FalkorDB/falkordb-rs/pull/411))
 - Report a server's error reply as an error for every command. redis-rs hands error replies back
   as ordinary values and only query replies were checked for one, so `copy_graph`, `delete`,
   `config_set`, the UDF commands and every other command whose reply isn't a result set

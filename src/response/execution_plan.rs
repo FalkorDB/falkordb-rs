@@ -190,7 +190,11 @@ impl ExecutionPlan {
 
             // The server indents each level by four spaces. Count only the leading ones: an
             // argument can hold four spaces in a row too.
-            let depth = (node_string.len() - node_string.trim_start_matches(' ').len()) / 4;
+            let indentation = node_string.len() - node_string.trim_start_matches(' ').len();
+            if indentation % 4 != 0 {
+                return Err(FalkorDBError::CorruptExecutionPlan);
+            }
+            let depth = indentation / 4;
             let new_node = Rc::new(RefCell::new(IntermediateOperation::new(
                 depth,
                 node_string.trim(),
@@ -209,8 +213,10 @@ impl ExecutionPlan {
                     return Err(FalkorDBError::CorruptExecutionPlan);
                 }
                 Some(parent) => parent.borrow_mut().children.push(Rc::clone(&new_node)),
-                None if root_node.is_none() => root_node = Some(Rc::clone(&new_node)),
-                // A second root, or an operation above the root
+                None if root_node.is_none() && depth == 0 => {
+                    root_node = Some(Rc::clone(&new_node));
+                }
+                // An indented root, or a second one
                 None => return Err(FalkorDBError::CorruptExecutionPlan),
             }
             current_traversal_stack.push(new_node);
@@ -516,8 +522,10 @@ mod tests {
             &["Project", "        Unwind"],
             // A second root.
             &["Project", "Unwind"],
-            // A step above the root.
-            &["    Project", "Unwind"],
+            // An indented root.
+            &["    Project"],
+            // Indentation that isn't a whole number of levels.
+            &["Project", "     Unwind"],
         ] {
             assert!(
                 matches!(

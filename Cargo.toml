@@ -2,6 +2,7 @@
 name = "falkordb"
 version = "0.10.5"
 edition = "2021"
+rust-version = "1.95"
 description = "A FalkorDB Rust client"
 homepage = "https://www.falkordb.com/"
 readme = "README.md"

@@ -8,6 +8,7 @@ use crate::{
     graph::HasGraphSchema,
     parser::{parse_header, redis_value_as_vec, SchemaParsable},
     retry::{op_kind_for_command, run_with_retry_blocking, OpKind},
+    value::param::is_bare_identifier,
     Constraint, ExecutionPlan, FalkorDBError, FalkorIndex, FalkorParams, FalkorResult, GraphSchema,
     IntoFalkorParam, IntoFalkorParams, LazyResultSet, QueryResult, ReadPreference, SyncGraph,
 };
@@ -693,7 +694,28 @@ pub(crate) fn generate_procedure_call(
     procedure: &str,
     args: Option<&[&str]>,
     yields: Option<&[&str]>,
-) -> (String, FalkorParams) {
+) -> FalkorResult<(String, FalkorParams)> {
+    // The procedure and its yield columns are written into the query as they are, so a name that
+    // isn't an identifier could add clauses to the call.
+    if !procedure.split('.').all(is_bare_identifier) {
+        return Err(FalkorDBError::InvalidIdentifier {
+            kind: "procedure",
+            name: procedure.to_string(),
+            message: "must be Cypher identifiers ([A-Za-z_][A-Za-z0-9_]*) joined by dots",
+        });
+    }
+    if let Some(column) = yields
+        .unwrap_or_default()
+        .iter()
+        .find(|column| !is_bare_identifier(column))
+    {
+        return Err(FalkorDBError::InvalidIdentifier {
+            kind: "yield column",
+            name: column.to_string(),
+            message: "must be a Cypher identifier ([A-Za-z_][A-Za-z0-9_]*)",
+        });
+    }
+
     let mut params = FalkorParams::new();
     let args_str = args
         .unwrap_or_default()
@@ -712,7 +734,7 @@ pub(crate) fn generate_procedure_call(
         query_string += format!(" YIELD {}", yields.join(",")).as_str();
     }
 
-    (query_string, params)
+    Ok((query_string, params))
 }
 
 /// A Builder-pattern struct that allows creating and executing procedure call on a graph
@@ -784,6 +806,10 @@ impl<'a, Out, G> ProcedureQueryBuilder<'a, Out, G> {
     }
 
     /// Tell the procedure call it should yield the following results
+    ///
+    /// Each column is written into the query as it is, so it must be a Cypher identifier
+    /// (`[A-Za-z_][A-Za-z0-9_]*`); otherwise `execute()` fails with
+    /// [`FalkorDBError::InvalidIdentifier`](crate::FalkorDBError::InvalidIdentifier).
     ///
     /// # Arguments
     /// * `yields`: The values to yield
@@ -888,7 +914,7 @@ impl<Out> ProcedureQueryBuilder<'_, Out, SyncGraph> {
         };
 
         let (query_string, params) =
-            generate_procedure_call(self.procedure_name, self.args, self.yields);
+            generate_procedure_call(self.procedure_name, self.args, self.yields)?;
 
         #[cfg(any(feature = "tracing", feature = "metrics"))]
         let strategy = crate::observability::SYNC_STRATEGY;
@@ -970,7 +996,7 @@ impl<'a, Out> ProcedureQueryBuilder<'a, Out, AsyncGraph> {
         };
 
         let (query_string, params) =
-            generate_procedure_call(self.procedure_name, self.args, self.yields);
+            generate_procedure_call(self.procedure_name, self.args, self.yields)?;
 
         let client = self.graph.get_client();
 
@@ -1309,7 +1335,7 @@ mod tests {
 
     #[test]
     fn test_generate_procedure_call_no_args_no_yields() {
-        let (query, params) = generate_procedure_call("my_procedure", None, None);
+        let (query, params) = generate_procedure_call("my_procedure", None, None).unwrap();
         assert_eq!(query, "CALL my_procedure()");
         assert!(params.is_empty());
     }
@@ -1317,7 +1343,7 @@ mod tests {
     #[test]
     fn test_generate_procedure_call_with_args_no_yields() {
         let args = ["arg1", "arg2"];
-        let (query, params) = generate_procedure_call("my_procedure", Some(&args), None);
+        let (query, params) = generate_procedure_call("my_procedure", Some(&args), None).unwrap();
         assert_eq!(query, "CALL my_procedure($param0,$param1)");
         // String args are encoded as safe, quoted Cypher string literals.
         let mut preamble = String::new();
@@ -1328,7 +1354,7 @@ mod tests {
     #[test]
     fn test_generate_procedure_call_no_args_with_yields() {
         let yields = ["yield1", "yield2"];
-        let (query, params) = generate_procedure_call("my_procedure", None, Some(&yields));
+        let (query, params) = generate_procedure_call("my_procedure", None, Some(&yields)).unwrap();
         assert_eq!(query, "CALL my_procedure() YIELD yield1,yield2");
         assert!(params.is_empty());
     }
@@ -1337,7 +1363,8 @@ mod tests {
     fn test_generate_procedure_call_with_args_and_yields() {
         let args = ["arg1", "arg2"];
         let yields = ["yield1", "yield2"];
-        let (query, params) = generate_procedure_call("my_procedure", Some(&args), Some(&yields));
+        let (query, params) =
+            generate_procedure_call("my_procedure", Some(&args), Some(&yields)).unwrap();
         assert_eq!(
             query,
             "CALL my_procedure($param0,$param1) YIELD yield1,yield2"
@@ -1383,7 +1410,7 @@ mod tests {
     #[test]
     fn test_generate_procedure_call_arg_injection_is_escaped() {
         let args = ["'; MATCH (n) DELETE n //"];
-        let (_query, params) = generate_procedure_call("p", Some(&args), None);
+        let (_query, params) = generate_procedure_call("p", Some(&args), None).unwrap();
         let mut preamble = String::new();
         params.encode_preamble(&mut preamble).unwrap();
         assert_eq!(preamble, "CYPHER param0='\\'; MATCH (n) DELETE n //' ");
@@ -1392,18 +1419,76 @@ mod tests {
     #[test]
     fn test_generate_procedure_call_nul_arg_errors() {
         let args = ["a\0b"];
-        let (_query, params) = generate_procedure_call("p", Some(&args), None);
+        let (_query, params) = generate_procedure_call("p", Some(&args), None).unwrap();
         assert!(params.encode_preamble(&mut String::new()).is_err());
     }
 
     #[test]
     fn test_construct_query_procedure_end_to_end() {
         let args = ["Label"];
-        let (query, params) = generate_procedure_call("db.idx", Some(&args), Some(&["node"]));
+        let (query, params) =
+            generate_procedure_call("db.idx", Some(&args), Some(&["node"])).unwrap();
         let full = construct_query(query, &params).unwrap();
         assert_eq!(
             full,
             "CYPHER param0='Label' CALL db.idx($param0) YIELD node"
+        );
+    }
+
+    #[test]
+    fn test_generate_procedure_call_accepts_dotted_names() {
+        let (query, _params) = generate_procedure_call(
+            "db.idx.fulltext.queryNodes",
+            Some(&["Person", "Alice"]),
+            Some(&["node", "score"]),
+        )
+        .unwrap();
+        assert_eq!(
+            query,
+            "CALL db.idx.fulltext.queryNodes($param0,$param1) YIELD node,score"
+        );
+        let (query, _params) =
+            generate_procedure_call("DB.INDEXES", None, Some(&["_label2"])).unwrap();
+        assert_eq!(query, "CALL DB.INDEXES() YIELD _label2");
+    }
+
+    #[test]
+    fn test_generate_procedure_call_rejects_names_that_are_not_identifiers() {
+        // The first name of each list is the issue's payload, which would add clauses to the call.
+        for procedure in [
+            "db.labels() YIELD label DETACH DELETE n //",
+            "",
+            "db..labels",
+            ".db",
+            "db.",
+            "db labels",
+            "`db.labels`",
+            "1db",
+        ] {
+            assert_eq!(
+                generate_procedure_call(procedure, None, None).unwrap_err(),
+                FalkorDBError::InvalidIdentifier {
+                    kind: "procedure",
+                    name: procedure.to_string(),
+                    message: "must be Cypher identifiers ([A-Za-z_][A-Za-z0-9_]*) joined by dots",
+                }
+            );
+        }
+        for column in ["node, (n) DETACH DELETE n", "label AS l", "", "`node`"] {
+            assert_eq!(
+                generate_procedure_call("db.labels", None, Some(&["label", column])).unwrap_err(),
+                FalkorDBError::InvalidIdentifier {
+                    kind: "yield column",
+                    name: column.to_string(),
+                    message: "must be a Cypher identifier ([A-Za-z_][A-Za-z0-9_]*)",
+                }
+            );
+        }
+        assert_eq!(
+            generate_procedure_call("db.labels", None, Some(&["label AS l"]))
+                .unwrap_err()
+                .to_string(),
+            "invalid yield column name 'label AS l': must be a Cypher identifier ([A-Za-z_][A-Za-z0-9_]*)"
         );
     }
 }

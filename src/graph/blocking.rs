@@ -173,6 +173,10 @@ impl SyncGraph {
     /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only queries are more limited with the operations they are allowed to perform.
     ///
+    /// `procedure_name` must be Cypher identifiers joined by dots, such as `db.labels`; any other
+    /// name makes `execute()` fail with
+    /// [`FalkorDBError::InvalidIdentifier`](crate::FalkorDBError::InvalidIdentifier).
+    ///
     /// # Arguments
     /// * `procedure_name`: The name of the procedure to call
     ///
@@ -188,6 +192,10 @@ impl SyncGraph {
     /// Creates a [`ProcedureQueryBuilder`] for this graph, for a readonly procedure
     /// This [`ProcedureQueryBuilder`] has to be dropped or ran using [`ProcedureQueryBuilder::execute`], before reusing the graph, as it takes a mutable reference to the graph for as long as it exists
     /// Read-only procedures are more limited with the operations they are allowed to perform.
+    ///
+    /// `procedure_name` must be Cypher identifiers joined by dots, such as `db.labels`; any other
+    /// name makes `execute()` fail with
+    /// [`FalkorDBError::InvalidIdentifier`](crate::FalkorDBError::InvalidIdentifier).
     ///
     /// # Arguments
     /// * `procedure_name`: The name of the procedure to call
@@ -216,6 +224,13 @@ impl SyncGraph {
     }
 
     /// Creates a new index in the graph, for the selected entity type(Node/Edge), selected label, and properties
+    ///
+    /// The label and property names are backtick-quoted when they aren't Cypher identifiers, so a
+    /// name such as `first name` works. A name that is empty or contains a backtick or a NUL byte
+    /// can't be written into the query and fails with
+    /// [`FalkorDBError::InvalidIdentifier`](crate::FalkorDBError::InvalidIdentifier), and an empty
+    /// `properties` slice fails with
+    /// [`FalkorDBError::EmptyIndexProperties`](crate::FalkorDBError::EmptyIndexProperties).
     ///
     /// # Arguments
     /// * `index_field_type`:
@@ -315,6 +330,8 @@ impl SyncGraph {
 
     /// Drop an existing index, by specifying its type, entity, label and specific properties
     ///
+    /// The label and property names are quoted and checked as in [`create_index`](Self::create_index).
+    ///
     /// # Arguments
     /// * `index_field_type`
     #[cfg_attr(
@@ -328,7 +345,8 @@ impl SyncGraph {
         label: &str,
         properties: &[P],
     ) -> FalkorResult<QueryResult<LazyResultSet>> {
-        let query_str = generate_drop_index_query(index_field_type, entity_type, label, properties);
+        let query_str =
+            generate_drop_index_query(index_field_type, entity_type, label, properties)?;
         self.query(query_str).execute()
     }
 
@@ -544,6 +562,149 @@ mod tests {
             .drop_index(IndexType::Fulltext, EntityType::Node, "actor", &["Hello"])
             .expect("Could not drop index");
         assert_eq!(indices.get_indices_deleted(), Some(1));
+    }
+
+    #[test]
+    fn test_create_and_drop_indices_with_names_that_need_quoting() {
+        // Every index type round-trips on a label, a relationship type and properties that aren't
+        // identifiers. Written unquoted, each of these queries was a syntax error.
+        let mut graph = open_empty_test_graph("test_index_names_need_quoting");
+        let options = vector_index_options(2, VectorSimilarity::Euclidean);
+        let targets = [
+            (EntityType::Node, "Person Of Interest", "first name"),
+            (EntityType::Edge, "WORKS WITH", "start date"),
+        ];
+        let index_types = [IndexType::Range, IndexType::Fulltext, IndexType::Vector];
+
+        for (entity_type, label, property) in targets {
+            for index_type in index_types {
+                let options = (index_type == IndexType::Vector).then_some(&options);
+                let result = graph
+                    .inner
+                    .create_index(index_type, entity_type, label, &[property], options)
+                    .expect("Could not create index");
+                assert_eq!(result.get_indices_created(), Some(1));
+            }
+        }
+
+        // The server lists each name as it was given, indexed all three ways.
+        let indexed_every_way = |indices: &Vec<FalkorIndex>| {
+            targets.iter().all(|&(entity_type, label, property)| {
+                indices.iter().any(|index| {
+                    index.entity_type == entity_type
+                        && index.index_label == label
+                        && index.field_types.get(property).is_some_and(|types| {
+                            index_types
+                                .iter()
+                                .all(|index_type| types.contains(index_type))
+                        })
+                })
+            })
+        };
+        let indices = retry_until(
+            || {
+                graph
+                    .inner
+                    .list_indices()
+                    .expect("Could not list indices")
+                    .data
+            },
+            indexed_every_way,
+        );
+        assert!(indexed_every_way(&indices), "{indices:?}");
+
+        for (entity_type, label, property) in targets {
+            for index_type in index_types {
+                let result = graph
+                    .inner
+                    .drop_index(index_type, entity_type, label, &[property])
+                    .expect("Could not drop index");
+                assert_eq!(result.get_indices_deleted(), Some(1));
+            }
+        }
+        let indices = retry_until(
+            || {
+                graph
+                    .inner
+                    .list_indices()
+                    .expect("Could not list indices")
+                    .data
+            },
+            Vec::is_empty,
+        );
+        assert!(indices.is_empty(), "{indices:?}");
+
+        // A name that can't be quoted, or no property at all, fails before anything is sent.
+        assert!(matches!(
+            graph
+                .inner
+                .create_index(IndexType::Range, EntityType::Node, "a`b", &["name"], None),
+            Err(FalkorDBError::InvalidIdentifier { kind: "label", .. })
+        ));
+        assert_eq!(
+            graph
+                .inner
+                .drop_index::<&str>(IndexType::Range, EntityType::Node, "Person", &[])
+                .err(),
+            Some(FalkorDBError::EmptyIndexProperties)
+        );
+    }
+
+    #[test]
+    fn test_procedure_and_yield_names_cannot_add_clauses() {
+        // Both names went into the query as written, so each of these calls deleted every node.
+        let mut graph = open_empty_test_graph("test_procedure_name_injection");
+        graph
+            .inner
+            .query("CREATE (:Person), (:Person)")
+            .execute()
+            .expect("Could not create nodes");
+
+        let result = graph
+            .inner
+            .call_procedure::<QueryResult<Vec<FalkorIndex>>>(
+                "db.labels() YIELD label MATCH (n) DETACH DELETE n //",
+            )
+            .execute();
+        assert!(
+            matches!(
+                result,
+                Err(FalkorDBError::InvalidIdentifier {
+                    kind: "procedure",
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
+        let result = graph
+            .inner
+            .call_procedure::<QueryResult<Vec<FalkorIndex>>>("db.labels")
+            .with_yields(&["label MATCH (n) DETACH DELETE n"])
+            .execute();
+        assert!(
+            matches!(
+                result,
+                Err(FalkorDBError::InvalidIdentifier {
+                    kind: "yield column",
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
+
+        let mut result = graph
+            .inner
+            .ro_query("MATCH (n) RETURN count(n)")
+            .execute()
+            .expect("Could not count nodes");
+        let count = result
+            .data
+            .next()
+            .expect("The count query returned no rows")
+            .expect("The count row failed to parse")
+            .try_get_at::<i64>(0)
+            .expect("The count was not an i64");
+        assert_eq!(count, 2);
     }
 
     #[test]

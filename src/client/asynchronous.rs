@@ -634,7 +634,7 @@ mod tests {
     use super::*;
     use crate::{
         test_utils::{
-            create_async_test_client, default_on_connection_down, imdb_async_test_client,
+            create_async_test_client, default_on_transient_error, imdb_async_test_client,
             open_empty_async_test_graph, read_copied_actors, retry_until_async_fn_with_timeout,
             udf_script, TestAsyncGraphHandle, UdfRegistryLock, COPY_RETRY_TIMEOUT,
         },
@@ -1024,9 +1024,9 @@ mod tests {
                     .delete()
                     .await
                     .ok();
-                // A transient `ConnectionDown` retries with a fresh connection; any other error
-                // fails fast.
-                default_on_connection_down(
+                // A transient `ConnectionDown` or `could not fork` re-issues the copy; any other
+                // error fails fast.
+                default_on_transient_error(
                     "Could not copy graph",
                     read_copied_actors(client.copy_graph("imdb", "imdb_ro_copy_async")).await,
                 )
@@ -1066,7 +1066,7 @@ mod tests {
                     .delete()
                     .await
                     .ok();
-                default_on_connection_down(
+                default_on_transient_error(
                     "Could not copy graph",
                     read_copied_actors(
                         client

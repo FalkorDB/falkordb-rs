@@ -526,7 +526,7 @@ mod tests {
     use crate::FalkorValue::Node;
     use crate::{
         test_utils::{
-            create_test_client, default_on_connection_down, imdb_test_client,
+            create_test_client, default_on_transient_error, imdb_test_client,
             open_empty_test_graph, retry_until_with_timeout, udf_script, TestSyncGraphHandle,
             UdfRegistryLock, COPY_RETRY_TIMEOUT,
         },
@@ -814,9 +814,9 @@ mod tests {
             COPY_RETRY_TIMEOUT,
             || {
                 client.select_graph("imdb_ro_copy").delete().ok();
-                // A transient `ConnectionDown` retries with a fresh connection; any other error
-                // fails fast (combinator chain so the error plumbing has no untaken branches).
-                default_on_connection_down(
+                // A transient `ConnectionDown` or `could not fork` re-issues the copy; any other
+                // error fails fast (combinator chain so the error plumbing has no untaken branches).
+                default_on_transient_error(
                     "Could not copy graph",
                     client
                         .copy_graph("imdb", "imdb_ro_copy")
@@ -856,7 +856,7 @@ mod tests {
             COPY_RETRY_TIMEOUT,
             || {
                 client.select_graph("imdb_op_copy_wait").delete().ok();
-                default_on_connection_down(
+                default_on_transient_error(
                     "Could not copy graph",
                     client
                         .copy_graph_op("imdb", "imdb_op_copy_wait")

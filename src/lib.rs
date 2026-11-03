@@ -1565,7 +1565,12 @@ pub(crate) mod test_utils {
         match result {
             Ok(value) => value,
             Err(FalkorDBError::ConnectionDown) => T::default(),
-            Err(err) if crate::graph::ops::is_transient_copy_error(&err) => T::default(),
+            Err(err) if crate::graph::ops::is_transient_copy_error(&err) => {
+                // Keep the server's reason visible in case the copy never succeeds before the
+                // retry timeout, where the final assertion would only show an empty result.
+                eprintln!("{context}: {err}; re-issuing the copy");
+                T::default()
+            }
             Err(err) => panic!("{context}: {err}"),
         }
     }

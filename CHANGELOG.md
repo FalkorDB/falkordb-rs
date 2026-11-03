@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `f67a7e7`) and the `rojopolis/spellcheck-github-actions` GitHub Action (0.66.0 → 0.68.0, pinned
   SHA `c1934c5` → `f2df388`), and make the `copy_graph` tests re-issue the copy when the server
   answers `could not fork` while busy forking for a parallel test
+  ([#419](https://github.com/FalkorDB/falkordb-rs/pull/419))
 
 ## [0.11.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.5...v0.11.0) - 2026-10-25
 

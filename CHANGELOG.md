@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.0...v0.11.1) - 2026-11-03
+
 ### Other
 
 - Bump the `redis` crate (1.7.1 → 1.8.0), the `rustls` crate (0.23.45 → 0.23.46), the

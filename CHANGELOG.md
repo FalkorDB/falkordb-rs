@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Other
+
+- Bump the `redis` crate (1.7.1 → 1.8.0), the `rustls` crate (0.23.45 → 0.23.46), the
+  `MarcoIeni/release-plz-action` GitHub Action (0.5.144 → 0.5.147, pinned SHA `8b5bf23` →
+  `f67a7e7`) and the `rojopolis/spellcheck-github-actions` GitHub Action (0.66.0 → 0.68.0, pinned
+  SHA `c1934c5` → `f2df388`), and make the `copy_graph` tests re-issue the copy when the server
+  answers `could not fork` while busy forking for a parallel test
+
 ## [0.11.0](https://github.com/FalkorDB/falkordb-rs/compare/v0.10.5...v0.11.0) - 2026-10-25
 
 ### Added

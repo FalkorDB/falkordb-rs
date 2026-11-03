@@ -1554,16 +1554,18 @@ pub(crate) mod test_utils {
 
     /// Classifies a copy-retry attempt: pass an `Ok` value through, return the default (e.g. an
     /// empty `Vec`, so the caller's predicate treats it as a miss and re-issues) on a transient
-    /// [`FalkorDBError::ConnectionDown`] — the client has already swapped in a fresh connection — and
-    /// panic immediately on any other error so a genuine regression fails fast with context instead
-    /// of being masked until the retry timeout.
-    pub(crate) fn default_on_connection_down<T: Default>(
+    /// [`FalkorDBError::ConnectionDown`] — the client has already swapped in a fresh connection — or
+    /// a transient `could not fork` copy failure while the server is busy forking for another
+    /// operation, and panic immediately on any other error so a genuine regression fails fast with
+    /// context instead of being masked until the retry timeout.
+    pub(crate) fn default_on_transient_error<T: Default>(
         context: &str,
         result: FalkorResult<T>,
     ) -> T {
         match result {
             Ok(value) => value,
             Err(FalkorDBError::ConnectionDown) => T::default(),
+            Err(err) if crate::graph::ops::is_transient_copy_error(&err) => T::default(),
             Err(err) => panic!("{context}: {err}"),
         }
     }
@@ -1623,25 +1625,37 @@ mod retry_tests {
     }
 
     #[test]
-    fn default_on_connection_down_passes_ok_through() {
-        use super::test_utils::default_on_connection_down;
-        let value = default_on_connection_down("ctx", Ok::<_, crate::FalkorDBError>(vec![1, 2, 3]));
+    fn default_on_transient_error_passes_ok_through() {
+        use super::test_utils::default_on_transient_error;
+        let value = default_on_transient_error("ctx", Ok::<_, crate::FalkorDBError>(vec![1, 2, 3]));
         assert_eq!(value, vec![1, 2, 3]);
     }
 
     #[test]
-    fn default_on_connection_down_returns_default_on_connection_down() {
-        use super::test_utils::default_on_connection_down;
+    fn default_on_transient_error_returns_default_on_transient_error() {
+        use super::test_utils::default_on_transient_error;
         let value: Vec<i32> =
-            default_on_connection_down("ctx", Err(crate::FalkorDBError::ConnectionDown));
+            default_on_transient_error("ctx", Err(crate::FalkorDBError::ConnectionDown));
+        assert!(value.is_empty());
+    }
+
+    #[test]
+    fn default_on_transient_error_returns_default_on_could_not_fork() {
+        use super::test_utils::default_on_transient_error;
+        let value: Vec<i32> = default_on_transient_error(
+            "ctx",
+            Err(crate::FalkorDBError::RedisError(
+                "GRAPH.COPY failed, could not fork".to_string(),
+            )),
+        );
         assert!(value.is_empty());
     }
 
     #[test]
     #[should_panic(expected = "could not copy")]
-    fn default_on_connection_down_panics_on_other_error() {
-        use super::test_utils::default_on_connection_down;
+    fn default_on_transient_error_panics_on_other_error() {
+        use super::test_utils::default_on_transient_error;
         let _: Vec<i32> =
-            default_on_connection_down("could not copy", Err(crate::FalkorDBError::ParsingArray));
+            default_on_transient_error("could not copy", Err(crate::FalkorDBError::ParsingArray));
     }
 }

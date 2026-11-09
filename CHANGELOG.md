@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency, without the dev-dependency (`proptest`) that enabled `unicode-case` in this crate's
   own tests and hid the panic ([#429](https://github.com/FalkorDB/falkordb-rs/pull/429), fixes
   [#421](https://github.com/FalkorDB/falkordb-rs/issues/421))
+- Ride out GitHub outages when the `embedded-bundle` feature downloads the FalkorDB module at
+  build time. A download that gets no response, or a 408, 429 or 5xx, is now retried after 15, 30,
+  60 and 120 seconds instead of failing the build after curl's own few seconds of retries; any
+  other failure, such as a 404 for an unknown version, still stops the build at once
+  ([#430](https://github.com/FalkorDB/falkordb-rs/pull/430))
+
+### Other
+
+- Point the library tests and `resources/populate_graph.py` at `FALKORDB_HOST` and
+  `FALKORDB_PORT`, as the integration tests already were, instead of always `127.0.0.1:6379`, and
+  stop `test_get_config_all` requiring the server's `THREAD_COUNT` to equal the CPU count of the
+  machine running the tests ([#430](https://github.com/FalkorDB/falkordb-rs/pull/430))
 
 ## [0.11.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.0...v0.11.1) - 2026-11-03
 

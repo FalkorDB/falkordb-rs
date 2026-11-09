@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.1...v0.11.2) - 2026-11-09
+
 ### Fixed
 
 - Stop the `tracing` feature panicking on the first query. Each query's fingerprint redacts

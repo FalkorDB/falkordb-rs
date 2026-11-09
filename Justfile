@@ -130,10 +130,12 @@ integration *args:
 # Run queries through `falkordb` built as a plain dependency (tools/consumer-smoke), without this
 # repo's dev-dependencies, which can switch on features of shared crates that `falkordb` forgot to
 # request (proptest hid regex's `unicode-case`, #421). Needs a server; the integration CI job runs
-# this same recipe.
+# this same recipe. No `--locked`: the tool's lockfile records falkordb's own version, which
+# release-plz bumps in the root manifest only, so Cargo must be free to rewrite that one entry. Every
+# other dependency stays at its locked version.
 consumer-smoke:
-    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
-        cargo run --quiet --locked --manifest-path tools/consumer-smoke/Cargo.toml
+    FALKORDB_HOST={{quote(host)}} FALKORDB_PORT={{quote(port)}} \
+        cargo run --quiet --manifest-path tools/consumer-smoke/Cargo.toml
 
 # Run a single test by name filter, e.g. `just test-one test_borrow_connection`.
 test-one filter:

@@ -127,6 +127,14 @@ integration *args:
     FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
         cargo test --lib --test integration_tests {{args}} --verbose
 
+# Run queries through `falkordb` built as a plain dependency (tools/consumer-smoke), without this
+# repo's dev-dependencies, which can switch on features of shared crates that `falkordb` forgot to
+# request (proptest hid regex's `unicode-case`, #421). Needs a server; the integration CI job runs
+# this same recipe.
+consumer-smoke:
+    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
+        cargo run --quiet --locked --manifest-path tools/consumer-smoke/Cargo.toml
+
 # Run a single test by name filter, e.g. `just test-one test_borrow_connection`.
 test-one filter:
     FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \

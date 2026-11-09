@@ -121,6 +121,8 @@ jobs:
 
       - name: Run integration tests with all features
         run: just integration --all-features
+      - name: Run queries from a plain dependent (no dev-dependencies)
+        run: just consumer-smoke
 
   integration-tests-tokio:
     runs-on: ubuntu-latest

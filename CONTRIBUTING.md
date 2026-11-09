@@ -121,7 +121,7 @@ reproduced with a single command:
 | `check-deny` | `just deny` |
 | `check-proptest` | `just proptest` |
 | `check-embedded-bundle` | `just check-embedded-bundle` |
-| `integration-tests` | `just integration` and `just integration --all-features` |
+| `integration-tests` | `just integration`, `just integration --all-features` and `just consumer-smoke` |
 | `integration-tests-tokio` | `just integration --features tokio` |
 | `coverage` | `just coverage` |
 | `check-llms` | `just check-llms` |

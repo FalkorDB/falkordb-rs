@@ -300,7 +300,7 @@ mod bundle {
                 "=https",
                 "--proto-redir",
                 "=https",
-                // The final HTTP status goes to stdout ("000" when no response
+                // The last HTTP status goes to stdout ("000" when no response
                 // arrived); the body goes to `tmp`.
                 "--write-out",
                 "%{http_code}",
@@ -330,24 +330,32 @@ mod bundle {
                 "`curl` failed to download {url} ({}, HTTP status {http_code})",
                 output.status
             ),
-            transient: is_transient_http_code(&http_code)
-                || is_transient_exit_code(output.status.code()),
+            transient: is_transient(output.status.code(), &http_code),
         })
     }
 
-    /// Whether curl's final `%{http_code}` is worth retrying: no response at
-    /// all (`000`: DNS, connect, reset or timeout), a request timeout, rate
-    /// limiting, or a server error.
-    fn is_transient_http_code(code: &str) -> bool {
-        matches!(code, "000" | "408" | "429") || (code.len() == 3 && code.starts_with('5'))
-    }
-
-    /// Whether curl's exit code reports a transfer cut short after the
-    /// response began, which leaves `%{http_code}` at the server's `200`: a
-    /// partial file (18), a timeout (28), or a send (55) or receive (56) error.
-    /// An HTTP error is exit 22 instead, and is judged by its status alone.
-    fn is_transient_exit_code(code: Option<i32>) -> bool {
-        matches!(code, Some(18 | 28 | 55 | 56))
+    /// Whether a curl run that exited with `exit` might succeed if run again.
+    /// An HTTP error (exit 22, from `--fail`) is judged by its status: a request
+    /// timeout, rate limiting or a server error. Otherwise the exit code says
+    /// it all, since `%{http_code}` can still hold an earlier response, such as
+    /// the `302` to GitHub's asset host or a `200` cut short: an unresolved
+    /// proxy or host (5, 6), a refused connection (7), an HTTP/2 error (16,
+    /// 92), a partial file (18), a timeout (28), a failed TLS handshake (35),
+    /// an empty reply (52), or a send or receive error (55, 56). Anything else,
+    /// such as an untrusted certificate (60, 77) or exceeding `--max-filesize`
+    /// (63), happens again on every run.
+    fn is_transient(
+        exit: Option<i32>,
+        http_code: &str,
+    ) -> bool {
+        match exit {
+            Some(22) => {
+                matches!(http_code, "408" | "429")
+                    || (http_code.len() == 3 && http_code.starts_with('5'))
+            }
+            Some(5 | 6 | 7 | 16 | 18 | 28 | 35 | 52 | 55 | 56 | 92) => true,
+            _ => false,
+        }
     }
 
     /// Write `bytes` to `dest` via a temp file + rename, so a partial write is

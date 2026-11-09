@@ -17,11 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency, without the dev-dependency (`proptest`) that enabled `unicode-case` in this crate's
   own tests and hid the panic ([#429](https://github.com/FalkorDB/falkordb-rs/pull/429), fixes
   [#421](https://github.com/FalkorDB/falkordb-rs/issues/421))
-- Ride out GitHub outages when the `embedded-bundle` feature downloads the FalkorDB module at
-  build time. A download that gets no response, a 408, 429 or 5xx, or a transfer cut short after
-  the response began is now retried after 5, 10, 20, 40, 80 and 160 seconds, within ten minutes in
-  all, instead of failing the build after curl's own few seconds of retries; any other failure,
-  such as a 404 for an unknown version, still stops the build at once
+- Ride out GitHub outages when the `embedded-bundle` feature downloads the FalkorDB module at build
+  time. A download that hits a network error (an unresolved host, a refused connection, a failed TLS
+  handshake, a timeout, or a transfer cut short) or gets a 408, 429 or 5xx is now retried after 5,
+  10, 20, 40, 80 and 160 seconds, within ten minutes in all, instead of failing the build after
+  curl's own few seconds of retries; any other failure, such as a 404 for an unknown version or an
+  untrusted certificate, still stops the build at once
   ([#430](https://github.com/FalkorDB/falkordb-rs/pull/430))
 
 ### Other

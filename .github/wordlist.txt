@@ -122,6 +122,7 @@ observability
 tunable
 codebase
 pipelining
+untrusted
 untyped
 rustls
 struct

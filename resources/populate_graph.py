@@ -4,7 +4,11 @@ from falkordb import FalkorDB, Node, Edge
 import os
 import csv
 
-db = FalkorDB()
+# The same server the tests use: FALKORDB_HOST / FALKORDB_PORT, as `just db-populate` passes them.
+db = FalkorDB(
+    host=os.environ.get("FALKORDB_HOST") or "127.0.0.1",
+    port=int(os.environ.get("FALKORDB_PORT") or 6379),
+)
 
 graph = db.select_graph("imdb")
 

@@ -1166,8 +1166,57 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// Host of the test server: `FALKORDB_HOST`, as the integration tests and the `just` recipes
+    /// use, or `127.0.0.1`.
+    fn test_server_host() -> String {
+        std::env::var("FALKORDB_HOST")
+            .ok()
+            .filter(|host| !host.is_empty())
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    }
+
+    /// Port of the test server: `FALKORDB_PORT`, or `6379`.
+    fn test_server_port() -> u16 {
+        std::env::var("FALKORDB_PORT")
+            .ok()
+            .filter(|port| !port.is_empty())
+            .map(|port| port.parse().expect("FALKORDB_PORT must be a port number"))
+            .unwrap_or(6379)
+    }
+
+    /// `host:port` of the test server, with an IPv6 host such as `::1` in brackets so the port
+    /// stays separate from it.
+    fn test_server_authority() -> String {
+        let host = test_server_host();
+        if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]:{}", test_server_port())
+        } else {
+            format!("{host}:{}", test_server_port())
+        }
+    }
+
+    /// `falkor://` URL of the test server, so a run against a server on another port never
+    /// touches whatever is listening on 6379.
+    pub(crate) fn test_server_url() -> String {
+        format!("falkor://{}", test_server_authority())
+    }
+
+    /// `redis://` URL of the test server, for tests that build a `redis::Client` directly.
+    pub(crate) fn test_redis_url() -> String {
+        format!("redis://{}", test_server_authority())
+    }
+
+    /// Connection info for the test server; see [`test_server_url`].
+    pub(crate) fn test_connection_info() -> FalkorConnectionInfo {
+        test_server_url()
+            .as_str()
+            .try_into()
+            .expect("the test server URL should parse")
+    }
+
     pub(crate) fn create_test_client() -> FalkorSyncClient {
         FalkorClientBuilder::new()
+            .with_connection_info(test_connection_info())
             .build()
             .expect("Could not create client")
     }
@@ -1175,6 +1224,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "tokio")]
     pub(crate) async fn create_async_test_client() -> FalkorAsyncClient {
         FalkorClientBuilder::new_async()
+            .with_connection_info(test_connection_info())
             .build()
             .await
             .expect("Could not create client")
@@ -1285,13 +1335,10 @@ pub(crate) mod test_utils {
         /// past its timeout (by more than one request) or the keeper past a renewal.
         const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-        /// A plain connection to the server the test clients use, as `FalkorClientBuilder::new`
-        /// defaults to, with every request on it bounded by `REQUEST_TIMEOUT`.
+        /// A plain connection to the server the test clients use (see [`test_redis_url`]), with
+        /// every request on it bounded by `REQUEST_TIMEOUT`.
         fn test_server() -> redis::RedisResult<redis::Connection> {
-            let address = FalkorConnectionInfo::try_from(client::builder::DEFAULT_CONNECTION_URL)
-                .expect("the default connection info is valid")
-                .address();
-            let conn = redis::Client::open(format!("redis://{address}"))?
+            let conn = redis::Client::open(test_redis_url())?
                 .get_connection_with_timeout(Self::REQUEST_TIMEOUT)?;
             conn.set_read_timeout(Some(Self::REQUEST_TIMEOUT))?;
             conn.set_write_timeout(Some(Self::REQUEST_TIMEOUT))?;

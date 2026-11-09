@@ -447,6 +447,7 @@ mod tests {
 
     fn one_connection_client() -> FalkorSyncClient {
         FalkorClientBuilder::new()
+            .with_connection_info(crate::test_utils::test_connection_info())
             .with_num_connections(NonZeroU8::MIN)
             .build()
             .expect("Could not create client for this test")

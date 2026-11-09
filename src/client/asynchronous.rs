@@ -644,7 +644,6 @@ mod tests {
     use std::{
         mem,
         num::{NonZeroU8, NonZeroUsize},
-        thread,
     };
     use tokio::sync::mpsc::error::TryRecvError;
 
@@ -662,6 +661,7 @@ mod tests {
         // exercises the `ConnectionManager` concurrency-limit configuration path and the
         // multiplexed executor build loop.
         let client = FalkorClientBuilder::new_async()
+            .with_connection_info(crate::test_utils::test_connection_info())
             .with_connection_strategy(ConnectionStrategy::Multiplexed {
                 connections: NonZeroU8::new(2).expect("Could not create a perfectly valid u8"),
             })
@@ -710,6 +710,7 @@ mod tests {
         // the async builder the default strategy is multiplexed, so the multiplexed arm
         // of `with_connection_count` is exercised.
         let client = FalkorClientBuilder::new_async()
+            .with_connection_info(crate::test_utils::test_connection_info())
             .with_num_connections(NonZeroU8::new(3).expect("Could not create a perfectly valid u8"))
             .build()
             .await
@@ -725,6 +726,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_borrow_connection() {
         let client = FalkorClientBuilder::new_async()
+            .with_connection_info(crate::test_utils::test_connection_info())
             .with_connection_strategy(ConnectionStrategy::Pooled {
                 size: NonZeroU8::new(6).expect("Could not create a perfectly valid u8"),
             })
@@ -757,6 +759,7 @@ mod tests {
         // without calling `execute_command`. Otherwise the pool would permanently leak
         // connections and eventually deadlock future borrows.
         let client = FalkorClientBuilder::new_async()
+            .with_connection_info(crate::test_utils::test_connection_info())
             .with_connection_strategy(ConnectionStrategy::Pooled {
                 size: NonZeroU8::new(2).expect("Could not create a perfectly valid u8"),
             })
@@ -829,7 +832,7 @@ mod tests {
         // Without a Sentinel replica, building a read-only executor fails (no fallback
         // to primary), so `create` leaves the read-only route empty and reads are
         // served by the primary executor.
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let client = redis::Client::open(crate::test_utils::test_redis_url()).unwrap();
         let mut provider = FalkorClientProvider::Redis {
             client,
             sentinel: None,
@@ -858,7 +861,7 @@ mod tests {
         // read-only executor must fail rather than fall back to primary connections, so
         // the read-only route is never populated with primary connections.
         use std::str::FromStr;
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let client = redis::Client::open(crate::test_utils::test_redis_url()).unwrap();
         // Port 1 is reliably unroutable in test environments.
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
@@ -898,7 +901,7 @@ mod tests {
         // without needing a live replica deployment. Primary connections are used purely
         // as placeholders for the pool slots.
         let mut provider = FalkorClientProvider::Redis {
-            client: redis::Client::open("redis://127.0.0.1:6379").unwrap(),
+            client: redis::Client::open(crate::test_utils::test_redis_url()).unwrap(),
             sentinel: None,
             sentinel_replica: None,
             cluster: None,
@@ -1144,10 +1147,15 @@ mod tests {
             .config_get("*")
             .await
             .expect("Could not get configuration");
-        assert_eq!(
-            configuration.get("THREAD_COUNT").cloned().unwrap(),
-            ConfigValue::Int64(thread::available_parallelism().unwrap().get() as i64)
-        );
+        // The server's thread count, not this machine's: the two differ whenever the server runs
+        // elsewhere or with another CPU limit, as in a container.
+        let thread_count = configuration.get("THREAD_COUNT").cloned().unwrap();
+        assert!(matches!(thread_count, ConfigValue::Int64(count) if count > 0));
+        let single = client
+            .config_get("THREAD_COUNT")
+            .await
+            .expect("Could not get configuration");
+        assert_eq!(single.get("THREAD_COUNT"), Some(&thread_count));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1213,6 +1221,7 @@ mod tests {
             },
         ] {
             let client = FalkorClientBuilder::new_async()
+                .with_connection_info(crate::test_utils::test_connection_info())
                 .with_connection_strategy(strategy)
                 .build()
                 .await

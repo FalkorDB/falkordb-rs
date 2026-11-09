@@ -221,42 +221,50 @@ mod bundle {
     /// TLS stack into the offline `embedded-bundle` runtime would defeat its
     /// purpose. Hosts without `curl` (or network) use
     /// `FALKORDB_EMBEDDED_MODULE_PATH` instead.
+    ///
+    /// GitHub's release downloads have answered 504 for minutes at a time,
+    /// failing CI builds. So a run of curl that ends in a transient failure is
+    /// repeated after a pause that doubles each time, up to [`ATTEMPTS`] runs,
+    /// all within [`BUDGET`]; any other failure, such as a 404 for an unknown
+    /// version, stops the build at once. Each run makes a single request:
+    /// curl's own `--retry` would let one run outlast its `--max-time`.
     fn http_get(url: &str) -> Vec<u8> {
+        use std::time::{Duration, Instant};
+
         // Up to 100 MiB — the module is ~10-20 MiB.
         const MAX_BYTES: u64 = 100 * 1024 * 1024;
+        // Pauses of 5, 10, 20, 40, 80 and 160 seconds between runs: about five
+        // minutes.
+        const ATTEMPTS: u32 = 7;
+        const FIRST_PAUSE: Duration = Duration::from_secs(5);
+        // Every run and pause together, so a network that hangs instead of
+        // failing can't hold the build up for long.
+        const BUDGET: Duration = Duration::from_secs(600);
+        // The most one run may take, and the least worth starting one with.
+        const MAX_RUN: Duration = Duration::from_secs(300);
+        const MIN_RUN: Duration = Duration::from_secs(30);
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
         let tmp = out_dir.join(format!("download.tmp.{}", std::process::id()));
 
-        let status = std::process::Command::new("curl")
-            .args([
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--location",
-                "--proto",
-                "=https",
-                "--proto-redir",
-                "=https",
-                "--max-time",
-                "300",
-                "--retry",
-                "3",
-                "--max-filesize",
-            ])
-            .arg(MAX_BYTES.to_string())
-            .arg("--output")
-            .arg(&tmp)
-            .arg(url)
-            .status()
-            .unwrap_or_else(|e| {
-                fail(&format!(
-                    "failed to run `curl` to download {url}: {e}. Install curl, or set \
-                     FALKORDB_EMBEDDED_MODULE_PATH to a local module."
-                ))
-            });
-        if !status.success() {
-            let _ = std::fs::remove_file(&tmp);
-            fail(&format!("`curl` failed to download {url} (exit {status})"));
+        let start = Instant::now();
+        for attempt in 1..=ATTEMPTS {
+            let max_time = BUDGET.saturating_sub(start.elapsed()).min(MAX_RUN);
+            let pause = FIRST_PAUSE * 2u32.pow(attempt - 1);
+            match curl_once(url, &tmp, MAX_BYTES, max_time) {
+                Ok(()) => break,
+                Err(CurlFailure {
+                    message,
+                    transient: true,
+                }) if attempt < ATTEMPTS && start.elapsed() + pause + MIN_RUN <= BUDGET => {
+                    println!(
+                        "cargo:warning=embedded-bundle: {message}; retrying in {}s \
+                         (attempt {attempt} of {ATTEMPTS})",
+                        pause.as_secs()
+                    );
+                    std::thread::sleep(pause);
+                }
+                Err(CurlFailure { message, .. }) => fail(&message),
+            }
         }
 
         let bytes = std::fs::read(&tmp)
@@ -266,6 +274,88 @@ mod bundle {
             fail(&format!("download from {url} exceeded {MAX_BYTES} bytes"));
         }
         bytes
+    }
+
+    /// Why one run of curl didn't download the file.
+    struct CurlFailure {
+        message: String,
+        /// Running curl again later may succeed.
+        transient: bool,
+    }
+
+    /// Run curl once to download `url` into `tmp`, giving up after `max_time`.
+    fn curl_once(
+        url: &str,
+        tmp: &Path,
+        max_bytes: u64,
+        max_time: std::time::Duration,
+    ) -> Result<(), CurlFailure> {
+        let output = std::process::Command::new("curl")
+            .args([
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--location",
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                // The last HTTP status goes to stdout ("000" when no response
+                // arrived); the body goes to `tmp`.
+                "--write-out",
+                "%{http_code}",
+                "--max-time",
+            ])
+            .arg(max_time.as_secs().max(1).to_string())
+            .arg("--max-filesize")
+            .arg(max_bytes.to_string())
+            .arg("--output")
+            .arg(tmp)
+            .arg(url)
+            .stderr(std::process::Stdio::inherit())
+            .output()
+            .unwrap_or_else(|e| {
+                fail(&format!(
+                    "failed to run `curl` to download {url}: {e}. Install curl, or set \
+                     FALKORDB_EMBEDDED_MODULE_PATH to a local module."
+                ))
+            });
+        if output.status.success() {
+            return Ok(());
+        }
+        let _ = std::fs::remove_file(tmp);
+        let http_code = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(CurlFailure {
+            message: format!(
+                "`curl` failed to download {url} ({}, HTTP status {http_code})",
+                output.status
+            ),
+            transient: is_transient(output.status.code(), &http_code),
+        })
+    }
+
+    /// Whether a curl run that exited with `exit` might succeed if run again.
+    /// An HTTP error (exit 22, from `--fail`) is judged by its status: a request
+    /// timeout, rate limiting or a server error. Otherwise the exit code says
+    /// it all, since `%{http_code}` can still hold an earlier response, such as
+    /// the `302` to GitHub's asset host or a `200` cut short: an unresolved
+    /// proxy or host (5, 6), a refused connection (7), an HTTP/2 error (16,
+    /// 92), a partial file (18), a timeout (28), a failed TLS handshake (35),
+    /// an empty reply (52), or a send or receive error (55, 56). Anything else,
+    /// such as an untrusted certificate (60, 77) or exceeding `--max-filesize`
+    /// (63), happens again on every run.
+    fn is_transient(
+        exit: Option<i32>,
+        http_code: &str,
+    ) -> bool {
+        match exit {
+            Some(22) => {
+                matches!(http_code, "408" | "429")
+                    || (http_code.len() == 3 && http_code.starts_with('5'))
+            }
+            Some(5 | 6 | 7 | 16 | 18 | 28 | 35 | 52 | 55 | 56 | 92) => true,
+            _ => false,
+        }
     }
 
     /// Write `bytes` to `dest` via a temp file + rename, so a partial write is

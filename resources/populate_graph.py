@@ -6,7 +6,7 @@ import csv
 
 # The same server the tests use: FALKORDB_HOST / FALKORDB_PORT, as `just db-populate` passes them.
 db = FalkorDB(
-    host=os.environ.get("FALKORDB_HOST") or "localhost",
+    host=os.environ.get("FALKORDB_HOST") or "127.0.0.1",
     port=int(os.environ.get("FALKORDB_PORT") or 6379),
 )
 

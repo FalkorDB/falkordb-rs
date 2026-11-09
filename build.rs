@@ -222,34 +222,46 @@ mod bundle {
     /// purpose. Hosts without `curl` (or network) use
     /// `FALKORDB_EMBEDDED_MODULE_PATH` instead.
     ///
-    /// curl's own `--retry` rides out a blip of a few seconds, but GitHub's
-    /// release downloads have answered 504 for minutes at a time, failing CI
-    /// builds. So a run of curl that ends in a transient failure (no response,
-    /// or a 408, 429 or 5xx) is repeated after a growing pause, up to
-    /// [`ATTEMPTS`] runs in all; any other failure, such as a 404 for an
-    /// unknown version, stops the build at once.
+    /// GitHub's release downloads have answered 504 for minutes at a time,
+    /// failing CI builds. So a run of curl that ends in a transient failure is
+    /// repeated after a pause that doubles each time, up to [`ATTEMPTS`] runs,
+    /// all within [`BUDGET`]; any other failure, such as a 404 for an unknown
+    /// version, stops the build at once. Each run makes a single request:
+    /// curl's own `--retry` would let one run outlast its `--max-time`.
     fn http_get(url: &str) -> Vec<u8> {
+        use std::time::{Duration, Instant};
+
         // Up to 100 MiB — the module is ~10-20 MiB.
         const MAX_BYTES: u64 = 100 * 1024 * 1024;
-        // Pauses of 15, 30, 60 and 120 seconds between runs: almost four minutes.
-        const ATTEMPTS: u32 = 5;
-        const FIRST_PAUSE_SECS: u64 = 15;
+        // Pauses of 5, 10, 20, 40, 80 and 160 seconds between runs: about five
+        // minutes.
+        const ATTEMPTS: u32 = 7;
+        const FIRST_PAUSE: Duration = Duration::from_secs(5);
+        // Every run and pause together, so a network that hangs instead of
+        // failing can't hold the build up for long.
+        const BUDGET: Duration = Duration::from_secs(600);
+        // The most one run may take, and the least worth starting one with.
+        const MAX_RUN: Duration = Duration::from_secs(300);
+        const MIN_RUN: Duration = Duration::from_secs(30);
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
         let tmp = out_dir.join(format!("download.tmp.{}", std::process::id()));
 
+        let start = Instant::now();
         for attempt in 1..=ATTEMPTS {
-            match curl_once(url, &tmp, MAX_BYTES) {
+            let max_time = BUDGET.saturating_sub(start.elapsed()).min(MAX_RUN);
+            let pause = FIRST_PAUSE * 2u32.pow(attempt - 1);
+            match curl_once(url, &tmp, MAX_BYTES, max_time) {
                 Ok(()) => break,
                 Err(CurlFailure {
                     message,
                     transient: true,
-                }) if attempt < ATTEMPTS => {
-                    let pause = FIRST_PAUSE_SECS << (attempt - 1);
+                }) if attempt < ATTEMPTS && start.elapsed() + pause + MIN_RUN <= BUDGET => {
                     println!(
-                        "cargo:warning=embedded-bundle: {message}; retrying in {pause}s \
-                         (attempt {attempt} of {ATTEMPTS})"
+                        "cargo:warning=embedded-bundle: {message}; retrying in {}s \
+                         (attempt {attempt} of {ATTEMPTS})",
+                        pause.as_secs()
                     );
-                    std::thread::sleep(std::time::Duration::from_secs(pause));
+                    std::thread::sleep(pause);
                 }
                 Err(CurlFailure { message, .. }) => fail(&message),
             }
@@ -271,11 +283,12 @@ mod bundle {
         transient: bool,
     }
 
-    /// Run curl once to download `url` into `tmp`.
+    /// Run curl once to download `url` into `tmp`, giving up after `max_time`.
     fn curl_once(
         url: &str,
         tmp: &Path,
         max_bytes: u64,
+        max_time: std::time::Duration,
     ) -> Result<(), CurlFailure> {
         let output = std::process::Command::new("curl")
             .args([
@@ -287,16 +300,14 @@ mod bundle {
                 "=https",
                 "--proto-redir",
                 "=https",
-                "--max-time",
-                "300",
-                "--retry",
-                "3",
                 // The final HTTP status goes to stdout ("000" when no response
                 // arrived); the body goes to `tmp`.
                 "--write-out",
                 "%{http_code}",
-                "--max-filesize",
+                "--max-time",
             ])
+            .arg(max_time.as_secs().max(1).to_string())
+            .arg("--max-filesize")
             .arg(max_bytes.to_string())
             .arg("--output")
             .arg(tmp)
@@ -319,7 +330,8 @@ mod bundle {
                 "`curl` failed to download {url} ({}, HTTP status {http_code})",
                 output.status
             ),
-            transient: is_transient_http_code(&http_code),
+            transient: is_transient_http_code(&http_code)
+                || is_transient_exit_code(output.status.code()),
         })
     }
 
@@ -328,6 +340,14 @@ mod bundle {
     /// limiting, or a server error.
     fn is_transient_http_code(code: &str) -> bool {
         matches!(code, "000" | "408" | "429") || (code.len() == 3 && code.starts_with('5'))
+    }
+
+    /// Whether curl's exit code reports a transfer cut short after the
+    /// response began, which leaves `%{http_code}` at the server's `200`: a
+    /// partial file (18), a timeout (28), or a send (55) or receive (56) error.
+    /// An HTTP error is exit 22 instead, and is judged by its status alone.
+    fn is_transient_exit_code(code: Option<i32>) -> bool {
+        matches!(code, Some(18 | 28 | 55 | 56))
     }
 
     /// Write `bytes` to `dest` via a temp file + rename, so a partial write is

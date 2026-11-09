@@ -1168,7 +1168,7 @@ pub(crate) mod test_utils {
 
     /// Host of the test server: `FALKORDB_HOST`, as the integration tests and the `just` recipes
     /// use, or `127.0.0.1`.
-    pub(crate) fn test_server_host() -> String {
+    fn test_server_host() -> String {
         std::env::var("FALKORDB_HOST")
             .ok()
             .filter(|host| !host.is_empty())
@@ -1176,7 +1176,7 @@ pub(crate) mod test_utils {
     }
 
     /// Port of the test server: `FALKORDB_PORT`, or `6379`.
-    pub(crate) fn test_server_port() -> u16 {
+    fn test_server_port() -> u16 {
         std::env::var("FALKORDB_PORT")
             .ok()
             .filter(|port| !port.is_empty())
@@ -1184,15 +1184,26 @@ pub(crate) mod test_utils {
             .unwrap_or(6379)
     }
 
+    /// `host:port` of the test server, with an IPv6 host such as `::1` in brackets so the port
+    /// stays separate from it.
+    fn test_server_authority() -> String {
+        let host = test_server_host();
+        if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]:{}", test_server_port())
+        } else {
+            format!("{host}:{}", test_server_port())
+        }
+    }
+
     /// `falkor://` URL of the test server, so a run against a server on another port never
     /// touches whatever is listening on 6379.
     pub(crate) fn test_server_url() -> String {
-        format!("falkor://{}:{}", test_server_host(), test_server_port())
+        format!("falkor://{}", test_server_authority())
     }
 
     /// `redis://` URL of the test server, for tests that build a `redis::Client` directly.
     pub(crate) fn test_redis_url() -> String {
-        format!("redis://{}:{}", test_server_host(), test_server_port())
+        format!("redis://{}", test_server_authority())
     }
 
     /// Connection info for the test server; see [`test_server_url`].

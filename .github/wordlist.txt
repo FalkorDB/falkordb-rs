@@ -13,6 +13,7 @@ mut
 redis
 dependabot
 MarcoIeni
+rojopolis
 yml
 yaml
 codecov

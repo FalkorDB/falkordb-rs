@@ -1,0 +1,15 @@
+# Builds `falkordb` the way an application does: as a plain dependency, without this repo's
+# dev-dependencies. Cargo unifies features across a build, so a dev-dependency can switch on a
+# feature of a shared crate that `falkordb` forgot to request, and the crate's own tests pass while
+# applications break. proptest hid exactly that for regex's `unicode-case` (#421). Its own
+# `[workspace]` keeps it out of the published crate. Run it via `just consumer-smoke`.
+[package]
+name = "consumer-smoke"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+falkordb = { path = "../..", features = ["tracing"] }

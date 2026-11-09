@@ -51,7 +51,12 @@ fn redact_literals(query: &str) -> String {
             r#"|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*""#,
             r"|\b(?:0[xX][0-9a-fA-F]+|0[oO][0-7]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b",
             r"|\.\d+(?:[eE][+-]?\d+)?\b",
-            r"|(?i:\b(?:true|false|null)\b)",
+            // ASCII case folding (`-u`) is all these keywords need. Unicode case folding needs regex's
+            // `unicode-case` feature, which this crate doesn't enable: without it the pattern fails
+            // to compile and the first query panics (#421). The `\b`s stay outside the group so
+            // word boundaries remain Unicode-aware, and a keyword glued to a letter such as `é`
+            // isn't redacted.
+            r"|\b(?i-u:true|false|null)\b",
         ))
         .expect("the literal-redaction regex is a valid, fixed pattern")
     });
@@ -386,6 +391,17 @@ mod tests {
         let fingerprint = query_fingerprint(query);
         assert_eq!(fingerprint.len(), 16, "fingerprint is 16 hex digits");
         assert!(fingerprint.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn redaction_matches_keywords_in_any_case_but_not_inside_words() {
+        // The keywords fold case in ASCII, and the word boundaries are Unicode-aware, so a keyword
+        // that is part of a longer identifier, even next to a non-ASCII letter, is left alone.
+        assert_eq!(
+            redact_literals("RETURN TRUE, False, nUlL, étrue, truex, xnull, falseé"),
+            "RETURN ?, ?, ?, étrue, truex, xnull, falseé",
+        );
     }
 
     #[cfg(feature = "tracing")]

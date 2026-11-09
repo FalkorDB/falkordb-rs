@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop the `tracing` feature panicking on the first query. Each query's fingerprint redacts
+  literals with a regex that matched `true`, `false` and `null` case-insensitively with Unicode
+  case folding, which needs the `regex` crate's `unicode-case` feature. This crate doesn't enable
+  it, so unless another crate in the application's build did, the regex failed to compile and the
+  first query panicked. The keywords now fold case in ASCII only, which is all they need, and word
+  boundaries stay Unicode-aware. A new CI step runs queries through `falkordb` built as a plain
+  dependency, without the dev-dependency (`proptest`) that enabled `unicode-case` in this crate's
+  own tests and hid the panic ([#429](https://github.com/FalkorDB/falkordb-rs/pull/429), fixes
+  [#421](https://github.com/FalkorDB/falkordb-rs/issues/421))
+
 ## [0.11.1](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.0...v0.11.1) - 2026-11-03
 
 ### Other

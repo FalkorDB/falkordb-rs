@@ -379,6 +379,7 @@ mod tests {
 
     async fn one_connection_client() -> FalkorAsyncClient {
         FalkorClientBuilder::new_async()
+            .with_connection_info(crate::test_utils::test_connection_info())
             .with_connection_strategy(ConnectionStrategy::Pooled {
                 size: NonZeroU8::MIN,
             })

@@ -221,13 +221,63 @@ mod bundle {
     /// TLS stack into the offline `embedded-bundle` runtime would defeat its
     /// purpose. Hosts without `curl` (or network) use
     /// `FALKORDB_EMBEDDED_MODULE_PATH` instead.
+    ///
+    /// curl's own `--retry` rides out a blip of a few seconds, but GitHub's
+    /// release downloads have answered 504 for minutes at a time, failing CI
+    /// builds. So a run of curl that ends in a transient failure (no response,
+    /// or a 408, 429 or 5xx) is repeated after a growing pause, up to
+    /// [`ATTEMPTS`] runs in all; any other failure, such as a 404 for an
+    /// unknown version, stops the build at once.
     fn http_get(url: &str) -> Vec<u8> {
         // Up to 100 MiB — the module is ~10-20 MiB.
         const MAX_BYTES: u64 = 100 * 1024 * 1024;
+        // Pauses of 15, 30, 60 and 120 seconds between runs: almost four minutes.
+        const ATTEMPTS: u32 = 5;
+        const FIRST_PAUSE_SECS: u64 = 15;
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
         let tmp = out_dir.join(format!("download.tmp.{}", std::process::id()));
 
-        let status = std::process::Command::new("curl")
+        for attempt in 1..=ATTEMPTS {
+            match curl_once(url, &tmp, MAX_BYTES) {
+                Ok(()) => break,
+                Err(CurlFailure {
+                    message,
+                    transient: true,
+                }) if attempt < ATTEMPTS => {
+                    let pause = FIRST_PAUSE_SECS << (attempt - 1);
+                    println!(
+                        "cargo:warning=embedded-bundle: {message}; retrying in {pause}s \
+                         (attempt {attempt} of {ATTEMPTS})"
+                    );
+                    std::thread::sleep(std::time::Duration::from_secs(pause));
+                }
+                Err(CurlFailure { message, .. }) => fail(&message),
+            }
+        }
+
+        let bytes = std::fs::read(&tmp)
+            .unwrap_or_else(|e| fail(&format!("cannot read downloaded {}: {e}", tmp.display())));
+        let _ = std::fs::remove_file(&tmp);
+        if bytes.len() as u64 > MAX_BYTES {
+            fail(&format!("download from {url} exceeded {MAX_BYTES} bytes"));
+        }
+        bytes
+    }
+
+    /// Why one run of curl didn't download the file.
+    struct CurlFailure {
+        message: String,
+        /// Running curl again later may succeed.
+        transient: bool,
+    }
+
+    /// Run curl once to download `url` into `tmp`.
+    fn curl_once(
+        url: &str,
+        tmp: &Path,
+        max_bytes: u64,
+    ) -> Result<(), CurlFailure> {
+        let output = std::process::Command::new("curl")
             .args([
                 "--fail",
                 "--silent",
@@ -241,31 +291,43 @@ mod bundle {
                 "300",
                 "--retry",
                 "3",
+                // The final HTTP status goes to stdout ("000" when no response
+                // arrived); the body goes to `tmp`.
+                "--write-out",
+                "%{http_code}",
                 "--max-filesize",
             ])
-            .arg(MAX_BYTES.to_string())
+            .arg(max_bytes.to_string())
             .arg("--output")
-            .arg(&tmp)
+            .arg(tmp)
             .arg(url)
-            .status()
+            .stderr(std::process::Stdio::inherit())
+            .output()
             .unwrap_or_else(|e| {
                 fail(&format!(
                     "failed to run `curl` to download {url}: {e}. Install curl, or set \
                      FALKORDB_EMBEDDED_MODULE_PATH to a local module."
                 ))
             });
-        if !status.success() {
-            let _ = std::fs::remove_file(&tmp);
-            fail(&format!("`curl` failed to download {url} (exit {status})"));
+        if output.status.success() {
+            return Ok(());
         }
+        let _ = std::fs::remove_file(tmp);
+        let http_code = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(CurlFailure {
+            message: format!(
+                "`curl` failed to download {url} ({}, HTTP status {http_code})",
+                output.status
+            ),
+            transient: is_transient_http_code(&http_code),
+        })
+    }
 
-        let bytes = std::fs::read(&tmp)
-            .unwrap_or_else(|e| fail(&format!("cannot read downloaded {}: {e}", tmp.display())));
-        let _ = std::fs::remove_file(&tmp);
-        if bytes.len() as u64 > MAX_BYTES {
-            fail(&format!("download from {url} exceeded {MAX_BYTES} bytes"));
-        }
-        bytes
+    /// Whether curl's final `%{http_code}` is worth retrying: no response at
+    /// all (`000`: DNS, connect, reset or timeout), a request timeout, rate
+    /// limiting, or a server error.
+    fn is_transient_http_code(code: &str) -> bool {
+        matches!(code, "000" | "408" | "429") || (code.len() == 3 && code.starts_with('5'))
     }
 
     /// Write `bytes` to `dest` via a temp file + rename, so a partial write is

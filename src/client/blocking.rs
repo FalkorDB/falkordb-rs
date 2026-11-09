@@ -533,11 +533,12 @@ mod tests {
         FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
     };
     use approx::assert_relative_eq;
-    use std::{mem, num::NonZeroU8, sync::mpsc::TryRecvError, thread};
+    use std::{mem, num::NonZeroU8, sync::mpsc::TryRecvError};
 
     #[test]
     fn test_borrow_connection() {
         let client = FalkorClientBuilder::new()
+            .with_connection_info(crate::test_utils::test_connection_info())
             .with_num_connections(NonZeroU8::new(6).expect("Could not create a perfectly valid u8"))
             .build()
             .expect("Could not create client for this test");
@@ -646,7 +647,7 @@ mod tests {
     fn test_create_readonly_pool_none_without_replica() {
         // Without a Sentinel replica, no read-only pool is created and reads are
         // served by the primary pool.
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let client = redis::Client::open(crate::test_utils::test_redis_url()).unwrap();
         let mut provider = FalkorClientProvider::Redis {
             client,
             sentinel: None,
@@ -666,7 +667,7 @@ mod tests {
         // must fail (return None) rather than fall back to primary connections, so the
         // read-only pool is never populated with primary connections.
         use std::str::FromStr;
-        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let client = redis::Client::open(crate::test_utils::test_redis_url()).unwrap();
         // Port 1 is reliably unroutable in test environments.
         let connection_info = redis::ConnectionInfo::from_str("redis://127.0.0.1:1").unwrap();
         let replica = redis::sentinel::SentinelClient::build(
@@ -924,10 +925,14 @@ mod tests {
     fn test_get_config_all() {
         let client = create_test_client();
         let configuration = client.config_get("*").expect("Could not get configuration");
-        assert_eq!(
-            configuration.get("THREAD_COUNT").cloned().unwrap(),
-            ConfigValue::Int64(thread::available_parallelism().unwrap().get() as i64)
-        );
+        // The server's thread count, not this machine's: the two differ whenever the server runs
+        // elsewhere or with another CPU limit, as in a container.
+        let thread_count = configuration.get("THREAD_COUNT").cloned().unwrap();
+        assert!(matches!(thread_count, ConfigValue::Int64(count) if count > 0));
+        let single = client
+            .config_get("THREAD_COUNT")
+            .expect("Could not get configuration");
+        assert_eq!(single.get("THREAD_COUNT"), Some(&thread_count));
     }
 
     #[test]

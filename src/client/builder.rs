@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_sync_builder() {
-        let connection_info = "falkor://127.0.0.1:6379".try_into();
+        let connection_info = crate::test_utils::test_server_url().as_str().try_into();
         assert!(connection_info.is_ok());
 
         assert!(FalkorClientBuilder::new()
@@ -569,6 +569,7 @@ mod tests {
     #[test]
     fn test_connection_pool_size() {
         let client = FalkorClientBuilder::new()
+            .with_connection_info(crate::test_utils::test_connection_info())
             .with_num_connections(NonZeroU8::new(16).expect("Could not create a perfectly fine u8"))
             .build();
         assert!(client.is_ok());

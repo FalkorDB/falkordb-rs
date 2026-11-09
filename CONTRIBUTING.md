@@ -189,6 +189,16 @@ cargo test --test integration_tests --features tokio
 docker stop falkordb-test && docker rm falkordb-test
 ```
 
+The library tests, the integration tests and `resources/populate_graph.py` all connect to
+`FALKORDB_HOST` and `FALKORDB_PORT` (default `127.0.0.1:6379`). To keep a server you already run on
+6379 untouched, start the test server on another port and point them at it:
+
+```bash
+docker run -d --name falkordb-test -p 16379:6379 falkordb/falkordb:latest
+FALKORDB_PORT=16379 just db-populate
+FALKORDB_PORT=16379 just integration --all-features
+```
+
 #### CI Integration Tests
 
 Integration tests are automatically run in GitHub Actions using Docker services. See `.github/workflows/integration-tests.yml` for the CI configuration.

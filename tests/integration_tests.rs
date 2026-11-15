@@ -46,10 +46,7 @@ fn test_client_connection() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
     let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
@@ -64,18 +61,12 @@ fn test_select_graph_and_simple_query() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = match FalkorClientBuilder::new()
+    let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
     let mut graph = client.select_graph("test_integration");
 
@@ -96,25 +87,20 @@ fn test_graph_creation_and_deletion() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = match FalkorClientBuilder::new()
+    let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
     let mut graph = client.select_graph("test_temp_graph");
 
     // Create some data
-    let _ = graph
+    graph
         .query("CREATE (n:Person {name: 'Alice', age: 30})")
-        .execute();
+        .execute()
+        .expect("setup query");
 
     // Query the data
     let result = graph.query("MATCH (n:Person) RETURN n").execute();
@@ -132,24 +118,21 @@ fn test_multiple_connections() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = match FalkorClientBuilder::new()
+    let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
         .with_num_connections(std::num::NonZeroU8::new(4).unwrap())
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
     assert_eq!(client.connection_pool_size(), 4);
 
     let mut graph = client.select_graph("test_multi_conn");
-    let _ = graph.query("CREATE (n:Test {id: 1})").execute();
+    graph
+        .query("CREATE (n:Test {id: 1})")
+        .execute()
+        .expect("setup query");
     let _ = graph.delete();
 }
 
@@ -159,23 +142,20 @@ fn test_read_only_query() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = match FalkorClientBuilder::new()
+    let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
     let mut graph = client.select_graph("test_readonly");
 
     // Create some data first
-    let _ = graph.query("CREATE (n:Data {value: 42})").execute();
+    graph
+        .query("CREATE (n:Data {value: 42})")
+        .execute()
+        .expect("setup query");
 
     // Perform read-only query
     let result = graph.ro_query("MATCH (n:Data) RETURN n.value").execute();
@@ -192,18 +172,12 @@ fn test_replica_reads_available_single_node() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = match FalkorClientBuilder::new()
+    let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
     // The default read preference keeps reads on the primary.
     assert_eq!(client.read_preference(), ReadPreference::Primary);
@@ -217,7 +191,10 @@ fn test_replica_reads_available_single_node() {
     }
 
     let mut graph = client.select_graph("test_replica_reads_available_single_node");
-    let _ = graph.query("CREATE (n:Data {value: 7})").execute();
+    graph
+        .query("CREATE (n:Data {value: 7})")
+        .execute()
+        .expect("setup query");
 
     // Read-only queries must succeed regardless of whether reads are routed to a
     // replica (Sentinel) or served by the primary (single-node). Opting into a replica
@@ -241,18 +218,12 @@ fn test_read_preference_replica_on_write_query_errors() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = match FalkorClientBuilder::new()
+    let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
     let mut graph = client.select_graph("test_read_preference_write_errors");
 
@@ -278,18 +249,12 @@ fn test_read_preference_replica_on_write_batch_errors() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = match FalkorClientBuilder::new()
+    let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
     let mut graph = client.select_graph("test_read_preference_batch_errors");
 
@@ -322,24 +287,21 @@ fn test_client_default_read_preference_prefer_replica() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = match FalkorClientBuilder::new()
+    let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
         .with_read_preference(ReadPreference::PreferReplica)
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
     assert_eq!(client.read_preference(), ReadPreference::PreferReplica);
 
     let mut graph = client.select_graph("test_client_default_prefer_replica");
-    let _ = graph.query("CREATE (n:Data {value: 9})").execute();
+    graph
+        .query("CREATE (n:Data {value: 9})")
+        .execute()
+        .expect("setup query");
 
     // With a client-wide PreferReplica default, a read-only query is served from a replica when
     // available and otherwise transparently from the primary — either way it succeeds.
@@ -367,28 +329,26 @@ fn test_list_graphs() {
         return;
     }
 
-    let conn_info = match get_test_connection_info() {
-        Ok(info) => info,
-        Err(_) => return,
-    };
+    let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = match FalkorClientBuilder::new()
+    let client = FalkorClientBuilder::new()
         .with_connection_info(conn_info)
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
     // Create a test graph
     let mut graph = client.select_graph("test_list_graphs");
-    let _ = graph.query("CREATE (n:Node)").execute();
-
-    // List graphs
-    let graphs = client.list_graphs();
+    graph
+        .query("CREATE (n:Node)")
+        .execute()
+        .expect("setup query");
 
     // Should include our test graph
-    assert!(graphs.is_ok(), "Failed to list graphs: {:?}", graphs.err());
+    let graphs = client.list_graphs().expect("list graphs");
+    assert!(
+        graphs.iter().any(|name| name == "test_list_graphs"),
+        "test_list_graphs missing from {graphs:?}"
+    );
 
     // Clean up
     let _ = graph.delete();
@@ -403,11 +363,11 @@ mod typed_params {
         if skip_if_no_server() {
             return None;
         }
-        let conn_info = get_test_connection_info().ok()?;
+        let conn_info = get_test_connection_info().expect("valid connection info");
         let client = FalkorClientBuilder::new()
             .with_connection_info(conn_info)
             .build()
-            .ok()?;
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
         let mut graph = client.select_graph(name);
         let _ = graph.delete();
         Some(graph)
@@ -661,11 +621,11 @@ mod header_aware_rows {
         if skip_if_no_server() {
             return None;
         }
-        let conn_info = get_test_connection_info().ok()?;
+        let conn_info = get_test_connection_info().expect("valid connection info");
         let client = FalkorClientBuilder::new()
             .with_connection_info(conn_info)
             .build()
-            .ok()?;
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
         let mut graph = client.select_graph(name);
         let _ = graph.delete();
         Some(graph)
@@ -765,10 +725,7 @@ mod async_tests {
             return;
         }
 
-        let conn_info = match get_test_connection_info() {
-            Ok(info) => info,
-            Err(_) => return,
-        };
+        let conn_info = get_test_connection_info().expect("valid connection info");
 
         let client = falkordb::FalkorClientBuilder::new_async()
             .with_connection_info(conn_info)
@@ -784,19 +741,13 @@ mod async_tests {
             return;
         }
 
-        let conn_info = match get_test_connection_info() {
-            Ok(info) => info,
-            Err(_) => return,
-        };
+        let conn_info = get_test_connection_info().expect("valid connection info");
 
-        let client = match falkordb::FalkorClientBuilder::new_async()
+        let client = falkordb::FalkorClientBuilder::new_async()
             .with_connection_info(conn_info)
             .build()
             .await
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
         let mut graph = client.select_graph("test_async_query");
 
@@ -870,19 +821,13 @@ mod async_tests {
             return;
         }
 
-        let conn_info = match get_test_connection_info() {
-            Ok(info) => info,
-            Err(_) => return,
-        };
+        let conn_info = get_test_connection_info().expect("valid connection info");
 
-        let client = match falkordb::FalkorClientBuilder::new_async()
+        let client = falkordb::FalkorClientBuilder::new_async()
             .with_connection_info(conn_info)
             .build()
             .await
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
         #[derive(Debug, Deserialize, PartialEq)]
         struct Movie {
@@ -942,18 +887,12 @@ mod serde_typed_mapping {
             return;
         }
 
-        let conn_info = match get_test_connection_info() {
-            Ok(info) => info,
-            Err(_) => return,
-        };
+        let conn_info = get_test_connection_info().expect("valid connection info");
 
-        let client = match FalkorClientBuilder::new()
+        let client = FalkorClientBuilder::new()
             .with_connection_info(conn_info)
             .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
         let mut graph = client.select_graph("test_serde_typed_mapping");
         let _ = graph.delete();
@@ -994,18 +933,12 @@ mod serde_typed_mapping {
             return;
         }
 
-        let conn_info = match get_test_connection_info() {
-            Ok(info) => info,
-            Err(_) => return,
-        };
+        let conn_info = get_test_connection_info().expect("valid connection info");
 
-        let client = match FalkorClientBuilder::new()
+        let client = FalkorClientBuilder::new()
             .with_connection_info(conn_info)
             .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
         let mut graph = client.select_graph("test_serde_scalar_column");
         let _ = graph.delete();
@@ -1035,18 +968,12 @@ mod serde_typed_mapping {
             return;
         }
 
-        let conn_info = match get_test_connection_info() {
-            Ok(info) => info,
-            Err(_) => return,
-        };
+        let conn_info = get_test_connection_info().expect("valid connection info");
 
-        let client = match FalkorClientBuilder::new()
+        let client = FalkorClientBuilder::new()
             .with_connection_info(conn_info)
             .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
         let mut graph = client.select_graph("test_serde_query_as_nodes");
         let _ = graph.delete();
@@ -1094,18 +1021,12 @@ mod serde_typed_mapping {
             return;
         }
 
-        let conn_info = match get_test_connection_info() {
-            Ok(info) => info,
-            Err(_) => return,
-        };
+        let conn_info = get_test_connection_info().expect("valid connection info");
 
-        let client = match FalkorClientBuilder::new()
+        let client = FalkorClientBuilder::new()
             .with_connection_info(conn_info)
             .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
         let mut graph = client.select_graph("test_serde_query_as_aliased");
         let _ = graph.delete();
@@ -1142,18 +1063,12 @@ mod serde_typed_mapping {
             return;
         }
 
-        let conn_info = match get_test_connection_info() {
-            Ok(info) => info,
-            Err(_) => return,
-        };
+        let conn_info = get_test_connection_info().expect("valid connection info");
 
-        let client = match FalkorClientBuilder::new()
+        let client = FalkorClientBuilder::new()
             .with_connection_info(conn_info)
             .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 
         let mut graph = client.select_graph("test_serde_query_as_scalar");
         let _ = graph.delete();
@@ -1188,12 +1103,12 @@ mod async_streaming {
         if skip_if_no_server() {
             return None;
         }
-        let conn_info = get_test_connection_info().ok()?;
+        let conn_info = get_test_connection_info().expect("valid connection info");
         let client = FalkorClientBuilder::new_async()
             .with_connection_info(conn_info)
             .build()
             .await
-            .ok()?;
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
         let mut graph = client.select_graph(name);
         let _ = graph.delete().await;
         Some(graph)
@@ -1447,11 +1362,11 @@ mod batch_pipelining {
         if skip_if_no_server() {
             return None;
         }
-        let conn_info = get_test_connection_info().ok()?;
+        let conn_info = get_test_connection_info().expect("valid connection info");
         let client = FalkorClientBuilder::new()
             .with_connection_info(conn_info)
             .build()
-            .ok()?;
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
         let mut graph = client.select_graph(name);
         let _ = graph.delete();
         Some(graph)
@@ -1627,12 +1542,12 @@ mod async_batch_pipelining {
         if skip_if_no_server() {
             return None;
         }
-        let conn_info = get_test_connection_info().ok()?;
+        let conn_info = get_test_connection_info().expect("valid connection info");
         let client = FalkorClientBuilder::new_async()
             .with_connection_info(conn_info)
             .build()
             .await
-            .ok()?;
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
         let mut graph = client.select_graph(name);
         let _ = graph.delete().await;
         Some(graph)
@@ -1771,11 +1686,11 @@ mod temporal_values {
         if skip_if_no_server() {
             return None;
         }
-        let conn_info = get_test_connection_info().ok()?;
+        let conn_info = get_test_connection_info().expect("valid connection info");
         let client = FalkorClientBuilder::new()
             .with_connection_info(conn_info)
             .build()
-            .ok()?;
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
         let mut graph = client.select_graph(name);
         let _ = graph.delete();
         Some(graph)

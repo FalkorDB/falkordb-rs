@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Detect a Redis Cluster or a Sentinel when FalkorDB runs inside Valkey. The client tells the
-  deployment apart by the mode the server reports in `INFO server`, and read only `redis_mode`.
-  Valkey reports it as `server_mode` unless its `extended-redis-compatibility` option is on, so a
-  cluster node was taken for a standalone server and every graph stored on another node failed with
-  `MOVED`, and a Sentinel was sent graph commands it doesn't know. Either field is now read
+  deployment apart by the mode the server reports in `INFO server`, but it used to read only
+  `redis_mode`. Valkey reports it as `server_mode` unless its `extended-redis-compatibility` option
+  is on, so a cluster node was taken for a standalone server and every graph stored on another node
+  failed with `MOVED`, and a Sentinel was sent graph commands it doesn't know. Either field is now
+  read
   ([#431](https://github.com/FalkorDB/falkordb-rs/pull/431))
 
 ## [0.11.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.1...v0.11.2) - 2026-11-09

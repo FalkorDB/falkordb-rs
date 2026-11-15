@@ -426,6 +426,21 @@ fn slot_nodes(reply: redis::Value) -> Vec<(String, u16)> {
         .collect()
 }
 
+/// Whether a node's reported replication role is `expected` (`"master"` or `"slave"`). Redis and
+/// Valkey still answer `ROLE` and `INFO REPLICATION` with `master` and `slave`, but both now say
+/// primary and replica elsewhere, so those names are accepted too in case a server switches to them.
+fn role_is(
+    reported: &str,
+    expected: &str,
+) -> bool {
+    let canonical = |role| match role {
+        "primary" => "master",
+        "replica" => "slave",
+        role => role,
+    };
+    canonical(reported) == canonical(expected)
+}
+
 impl FalkorClientProvider {
     /// Open a synchronous connection from `client`, honoring `connect_timeout` during
     /// establishment and applying `response_timeout` as the socket read/write deadline
@@ -591,8 +606,7 @@ impl FalkorClientProvider {
                 .into_iter()
                 .next()
                 .and_then(|v| redis_value_as_string(v).ok())
-                .as_deref()
-                == Some(expected_role)),
+                .is_some_and(|role| role_is(&role, expected_role))),
             Err(role_err)
                 if matches!(
                     role_err.kind(),
@@ -607,7 +621,7 @@ impl FalkorClientProvider {
                 Ok(info
                     .lines()
                     .find_map(|line| line.trim_end().strip_prefix("role:"))
-                    == Some(expected_role))
+                    .is_some_and(|role| role_is(role, expected_role)))
             }
             Err(err) => Err(FalkorDBError::RedisError(err.to_string())),
         }
@@ -2589,6 +2603,71 @@ mod tests {
             "five stalled replicas must share one {budget:?} deadline, took {:?}",
             start.elapsed()
         );
+    }
+
+    #[test]
+    fn test_role_is_accepts_the_primary_and_replica_names() {
+        for (reported, expected) in [
+            ("master", "master"),
+            ("primary", "master"),
+            ("slave", "slave"),
+            ("replica", "slave"),
+        ] {
+            assert!(role_is(reported, expected), "{reported} is {expected}");
+        }
+        for (reported, expected) in [
+            ("slave", "master"),
+            ("replica", "master"),
+            ("master", "slave"),
+            ("primary", "slave"),
+            ("sentinel", "slave"),
+        ] {
+            assert!(!role_is(reported, expected), "{reported} is not {expected}");
+        }
+    }
+
+    #[test]
+    fn test_sync_replica_resolution_accepts_a_node_reporting_replica() {
+        // One node answers `ROLE` with `replica`; the other rejects `ROLE` and says
+        // `role:replica` in `INFO REPLICATION`.
+        let role_replica = spawn_fake_resp_server(|command| {
+            if command.contains("\r\nROLE\r\n") {
+                "*5\r\n$7\r\nreplica\r\n$9\r\n127.0.0.1\r\n:6379\r\n$9\r\nconnected\r\n:0\r\n"
+                    .to_string()
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        let info_replica = spawn_fake_resp_server(|command| {
+            if command.contains("\r\nROLE\r\n") {
+                "-NOPERM this user has no permissions to run the 'role' command\r\n".to_string()
+            } else if command.contains("\r\nINFO\r\n") {
+                let body = "# Replication\r\nrole:replica\r\n";
+                format!("${}\r\n{body}\r\n", body.len())
+            } else {
+                "+OK\r\n".to_string()
+            }
+        });
+        for replica in [role_replica, info_replica] {
+            let sentinel = spawn_fake_sentinel(
+                format!("*1\r\n{}", sentinel_entry(&[("name", "mymaster")])),
+                format!(
+                    "*1\r\n{}",
+                    sentinel_entry(&[
+                        ("ip", "127.0.0.1"),
+                        ("port", &replica.to_string()),
+                        ("flags", "slave"),
+                    ])
+                ),
+            );
+            let client = FalkorClientProvider::resolve_sentinel_client_with_timeout(
+                &sentinel,
+                true,
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(2)),
+            )
+            .expect("a node reporting the replica role resolves as a replica");
+            assert_eq!(resolved_port(&client), replica);
+        }
     }
 
     #[test]

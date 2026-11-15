@@ -28,6 +28,10 @@
 //!
 //! When the module cannot be resolved the tests no-op (return early) so they stay green on
 //! machines that lack a compatible build (e.g. macOS hosts with a Linux-only module).
+//!
+//! `test_embedded_server_on_valkey` is different: it is `#[ignore]`d and run explicitly by
+//! `just test-embedded-valkey` (and CI), and when run it fails instead of skipping if its
+//! `valkey-server` or FalkorDB 6.x module is missing.
 
 #![cfg(feature = "embedded-core")]
 
@@ -404,4 +408,77 @@ fn test_embedded_server_starts_with_spaces_in_paths() {
         "socket should be removed after the server is dropped"
     );
     assert!(db_dir.exists(), "a caller-provided db_dir must be kept");
+}
+
+// ---------------------------------------------------------------------------------------
+// Valkey (opt-in: `just test-embedded-valkey`)
+// ---------------------------------------------------------------------------------------
+
+/// Start the embedded server on a real `valkey-server`, found by the `PATH` lookup falling back
+/// from `redis-server`, with a FalkorDB 6.x module, and run graph queries on it. It needs a
+/// `PATH` with a Valkey 8.0+ and no `redis-server`, and `FALKORDB_VALKEY_MODULE` naming a 6.x
+/// module, so it is ignored by default. `just test-embedded-valkey` runs it inside the
+/// `falkordb/falkordb:edge` image, which ships both.
+#[test]
+#[ignore = "needs valkey-server and a FalkorDB 6.x module; run with `just test-embedded-valkey`"]
+fn test_embedded_server_on_valkey() {
+    let module = std::env::var_os("FALKORDB_VALKEY_MODULE")
+        .map(PathBuf::from)
+        .expect("set FALKORDB_VALKEY_MODULE to a FalkorDB 6.x module");
+    assert!(
+        module.exists(),
+        "FALKORDB_VALKEY_MODULE {} does not exist",
+        module.display()
+    );
+    assert!(
+        which::which("redis-server").is_err(),
+        "PATH must not have a redis-server, so the lookup falls back to valkey-server"
+    );
+    which::which("valkey-server").expect("PATH must have a valkey-server");
+
+    let server = EmbeddedServer::start(EmbeddedConfig {
+        redis_server_path: None,
+        falkordb_module_path: Some(module),
+        socket_path: Some(PathBuf::from(format!(
+            "/tmp/fdb-emb-valkey-{}.sock",
+            std::process::id()
+        ))),
+        ..Default::default()
+    })
+    .expect("embedded server should start on valkey-server");
+
+    // The server that answers is Valkey.
+    let info: String = redis::Client::open(server.connection_string())
+        .and_then(|client| client.get_connection())
+        .and_then(|mut conn| redis::cmd("INFO").arg("server").query(&mut conn))
+        .expect("INFO server over the embedded socket");
+    assert!(
+        info.contains("server_name:valkey"),
+        "expected a Valkey server, got:\n{info}"
+    );
+
+    let client = FalkorClientBuilder::new()
+        .with_connection_info(
+            FalkorConnectionInfo::try_from(server.connection_string().as_str())
+                .expect("connection info from the embedded socket"),
+        )
+        .build()
+        .expect("client connects to the embedded Valkey");
+    let mut graph = client.select_graph("embedded_valkey");
+    graph
+        .query("CREATE (:Server {name: 'valkey'})")
+        .execute()
+        .expect("write query on Valkey");
+    let name = graph
+        .ro_query("MATCH (s:Server) RETURN s.name")
+        .execute()
+        .expect("read query on Valkey")
+        .data
+        .next()
+        .expect("one row")
+        .expect("row should parse")
+        .try_get_at::<String>(0)
+        .expect("column 0 should be a string");
+    assert_eq!(name, "valkey");
+    graph.delete().expect("cleanup");
 }

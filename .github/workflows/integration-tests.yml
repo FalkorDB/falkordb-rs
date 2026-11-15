@@ -231,6 +231,26 @@ jobs:
       - name: Run cluster integration tests
         run: just test-cluster
 
+  # Starts the embedded server on a real `valkey-server` with a FalkorDB 6.x module and runs graph
+  # queries on it. Only `falkordb/falkordb:edge` ships Valkey (`latest` is Redis), so the recipe
+  # uses it whatever the tag above resolves to. It builds the test binary in a Rust container and
+  # runs it in that image, so the runner needs only Docker, jq and just.
+  integration-tests-valkey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
+
+      - name: Run the embedded server on Valkey
+        run: just test-embedded-valkey
+
   # A cron job has nobody watching it: GitHub only emails whoever last touched
   # the cron line, so a failing daily run would otherwise go unnoticed. The
   # reporter is shared with the other FalkorDB clients, which all need the same
@@ -238,7 +258,7 @@ jobs:
   # downgrade the caller's token.
   report-scheduled-failure:
     name: Report scheduled failure
-    needs: [falkordb-version, integration-tests, integration-tests-tokio, integration-tests-cluster]
+    needs: [falkordb-version, integration-tests, integration-tests-tokio, integration-tests-cluster, integration-tests-valkey]
     # `cancelled` as well as `failure`: a job stopped by its own timeout, or by
     # GitHub's six hour ceiling, reports `cancelled`, and a nightly that hangs is
     # exactly the case this alert exists for.

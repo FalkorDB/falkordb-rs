@@ -69,11 +69,21 @@ static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// In both modes, an explicit `falkordb_module_path` always wins.
 ///
-/// The `redis-server` binary is **never** downloaded: it is always located on
-/// the host via `redis_server_path` or `PATH`. Install it from your package
-/// manager (e.g. `brew install redis`, `apt-get install redis-server`) or point
+/// The server binary is **never** downloaded: it is always located on the host
+/// via `redis_server_path` or `PATH`, which is searched for `redis-server` and,
+/// when there is none, for `valkey-server`. Install one from your package manager
+/// (e.g. `brew install redis`, `apt-get install redis-server`) or point
 /// `redis_server_path` at an existing FalkorDB/Redis install. FalkorDB requires
-/// redis-server **8.0 or newer**.
+/// `redis-server` or `valkey-server` **8.0 or newer**.
+///
+/// A `valkey-server` needs a FalkorDB **6.x** module: Valkey reports itself to
+/// modules as Redis 7.2, and FalkorDB before 6.0 refuses to load below Redis 8.0.
+/// The default module (`provision::FALKORDB_VERSION`) is older, so with Valkey
+/// set `falkordb_version` to a 6.x release (e.g. `"v6.0.4"`) or point
+/// `falkordb_module_path` at a 6.x module. 6.x modules are published for Linux
+/// only. When the module version is known (the default, `falkordb_version` or the
+/// `embedded-bundle` version), `start` refuses an older one on Valkey before
+/// spawning the server; an explicit `falkordb_module_path` is left to the load.
 ///
 /// # License Note
 ///
@@ -83,7 +93,9 @@ static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// <https://www.falkordb.com/> for licensing details.
 #[derive(Debug, Clone)]
 pub struct EmbeddedConfig {
-    /// Path to the redis-server executable. If None, searches in PATH.
+    /// Path to the server executable (`redis-server` or `valkey-server`). If None, searches
+    /// PATH for `redis-server`, then `valkey-server`. Valkey is recognized by what
+    /// `--version` reports, not by the file name.
     pub redis_server_path: Option<PathBuf>,
     /// Path to the FalkorDB module (.so file). If None, searches common
     /// locations and (when `auto_download` is enabled) downloads it; with the
@@ -100,7 +112,7 @@ pub struct EmbeddedConfig {
     /// Enable automatic downloading of the missing FalkorDB **module** from the
     /// official FalkorDB releases. Defaults to `true`. When `false`, behaves
     /// like a lookup-only resolver (explicit path or system locations) and
-    /// errors if the module is not found. `redis-server` is never downloaded.
+    /// errors if the module is not found. The server binary is never downloaded.
     /// **No effect with the `embedded-bundle` feature** (the module is embedded
     /// at build time and never downloaded at runtime).
     pub auto_download: bool,
@@ -139,7 +151,8 @@ impl Default for EmbeddedConfig {
 
 /// Manages an embedded FalkorDB server instance.
 ///
-/// When created, spawns a redis-server process with the FalkorDB module loaded.
+/// When created, spawns a `redis-server` (or `valkey-server`) process with the FalkorDB module
+/// loaded.
 /// The server uses a Unix socket for connections and is automatically shut down
 /// when the instance is dropped.
 pub struct EmbeddedServer {
@@ -154,10 +167,11 @@ pub struct EmbeddedServer {
     config_file: PathBuf,
 }
 
-/// Whether a `redis-server --version` output string reports a major version
-/// older than the 8.0 the FalkorDB module requires. Output that can't be parsed
-/// is treated as new-enough (`false`), leaving the real load attempt to surface
-/// any genuine incompatibility. Example input: `Redis server v=8.6.3 sha=…`.
+/// Whether a server's `--version` output reports a major version older than the 8.0 the
+/// FalkorDB module requires. The floor is the same for `redis-server` and `valkey-server`.
+/// Output that can't be parsed is treated as new-enough (`false`), leaving the real load
+/// attempt to surface any genuine incompatibility. Example inputs: `Redis server v=8.6.3 sha=…`,
+/// `Valkey server v=9.1.2 sha=…`.
 fn redis_version_too_old(version_text: &str) -> bool {
     const MIN_MAJOR: u32 = 8;
     version_text
@@ -166,6 +180,69 @@ fn redis_version_too_old(version_text: &str) -> bool {
         .and_then(|rest| rest.split('.').next())
         .and_then(|major| major.trim().parse::<u32>().ok())
         .is_some_and(|major| major < MIN_MAJOR)
+}
+
+/// Whether a server's `--version` output comes from Valkey (`Valkey server v=9.1.2 …`), told
+/// apart by what the binary reports rather than by its file name.
+fn is_valkey(version_text: &str) -> bool {
+    version_text.trim_start().starts_with("Valkey ")
+}
+
+/// The major version of a FalkorDB release tag such as `v4.18.10`, or `None` if it doesn't parse.
+fn module_major_version(version: &str) -> Option<u32> {
+    version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// An executable's file name (e.g. `valkey-server`) for diagnostics, or `server`.
+fn server_name(path: &Path) -> std::borrow::Cow<'_, str> {
+    path.file_name()
+        .map_or("server".into(), |name| name.to_string_lossy())
+}
+
+/// The server executable `start` launches (`redis-server` or `valkey-server`) and what its
+/// `--version` printed, if it printed anything in time.
+#[derive(Debug, Default)]
+struct ServerBinary {
+    path: PathBuf,
+    version: Option<String>,
+}
+
+impl ServerBinary {
+    fn name(&self) -> std::borrow::Cow<'_, str> {
+        server_name(&self.path)
+    }
+
+    /// Fail before spawning when the server is Valkey and `module_version` is a FalkorDB
+    /// release older than 6.0. Valkey reports itself to modules as Redis 7.2, and those modules
+    /// refuse to load on anything below Redis 8.0. `choose_module` says how to pick another
+    /// module. A version that doesn't parse is let through for the load attempt to report.
+    fn check_module_version(
+        &self,
+        module_version: &str,
+        choose_module: &str,
+    ) -> FalkorResult<()> {
+        let Some(version) = self.version.as_deref().filter(|text| is_valkey(text)) else {
+            return Ok(());
+        };
+        if module_major_version(module_version).is_none_or(|major| major >= 6) {
+            return Ok(());
+        }
+        Err(FalkorDBError::EmbeddedServerError(format!(
+            "{} at {} is Valkey ({}), which needs a FalkorDB 6.x module, but the module to load \
+             is FalkorDB {module_version}. Valkey reports itself to modules as Redis 7.2, and \
+             FalkorDB before 6.0 requires Redis 8.0. {choose_module} FalkorDB 6.x modules are \
+             published for Linux only.",
+            self.name(),
+            self.path.display(),
+            version.trim()
+        )))
+    }
 }
 
 /// Quote a value for a redis config file directive. redis splits directives on whitespace
@@ -200,7 +277,8 @@ impl EmbeddedServer {
     ///
     /// # Errors
     /// Returns an error if:
-    /// - redis-server or FalkorDB module cannot be found
+    /// - Neither `redis-server` nor `valkey-server` (or the FalkorDB module) can be found
+    /// - The server is older than 8.0, or is Valkey and the module is a FalkorDB release before 6.0
     /// - The server process fails to start
     /// - The server doesn't respond within the timeout period
     pub fn start(config: EmbeddedConfig) -> FalkorResult<Self> {
@@ -210,15 +288,17 @@ impl EmbeddedServer {
             Self::validate_socket_path_len(socket_path)?;
         }
 
-        // Find redis-server executable
-        let redis_server = Self::find_redis_server(&config)?;
+        // Find the server executable: redis-server, else valkey-server.
+        let path = Self::find_redis_server(&config)?;
 
-        // The FalkorDB module hard-requires redis-server >= 8.0; fail fast with a
+        // The FalkorDB module hard-requires a server >= 8.0; fail fast with a
         // clear message rather than an opaque startup timeout.
-        Self::check_redis_version(&redis_server, config.start_timeout)?;
+        let version = Self::check_redis_version(&path, config.start_timeout)?;
+        let server = ServerBinary { path, version };
+        let server_name = server.name();
 
-        // Find FalkorDB module
-        let falkordb_module = Self::find_falkordb_module(&config)?;
+        // Find FalkorDB module (and refuse one that can't load on a Valkey server).
+        let falkordb_module = Self::find_falkordb_module(&config, &server)?;
 
         // Set up directories and paths
         let (db_dir, temp_dir) = Self::setup_db_dir(&config)?;
@@ -236,13 +316,13 @@ impl EmbeddedServer {
             })
             .inspect_err(|_| Self::remove_temp_dirs(&temp_dirs))?;
 
-        // Capture redis-server's stderr to a log file so a failed module load
+        // Capture the server's stderr to a log file so a failed module load
         // (wrong arch, missing libomp, redis too old, …) surfaces a real cause
         // instead of only a timeout. Falls back to null if the log can't open.
         // The name is unique so a caller-provided persistent `db_dir` (or several
         // servers sharing one) can't clobber an unrelated file.
         let log_path = db_dir.join(format!(
-            "redis-server.{}.{}.log",
+            "{server_name}.{}.{}.log",
             std::process::id(),
             INSTANCE_COUNTER.fetch_add(1, Ordering::SeqCst)
         ));
@@ -250,8 +330,8 @@ impl EmbeddedServer {
             .map(Stdio::from)
             .unwrap_or_else(|_| Stdio::null());
 
-        // Start redis-server with FalkorDB module (no daemonize to keep process handle valid)
-        let mut command = Command::new(&redis_server);
+        // Start the server with FalkorDB module (no daemonize to keep process handle valid)
+        let mut command = Command::new(&server.path);
         command
             .arg(&config_file)
             .arg("--loadmodule")
@@ -261,7 +341,8 @@ impl EmbeddedServer {
 
         let mut process = command.spawn().map_err(|e| {
             Self::start_error(
-                &format!("Failed to start redis-server: {e}"),
+                &format!("Failed to start {server_name}: {e}"),
+                &server_name,
                 &log_path,
                 &config_file,
                 &temp_dirs,
@@ -278,12 +359,13 @@ impl EmbeddedServer {
                 let _ = process.kill();
                 let _ = process.wait();
                 let reason = if exited {
-                    "redis-server exited before the socket was ready"
+                    format!("{server_name} exited before the socket was ready")
                 } else {
-                    "Timed out waiting for server to start"
+                    "Timed out waiting for server to start".to_string()
                 };
                 return Err(Self::start_error(
-                    reason,
+                    &reason,
+                    &server_name,
                     &log_path,
                     &config_file,
                     &temp_dirs,
@@ -300,7 +382,8 @@ impl EmbeddedServer {
         if matches!(process.try_wait(), Ok(Some(_))) {
             let _ = process.wait();
             return Err(Self::start_error(
-                "redis-server exited immediately after the socket appeared",
+                &format!("{server_name} exited immediately after the socket appeared"),
+                &server_name,
                 &log_path,
                 &config_file,
                 &temp_dirs,
@@ -324,7 +407,7 @@ impl EmbeddedServer {
         }
     }
 
-    /// Read the last few KiB of the redis-server log for inclusion in a startup
+    /// Read the last few KiB of the server log for inclusion in a startup
     /// error. Returns an empty string when the log is missing or empty.
     fn read_log_tail(log_path: &Path) -> String {
         const MAX: usize = 4096;
@@ -345,11 +428,12 @@ impl EmbeddedServer {
         format!("…{}", &trimmed[start..])
     }
 
-    /// Build a startup error that includes the redis log tail, cleaning up the
+    /// Build a startup error that includes the server log tail, cleaning up the
     /// config file, log file and temp dirs. The caller is responsible for having
-    /// already reaped the redis process.
+    /// already reaped the server process.
     fn start_error(
         reason: &str,
+        server_name: &str,
         log_path: &Path,
         config_file: &Path,
         temp_dirs: &[PathBuf],
@@ -361,7 +445,7 @@ impl EmbeddedServer {
         FalkorDBError::EmbeddedServerError(if log_tail.is_empty() {
             reason.to_string()
         } else {
-            format!("{reason}. redis-server output:\n{log_tail}")
+            format!("{reason}. {server_name} output:\n{log_tail}")
         })
     }
 
@@ -408,45 +492,59 @@ impl EmbeddedServer {
                 return Ok(path.clone());
             }
             return Err(FalkorDBError::EmbeddedServerError(format!(
-                "redis-server not found at: {}",
+                "server executable (`redis_server_path`) not found at: {}",
                 path.display()
             )));
         }
 
-        // Try to find in PATH
-        which::which("redis-server")
-            .map_err(|_| FalkorDBError::EmbeddedServerError(
-                "redis-server not found in PATH. Please install Redis or specify the path in EmbeddedConfig".to_string()
-            ))
+        Self::find_server_in(std::env::var_os("PATH"))
     }
 
-    /// Pre-flight the redis-server version: the FalkorDB module requires
-    /// redis-server >= 8.0 and refuses to load on anything older, so checking the
+    /// The first server executable on the given search path: Redis's `redis-server`, else Valkey's
+    /// `valkey-server`, which loads the FalkorDB module too.
+    fn find_server_in(search_path: Option<std::ffi::OsString>) -> FalkorResult<PathBuf> {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        ["redis-server", "valkey-server"]
+            .into_iter()
+            .find_map(|name| which::which_in(name, search_path.as_ref(), &cwd).ok())
+            .ok_or_else(|| {
+                FalkorDBError::EmbeddedServerError(
+                    "neither redis-server nor valkey-server found in PATH. Install Redis or Valkey, \
+                     or set `redis_server_path` in EmbeddedConfig"
+                        .to_string(),
+                )
+            })
+    }
+
+    /// Pre-flight the server version: the FalkorDB module requires a `redis-server`
+    /// or `valkey-server` >= 8.0 and refuses to load on anything older, so checking the
     /// version up front turns an opaque "timed out waiting for server" into an
     /// actionable error. A version that can't be parsed is allowed through (the
-    /// real load attempt will still surface any incompatibility).
+    /// real load attempt will still surface any incompatibility). Returns the
+    /// `--version` output, or `None` when the binary printed nothing in time.
     fn check_redis_version(
         redis_server: &Path,
         start_timeout: Duration,
-    ) -> FalkorResult<()> {
+    ) -> FalkorResult<Option<String>> {
         let Some(text) = Self::redis_version_output(redis_server, start_timeout) else {
             // Couldn't get a version in time; let the start attempt (bounded by
             // `start_timeout`) report any real problem.
-            return Ok(());
+            return Ok(None);
         };
         if redis_version_too_old(&text) {
+            let name = server_name(redis_server);
             return Err(FalkorDBError::EmbeddedServerError(format!(
-                "redis-server at {} reports version {}, but FalkorDB requires redis-server \
-                 8.0 or newer. Install a newer redis-server or point \
+                "{name} at {} reports version {}, but FalkorDB requires redis-server or \
+                 valkey-server 8.0 or newer. Install a newer {name} or point \
                  `redis_server_path`/`PATH` at one.",
                 redis_server.display(),
                 text.trim()
             )));
         }
-        Ok(())
+        Ok(Some(text))
     }
 
-    /// Run `redis-server --version`, bounded by the caller's `start_timeout`
+    /// Run `<server> --version`, bounded by the caller's `start_timeout`
     /// (capped at 10s) so a hanging or wrong binary can't block startup beyond
     /// the budget the caller allotted. Returns its stdout, or `None` on spawn
     /// failure / timeout.
@@ -481,13 +579,41 @@ impl EmbeddedServer {
         Some(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// Where an already-installed FalkorDB module is looked for in runtime-download mode.
+    const SYSTEM_MODULE_PATHS: [&str; 4] = [
+        "/usr/lib/redis/modules/falkordb.so",
+        "/usr/local/lib/redis/modules/falkordb.so",
+        "/opt/homebrew/lib/redis/modules/falkordb.so",
+        "./falkordb.so",
+    ];
+
+    fn find_falkordb_module(
+        config: &EmbeddedConfig,
+        server: &ServerBinary,
+    ) -> FalkorResult<PathBuf> {
+        Self::find_falkordb_module_in(config, server, &Self::SYSTEM_MODULE_PATHS)
+    }
+
+    /// [`Self::find_falkordb_module`] with the system locations given, so tests
+    /// don't depend on what is installed on the host.
     // `return`s are load-bearing across feature combinations (the download path
     // below is compiled out under `embedded-bundle`), so the bundle branch's
     // explicit return can look "needless" in the bundle-only expansion.
     #[allow(clippy::needless_return)]
-    fn find_falkordb_module(config: &EmbeddedConfig) -> FalkorResult<PathBuf> {
+    fn find_falkordb_module_in(
+        config: &EmbeddedConfig,
+        server: &ServerBinary,
+        #[cfg_attr(
+            not(all(feature = "embedded", not(feature = "embedded-bundle"))),
+            allow(unused_variables)
+        )]
+        system_paths: &[&str],
+    ) -> FalkorResult<PathBuf> {
         // Resolution order: macOS libomp prerequisite → explicit path → cache
         // (if auto_download) → system locations → download (if auto_download) → error.
+        // Where the module's version is known (bundle, cache, download), a Valkey
+        // server is checked against it before the module is used; an explicit or
+        // system-installed module has no known version and is left to the load attempt.
 
         // On macOS the module cannot be loaded without libomp regardless of where
         // it comes from, so this prerequisite is checked even for an explicit path.
@@ -528,6 +654,12 @@ impl EmbeddedServer {
                         .to_string(),
                 ));
             }
+            server.check_module_version(
+                bundle::BUNDLED_MODULE_VERSION,
+                "Build with FALKORDB_EMBEDDED_MODULE_VERSION set to a 6.x release (and its \
+                 FALKORDB_EMBEDDED_MODULE_SHA256), set `falkordb_module_path` to a 6.x module, \
+                 or use redis-server 8.0 or newer.",
+            )?;
             #[cfg(feature = "tracing")]
             tracing::info!(
                 "Using build-time bundled FalkorDB module (version {})",
@@ -544,6 +676,9 @@ impl EmbeddedServer {
                 .falkordb_version
                 .as_deref()
                 .unwrap_or(provision::FALKORDB_VERSION);
+            const CHOOSE_MODULE: &str =
+                "Set `falkordb_version` to a 6.x release (e.g. \"v6.0.4\") \
+                 or `falkordb_module_path` to a 6.x module, or use redis-server 8.0 or newer.";
 
             // Step 3: Reuse a previously downloaded module from the cache (verified
             // against the pinned checksum, so a corrupted cache is not trusted).
@@ -554,6 +689,7 @@ impl EmbeddedServer {
                     version,
                     config.cache_dir.as_deref(),
                 ) {
+                    server.check_module_version(version, CHOOSE_MODULE)?;
                     #[cfg(feature = "tracing")]
                     tracing::info!("Using cached FalkorDB module at: {}", cached_path.display());
                     return Ok(cached_path);
@@ -563,13 +699,7 @@ impl EmbeddedServer {
             // Step 4: Use an already-installed module from a common system location.
             #[cfg(feature = "tracing")]
             tracing::debug!("Searching for FalkorDB module in common system locations");
-            let common_paths = [
-                PathBuf::from("/usr/lib/redis/modules/falkordb.so"),
-                PathBuf::from("/usr/local/lib/redis/modules/falkordb.so"),
-                PathBuf::from("/opt/homebrew/lib/redis/modules/falkordb.so"),
-                PathBuf::from("./falkordb.so"),
-            ];
-            for path in common_paths {
+            for path in system_paths.iter().map(PathBuf::from) {
                 if path.exists() {
                     #[cfg(feature = "tracing")]
                     tracing::info!(
@@ -584,6 +714,7 @@ impl EmbeddedServer {
             // propagated directly so callers see the actionable cause (e.g.
             // unsupported platform, checksum mismatch, or a network failure).
             if config.auto_download {
+                server.check_module_version(version, CHOOSE_MODULE)?;
                 #[cfg(feature = "tracing")]
                 tracing::info!("FalkorDB module not found locally, downloading version {version}");
                 let platform = provision::Platform::detect();
@@ -606,6 +737,7 @@ impl EmbeddedServer {
         // No module source compiled in (only `embedded-core` is enabled).
         #[cfg(not(any(feature = "embedded", feature = "embedded-bundle")))]
         {
+            let _ = server;
             Err(FalkorDBError::EmbeddedServerError(
                 "No embedded FalkorDB module source is available. Set `falkordb_module_path` in \
                  EmbeddedConfig, or enable the `embedded` (runtime download) or `embedded-bundle` \
@@ -878,7 +1010,7 @@ mod tests {
         let result = EmbeddedServer::find_redis_server(&config);
         assert!(result.is_err());
         if let Err(FalkorDBError::EmbeddedServerError(msg)) = result {
-            assert!(msg.contains("redis-server not found"));
+            assert!(msg.contains("server executable (`redis_server_path`) not found"));
         }
     }
 
@@ -889,7 +1021,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = EmbeddedServer::find_falkordb_module(&config);
+        let result = EmbeddedServer::find_falkordb_module(&config, &ServerBinary::default());
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         // On macOS the libomp prerequisite is checked before the explicit path,
@@ -1272,6 +1404,216 @@ mod tests {
     }
 
     #[test]
+    fn test_is_valkey_and_module_major_version() {
+        assert!(is_valkey(
+            "Valkey server v=9.1.2 sha=7f1dffed:1 malloc=jemalloc-5.3.0 bits=64"
+        ));
+        assert!(is_valkey("  Valkey server v=8.0.0\n"));
+        assert!(!is_valkey("Redis server v=8.6.3 sha=0"));
+        assert!(!is_valkey("fake valkey"));
+        assert!(!is_valkey(""));
+
+        assert_eq!(module_major_version("v4.18.10"), Some(4));
+        assert_eq!(module_major_version("v6.0.4"), Some(6));
+        assert_eq!(module_major_version("V12.1"), Some(12));
+        assert_eq!(module_major_version("6"), Some(6));
+        assert_eq!(module_major_version("edge"), None);
+        assert_eq!(module_major_version(""), None);
+    }
+
+    #[test]
+    fn test_valkey_requires_falkordb_6_module() {
+        let server = |name: &str, version: Option<&str>| ServerBinary {
+            path: PathBuf::from("/opt/bin").join(name),
+            version: version.map(str::to_string),
+        };
+        let valkey = Some("Valkey server v=9.1.2 sha=0");
+        let redis = Some("Redis server v=8.6.3 sha=0");
+        let refused = |server: ServerBinary, module_version: &str| {
+            server
+                .check_module_version(module_version, "Choose a 6.x module.")
+                .err()
+                .map(|err| err.to_string())
+        };
+
+        // Valkey with a known 4.x module: refused, with the way out.
+        let err = refused(server("valkey-server", valkey), "v4.18.10").expect("4.x on Valkey");
+        assert!(
+            err.contains("valkey-server at /opt/bin/valkey-server is Valkey")
+                && err.contains("FalkorDB v4.18.10")
+                && err.contains("Choose a 6.x module.")
+                && err.contains("Linux only"),
+            "unexpected error: {err}"
+        );
+        // Detected from `--version`, not from the file name.
+        assert!(refused(server("redis-server", valkey), "v4.18.10").is_some());
+        assert_eq!(refused(server("valkey-server", redis), "v4.18.10"), None);
+
+        // A 6.x module, an unknown version, Redis, or no `--version` output: let through.
+        assert_eq!(refused(server("valkey-server", valkey), "v6.0.4"), None);
+        assert_eq!(refused(server("valkey-server", valkey), "custom"), None);
+        assert_eq!(refused(server("redis-server", redis), "v4.18.10"), None);
+        assert_eq!(refused(server("valkey-server", None), "v4.18.10"), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_start_rejects_old_valkey_server_by_name() {
+        let dir = std::env::temp_dir().join(format!("test_valkey_old_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let fake = write_fake_server(
+            &dir,
+            "valkey-server",
+            "Valkey server v=7.2.5 sha=0",
+            "exit 0",
+        );
+
+        let err = EmbeddedServer::start(EmbeddedConfig {
+            redis_server_path: Some(fake.clone()),
+            // Never reached: the version pre-flight fails first.
+            falkordb_module_path: Some(dir.join("falkordb.so")),
+            auto_download: false,
+            ..Default::default()
+        })
+        .err()
+        .expect("start should fail on an old valkey-server")
+        .to_string();
+        assert!(
+            err.contains(&format!("error: valkey-server at {}", fake.display()))
+                && err.contains("requires redis-server or valkey-server 8.0 or newer")
+                && err.contains("Install a newer valkey-server"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(all(feature = "embedded", not(feature = "embedded-bundle")))]
+    #[test]
+    #[cfg(unix)]
+    fn test_find_module_refuses_old_module_on_valkey_before_download() {
+        // Module resolution checks for libomp first; skip if it is absent.
+        #[cfg(target_os = "macos")]
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("test_valkey_4x_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        // Named redis-server but reports Valkey: the check goes by `--version`.
+        let valkey = ServerBinary {
+            path: PathBuf::from("redis-server"),
+            version: Some("Valkey server v=9.1.2 sha=0".to_string()),
+        };
+
+        // No system locations and an empty cache, so the check runs before the download.
+        let err = EmbeddedServer::find_falkordb_module_in(
+            &EmbeddedConfig {
+                falkordb_version: Some("v4.18.10".to_string()),
+                auto_download: true,
+                cache_dir: Some(dir.join("cache")),
+                ..Default::default()
+            },
+            &valkey,
+            &[],
+        )
+        .expect_err("a 4.x module must be refused on Valkey")
+        .to_string();
+        assert!(
+            err.contains("is Valkey")
+                && err.contains("FalkorDB v4.18.10")
+                && err.contains("`falkordb_version`"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(all(feature = "embedded", not(feature = "embedded-bundle")))]
+    #[test]
+    #[cfg(unix)]
+    fn test_start_refuses_cached_old_module_on_valkey_before_spawning() {
+        // On macOS the libomp prerequisite is checked before cache resolution.
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
+        let platform = provision::Platform::detect();
+        if platform.tag().is_err() {
+            return; // no asset for this platform; nothing to cache
+        }
+
+        let dir = std::env::temp_dir().join(format!("test_valkey_spawn_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // The script marks its own path rather than embedding one, so no path needs shell quoting.
+        let fake = write_fake_redis(
+            &dir,
+            "Valkey server v=9.1.2 sha=0",
+            "touch \"$0.spawned\"; exit 1",
+        );
+        let spawned = dir.join("redis-server.spawned");
+        // A cached module is found before the system locations, so the host can't affect this.
+        // Unpinned version, so the placeholder bytes pass the (absent) checksum.
+        let version = "v4.99.0-valkeyspawn";
+        let cache_dir = dir.join("cache");
+        let cached = download::cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"cached module").unwrap();
+
+        let err = EmbeddedServer::start(EmbeddedConfig {
+            redis_server_path: Some(fake),
+            falkordb_version: Some(version.to_string()),
+            auto_download: true,
+            cache_dir: Some(cache_dir),
+            ..Default::default()
+        })
+        .err()
+        .expect("start should refuse a 4.x module on Valkey")
+        .to_string();
+        assert!(err.contains("is Valkey"), "unexpected error: {err}");
+        assert!(!spawned.exists(), "the server must not be spawned");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_start_on_valkey_with_explicit_module_names_valkey_in_errors() {
+        // Module resolution checks for libomp first; skip if it is absent.
+        #[cfg(target_os = "macos")]
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("test_valkey_explicit_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let fake = write_fake_server(
+            &dir,
+            "valkey-server",
+            "Valkey server v=9.1.2 sha=0",
+            "echo 'Module falkordb.so initialization failed' >&2\nexit 1",
+        );
+        // An explicit module has no known version, so start goes on to load it.
+        let fake_module = dir.join("falkordb.so");
+        fs::write(&fake_module, b"\0fake module").unwrap();
+
+        let err = EmbeddedServer::start(EmbeddedConfig {
+            redis_server_path: Some(fake),
+            falkordb_module_path: Some(fake_module),
+            falkordb_version: Some("v4.18.10".to_string()),
+            auto_download: false,
+            ..Default::default()
+        })
+        .err()
+        .expect("start should fail when the fake valkey-server exits")
+        .to_string();
+        assert!(
+            err.contains("error: valkey-server exited before the socket was ready")
+                && err.contains("valkey-server output:\nModule falkordb.so initialization failed")
+                && !err.contains("redis-server"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_check_redis_version_allows_unrunnable_binary() {
         // A binary that can't be spawned can't be version-checked, so the
         // pre-flight allows it through (the start attempt then reports any issue).
@@ -1290,8 +1632,19 @@ mod tests {
         version: &str,
         server_body: &str,
     ) -> PathBuf {
+        write_fake_server(dir, "redis-server", version, server_body)
+    }
+
+    /// [`write_fake_redis`] under another file name, such as `valkey-server`.
+    #[cfg(unix)]
+    fn write_fake_server(
+        dir: &Path,
+        name: &str,
+        version: &str,
+        server_body: &str,
+    ) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let fake = dir.join("redis-server");
+        let fake = dir.join(name);
         let script = format!(
             "#!/bin/sh\ncase \"$1\" in --version) echo '{version}'; exit 0;; esac\n{server_body}\n"
         );
@@ -1610,18 +1963,43 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_find_redis_server_in_path() {
-        // Test the PATH lookup when redis_server_path is None
-        let config = EmbeddedConfig {
-            redis_server_path: None,
-            ..Default::default()
+    fn test_find_server_prefers_redis_server_then_valkey_server() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin_dir = |name: &str, binaries: &[&str]| {
+            let dir = std::env::temp_dir()
+                .join(format!("test_find_server_{name}_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            for binary in binaries {
+                let path = dir.join(binary);
+                fs::write(&path, "#!/bin/sh\n").unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            dir
+        };
+        let found = |dir: &PathBuf| {
+            EmbeddedServer::find_server_in(Some(dir.clone().into_os_string()))
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
         };
 
-        // This will either find redis-server in PATH or error appropriately
-        let result = EmbeddedServer::find_redis_server(&config);
-        // Can't assert ok/err as it depends on system, but should not panic
-        let _ = result;
+        let valkey_only = bin_dir("valkey", &["valkey-server"]);
+        assert_eq!(found(&valkey_only).as_deref(), Ok("valkey-server"));
+
+        let both = bin_dir("both", &["redis-server", "valkey-server"]);
+        assert_eq!(found(&both).as_deref(), Ok("redis-server"));
+
+        let neither = bin_dir("neither", &[]);
+        assert!(matches!(
+            found(&neither),
+            Err(FalkorDBError::EmbeddedServerError(message))
+                if message.contains("redis-server") && message.contains("valkey-server")
+        ));
+
+        for dir in [valkey_only, both, neither] {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[cfg(all(feature = "embedded", not(feature = "embedded-bundle")))]
@@ -1636,7 +2014,7 @@ mod tests {
         };
 
         // This will search common locations and error if not found
-        let result = EmbeddedServer::find_falkordb_module(&config);
+        let result = EmbeddedServer::find_falkordb_module(&config, &ServerBinary::default());
         // Can't assert ok/err as it depends on system, but should not panic
         let _ = result;
     }
@@ -1847,7 +2225,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let result = EmbeddedServer::find_falkordb_module(&config);
+            let result = EmbeddedServer::find_falkordb_module(&config, &ServerBinary::default());
             // On macOS the libomp prerequisite is checked even for an explicit
             // path, so without libomp the call fails with that actionable error.
             if provision::check_macos_libomp().is_ok() {
@@ -1875,7 +2253,7 @@ mod tests {
 
         let err_msg = format!(
             "{}",
-            EmbeddedServer::find_falkordb_module(&config)
+            EmbeddedServer::find_falkordb_module(&config, &ServerBinary::default())
                 .expect_err("resolution should fail without a module or auto_download")
         );
         assert!(
@@ -1913,7 +2291,7 @@ mod tests {
             cache_dir: Some(cache_dir.clone()),
             ..Default::default()
         };
-        let result = EmbeddedServer::find_falkordb_module(&config);
+        let result = EmbeddedServer::find_falkordb_module(&config, &ServerBinary::default());
 
         // On macOS the libomp prerequisite is checked before cache resolution.
         if provision::check_macos_libomp().is_ok() {
@@ -1925,6 +2303,63 @@ mod tests {
             );
         }
 
+        let _ = fs::remove_dir_all(&cache_dir);
+    }
+
+    #[cfg(all(feature = "embedded", not(feature = "embedded-bundle")))]
+    #[test]
+    fn test_find_falkordb_module_checks_cached_version_on_valkey() {
+        // On macOS the libomp prerequisite is checked before cache resolution.
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
+        let platform = provision::Platform::detect();
+        if platform.tag().is_err() {
+            return; // no asset for this platform; nothing to cache
+        }
+        let cache_dir =
+            std::env::temp_dir().join(format!("fdb_cache_valkey_{}", std::process::id()));
+        let cache = |version: &str| {
+            let cached =
+                download::cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
+            fs::create_dir_all(cached.parent().unwrap()).unwrap();
+            fs::write(&cached, b"cached module").unwrap();
+            cached
+        };
+        let config = |version: &str| EmbeddedConfig {
+            auto_download: true,
+            falkordb_version: Some(version.to_string()),
+            cache_dir: Some(cache_dir.clone()),
+            ..Default::default()
+        };
+        let valkey = ServerBinary {
+            path: PathBuf::from("/usr/bin/valkey-server"),
+            version: Some("Valkey server v=9.1.2 sha=0".to_string()),
+        };
+
+        // Unpinned versions, so the placeholder bytes pass the (absent) checksum.
+        let old = "v4.99.0-valkeytest";
+        let cached_old = cache(old);
+        let err = EmbeddedServer::find_falkordb_module(&config(old), &valkey).unwrap_err();
+        assert!(
+            err.to_string().contains("is Valkey"),
+            "unexpected error: {err}"
+        );
+        let redis = ServerBinary {
+            version: Some("Redis server v=8.6.3 sha=0".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            EmbeddedServer::find_falkordb_module(&config(old), &redis).unwrap(),
+            cached_old
+        );
+
+        let new = "v6.99.0-valkeytest";
+        let cached_new = cache(new);
+        assert_eq!(
+            EmbeddedServer::find_falkordb_module(&config(new), &valkey).unwrap(),
+            cached_new
+        );
         let _ = fs::remove_dir_all(&cache_dir);
     }
 
@@ -1944,7 +2379,7 @@ mod tests {
 
             // This should fail because /dev/null is not a valid falkordb module
             // but it tests that the search through common locations executes
-            let result = EmbeddedServer::find_falkordb_module(&config);
+            let result = EmbeddedServer::find_falkordb_module(&config, &ServerBinary::default());
             assert!(result.is_err());
         }
     }
@@ -1983,10 +2418,13 @@ mod tests {
         assert!(!EmbeddedServer::bundled_module_platform().is_empty());
 
         // A runtime `falkordb_version` has no meaning in bundle mode → rejected.
-        let err = EmbeddedServer::find_falkordb_module(&EmbeddedConfig {
-            falkordb_version: Some("v9.9.9".to_string()),
-            ..Default::default()
-        })
+        let err = EmbeddedServer::find_falkordb_module(
+            &EmbeddedConfig {
+                falkordb_version: Some("v9.9.9".to_string()),
+                ..Default::default()
+            },
+            &ServerBinary::default(),
+        )
         .unwrap_err();
         assert!(
             err.to_string().contains("embedded-bundle"),
@@ -2003,13 +2441,29 @@ mod tests {
         // With no explicit path, resolution extracts the embedded bytes to the
         // (temporary) cache — no network involved.
         let cache = std::env::temp_dir().join(format!("test_bundle_{}", std::process::id()));
-        let path = EmbeddedServer::find_falkordb_module(&EmbeddedConfig {
+        let config = EmbeddedConfig {
             cache_dir: Some(cache.clone()),
             auto_download: false,
             ..Default::default()
-        })
-        .unwrap();
+        };
+        let path = EmbeddedServer::find_falkordb_module(&config, &ServerBinary::default()).unwrap();
         assert!(path.exists());
+
+        // On a Valkey server the bundled version decides: a 4.x bundle is refused before it is
+        // extracted, a 6.x one is used.
+        let valkey = ServerBinary {
+            path: PathBuf::from("/usr/bin/valkey-server"),
+            version: Some("Valkey server v=9.1.2 sha=0".to_string()),
+        };
+        let refused =
+            module_major_version(bundle::BUNDLED_MODULE_VERSION).is_some_and(|major| major < 6);
+        match EmbeddedServer::find_falkordb_module(&config, &valkey) {
+            Err(err) => assert!(
+                refused && err.to_string().contains("FALKORDB_EMBEDDED_MODULE_VERSION"),
+                "unexpected error: {err}"
+            ),
+            Ok(found) => assert!(!refused && found == path, "unexpected module: {found:?}"),
+        }
         let _ = fs::remove_dir_all(&cache);
     }
 }

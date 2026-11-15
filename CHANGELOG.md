@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The embedded server falls back to `valkey-server` when no `redis-server` is in `PATH`. Valkey
+  installs its server under that name, so on a host with Valkey but not Redis the embedded client
+  failed to start unless `redis_server_path` was set. Either server must be 8.0 or newer, and Valkey
+  needs a FalkorDB 6.x module: Valkey reports itself to modules as Redis 7.2, which earlier modules
+  refuse. The default module is older, so set `falkordb_version` to a 6.x release or
+  `falkordb_module_path` to a 6.x module; FalkorDB 6.x modules are published for Linux only. When
+  the module version is known, the embedded server on Valkey refuses an older one before starting,
+  with an error that says how to choose a 6.x module. Startup errors now name the server binary in
+  use instead of always saying `redis-server`
+  ([#435](https://github.com/FalkorDB/falkordb-rs/pull/435))
+
 ### Fixed
 
 - Detect a Redis Cluster or a Sentinel when FalkorDB runs inside Valkey. The client tells the

@@ -64,6 +64,10 @@ just coverage-local   # same, but produce Codecov JSON
 just bench-local      # start DB, run all benchmarks, tear down
 ```
 
+`just test-embedded-valkey` starts the embedded server on a real `valkey-server` with a FalkorDB
+6.x module. It needs only Docker: it builds the test for Linux in a Rust container and runs it in
+the `falkordb/falkordb:edge` image, which ships both.
+
 Targeted recipes are available too, e.g. `just test-parity`, `just test-embedded`,
 `just test-one <filter>`, `just proptest`, `just bench-one '<criterion-id>'`, and
 `just coverage-html`.
@@ -123,6 +127,7 @@ reproduced with a single command:
 | `check-embedded-bundle` | `just check-embedded-bundle` |
 | `integration-tests` | `just integration`, `just integration --all-features` and `just consumer-smoke` |
 | `integration-tests-tokio` | `just integration --features tokio` |
+| `integration-tests-valkey` | `just test-embedded-valkey` |
 | `coverage` | `just coverage` |
 | `check-llms` | `just check-llms` |
 | `check-readme` | `just check-readme` |

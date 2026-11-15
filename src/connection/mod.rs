@@ -4,6 +4,7 @@
  */
 
 use crate::{FalkorDBError, FalkorResult};
+use std::collections::HashMap;
 
 pub(crate) mod blocking;
 
@@ -102,6 +103,14 @@ impl ClusterRoute {
     }
 }
 
+/// The server's mode from its `INFO server` fields: `standalone`, `sentinel` or `cluster`. Redis
+/// reports it as `redis_mode`; Valkey reports `server_mode` unless its
+/// `extended-redis-compatibility` option is on.
+pub(crate) fn server_mode(mut info: HashMap<String, String>) -> Option<String> {
+    info.remove("redis_mode")
+        .or_else(|| info.remove("server_mode"))
+}
+
 /// Turn a reply that is itself a server error into an `Err`. redis-rs returns error replies as
 /// `Ok(Value::ServerError)`, so without this a command whose reply is otherwise ignored would
 /// succeed silently.
@@ -157,6 +166,20 @@ fn map_redis_err(error: redis::RedisError) -> FalkorDBError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_mode_reads_the_redis_and_the_valkey_field() {
+        for (field, mode) in [
+            ("redis_mode", "cluster"),
+            ("server_mode", "cluster"),
+            ("redis_mode", "sentinel"),
+            ("server_mode", "sentinel"),
+        ] {
+            let info = HashMap::from([(field.to_string(), mode.to_string())]);
+            assert_eq!(server_mode(info).as_deref(), Some(mode), "{field}");
+        }
+        assert_eq!(server_mode(HashMap::new()), None);
+    }
 
     /// An error reply exactly as the server sends it.
     fn error_reply(reply: &str) -> redis::Value {

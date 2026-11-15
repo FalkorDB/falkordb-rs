@@ -276,10 +276,9 @@ impl FalkorSyncConnection {
         }
     }
 
-    /// The server's `redis_mode` from `INFO server`: `standalone`, `sentinel` or `cluster`.
-    pub(crate) fn redis_mode(&mut self) -> FalkorResult<Option<String>> {
-        self.get_redis_info(Some("server"))
-            .map(|mut info_map| info_map.remove("redis_mode"))
+    /// The server's mode from `INFO server`: `standalone`, `sentinel` or `cluster`.
+    pub(crate) fn server_mode(&mut self) -> FalkorResult<Option<String>> {
+        self.get_redis_info(Some("server")).map(super::server_mode)
     }
 }
 

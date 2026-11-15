@@ -146,11 +146,11 @@ impl FalkorAsyncConnection {
             .and_then(parse_redis_info)
     }
 
-    /// The server's `redis_mode` from `INFO server`: `standalone`, `sentinel` or `cluster`.
-    pub(crate) async fn redis_mode(&mut self) -> FalkorResult<Option<String>> {
+    /// The server's mode from `INFO server`: `standalone`, `sentinel` or `cluster`.
+    pub(crate) async fn server_mode(&mut self) -> FalkorResult<Option<String>> {
         self.get_redis_info(Some("server"))
             .await
-            .map(|mut info_map| info_map.remove("redis_mode"))
+            .map(super::server_mode)
     }
 }
 

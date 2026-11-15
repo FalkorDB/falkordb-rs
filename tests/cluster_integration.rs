@@ -100,11 +100,11 @@ fn sync_client_routes_commands_across_cluster_nodes() {
         .build()
         .expect("cluster client");
 
+    // Redis names the mode `redis_mode`, Valkey `server_mode`.
+    let info = client.redis_info(Some("server")).expect("info");
     assert_eq!(
-        client
-            .redis_info(Some("server"))
-            .expect("info")
-            .get("redis_mode")
+        info.get("redis_mode")
+            .or_else(|| info.get("server_mode"))
             .map(String::as_str),
         Some("cluster"),
         "FALKORDB_CLUSTER_URL must point at a cluster node"

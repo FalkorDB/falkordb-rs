@@ -1527,6 +1527,51 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(all(feature = "embedded", not(feature = "embedded-bundle")))]
+    #[test]
+    #[cfg(unix)]
+    fn test_start_refuses_cached_old_module_on_valkey_before_spawning() {
+        // On macOS the libomp prerequisite is checked before cache resolution.
+        if provision::check_macos_libomp().is_err() {
+            return;
+        }
+        let platform = provision::Platform::detect();
+        if platform.tag().is_err() {
+            return; // no asset for this platform; nothing to cache
+        }
+
+        let dir = std::env::temp_dir().join(format!("test_valkey_spawn_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let spawned = dir.join("spawned");
+        let fake = write_fake_redis(
+            &dir,
+            "Valkey server v=9.1.2 sha=0",
+            &format!("touch '{}'; exit 1", spawned.display()),
+        );
+        // A cached module is found before the system locations, so the host can't affect this.
+        // Unpinned version, so the placeholder bytes pass the (absent) checksum.
+        let version = "v4.99.0-valkeyspawn";
+        let cache_dir = dir.join("cache");
+        let cached = download::cached_module_path(&platform, version, Some(&cache_dir)).unwrap();
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"cached module").unwrap();
+
+        let err = EmbeddedServer::start(EmbeddedConfig {
+            redis_server_path: Some(fake),
+            falkordb_version: Some(version.to_string()),
+            auto_download: true,
+            cache_dir: Some(cache_dir),
+            ..Default::default()
+        })
+        .err()
+        .expect("start should refuse a 4.x module on Valkey")
+        .to_string();
+        assert!(err.contains("is Valkey"), "unexpected error: {err}");
+        assert!(!spawned.exists(), "the server must not be spawned");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     #[cfg(unix)]
     fn test_start_on_valkey_with_explicit_module_names_valkey_in_errors() {

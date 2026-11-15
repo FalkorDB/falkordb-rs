@@ -1543,12 +1543,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("test_valkey_spawn_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let spawned = dir.join("spawned");
+        // The script marks its own path rather than embedding one, so no path needs shell quoting.
         let fake = write_fake_redis(
             &dir,
             "Valkey server v=9.1.2 sha=0",
-            &format!("touch '{}'; exit 1", spawned.display()),
+            "touch \"$0.spawned\"; exit 1",
         );
+        let spawned = dir.join("redis-server.spawned");
         // A cached module is found before the system locations, so the host can't affect this.
         // Unpinned version, so the placeholder bytes pass the (absent) checksum.
         let version = "v4.99.0-valkeyspawn";

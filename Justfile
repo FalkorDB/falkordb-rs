@@ -19,6 +19,15 @@ container := "falkordb-rs-dev"
 # Container hosting the local three-node Redis Cluster (nodes on ports 7001-7003).
 cluster_container := "falkordb-rs-cluster"
 
+# `test-embedded-valkey`: the image it runs the test in, which ships `valkey-server` (8.0+) and a
+# FalkorDB 6.x module at `valkey_module`; the image that builds the Linux test binary (Debian
+# trixie, whose glibc is older than the Ubuntu one in the Valkey image, so the binary runs there);
+# and the name of the containers it starts.
+valkey_image := "falkordb/falkordb:edge"
+valkey_module := "/var/lib/falkordb/bin/falkordb.so"
+valkey_build_image := "rust:1-slim-trixie"
+valkey_container := "falkordb-rs-valkey"
+
 # Feature set exercised by the full local suite (mirrors the coverage CI job).
 features := "tokio,embedded,serde,tracing,metrics"
 
@@ -115,6 +124,36 @@ check-embedded-bundle:
     cargo build --features embedded-bundle
     cargo build --features embedded-bundle --example embedded_usage
     cargo test --features embedded-bundle --lib embedded::bundle
+
+# Start the embedded server on a real `valkey-server` with a FalkorDB 6.x module and run graph
+# queries on it (CI gate). Builds the embedded integration tests for Linux in `valkey_build_image`,
+# then runs their ignored `test_embedded_server_on_valkey` in `valkey_image` with only
+# `valkey-server` on PATH, so the lookup falls back to it. Fails unless that one test ran and
+# passed. Needs only Docker (and jq), so it runs on macOS too.
+test-embedded-valkey:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root={{quote(justfile_directory())}}
+    build_dir=target/valkey-linux
+    mkdir -p "$root/$build_dir"
+    bin="$(docker run --rm --name {{quote(valkey_container + "-build")}} \
+        --user "$(id -u):$(id -g)" -v "$root":/src -w /src \
+        -e CARGO_HOME="/src/$build_dir/cargo-home" -e CARGO_TARGET_DIR="/src/$build_dir" \
+        {{quote(valkey_build_image)}} \
+        cargo test --locked --no-run --features embedded --test embedded_integration \
+        --message-format=json \
+        | jq -r 'select(.executable != null and .target.name == "embedded_integration") | .executable')"
+    if [ -z "$bin" ]; then echo "no embedded_integration test binary was built" >&2; exit 1; fi
+    log="$(mktemp)"
+    trap 'rm -f "$log"' EXIT
+    docker run --rm --name {{quote(valkey_container)}} -v "$root":/src:ro \
+        -e FALKORDB_VALKEY_MODULE={{quote(valkey_module)}} --entrypoint sh {{quote(valkey_image)}} -c \
+        'mkdir -p /tmp/valkey-only && ln -s "$(command -v valkey-server)" /tmp/valkey-only/ &&
+         PATH=/tmp/valkey-only:/usr/bin:/bin exec "$0" --ignored --exact test_embedded_server_on_valkey' \
+        "$bin" | tee "$log"
+    if ! grep -q 'test result: ok. 1 passed' "$log"; then
+        echo "test_embedded_server_on_valkey did not run" >&2; exit 1
+    fi
 
 # Run the library and integration tests with the given cargo args, exactly as
 # the integration CI jobs do. Examples: `just integration`,

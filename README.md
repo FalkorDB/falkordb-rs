@@ -939,8 +939,9 @@ features for that:
 #### Requirements
 
 - `redis-server` (**version 8.0 or newer**) must be installed and available in PATH (or you can
-  specify a custom path). It is **not** downloaded automatically — install it from your package
-  manager (e.g. `brew install redis`, `apt-get install redis-server`).
+  specify a custom path). Without a `redis-server`, Valkey's `valkey-server` is used if it is in
+  PATH. Neither is downloaded automatically — install one from your package manager (e.g.
+  `brew install redis`, `apt-get install redis-server`).
 - The `falkordb.so` module is provisioned automatically: downloaded at runtime with `embedded`
   (when `auto_download` is enabled, the default) or embedded at build time with
   `embedded-bundle`. You can also point `falkordb_module_path` at an existing module, or disable

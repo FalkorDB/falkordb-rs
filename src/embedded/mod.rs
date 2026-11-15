@@ -70,8 +70,9 @@ static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// In both modes, an explicit `falkordb_module_path` always wins.
 ///
 /// The `redis-server` binary is **never** downloaded: it is always located on
-/// the host via `redis_server_path` or `PATH`. Install it from your package
-/// manager (e.g. `brew install redis`, `apt-get install redis-server`) or point
+/// the host via `redis_server_path` or `PATH`, where Valkey's `valkey-server` is
+/// used when there is no `redis-server`. Install one from your package manager
+/// (e.g. `brew install redis`, `apt-get install redis-server`) or point
 /// `redis_server_path` at an existing FalkorDB/Redis install. FalkorDB requires
 /// redis-server **8.0 or newer**.
 ///
@@ -83,7 +84,8 @@ static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// <https://www.falkordb.com/> for licensing details.
 #[derive(Debug, Clone)]
 pub struct EmbeddedConfig {
-    /// Path to the redis-server executable. If None, searches in PATH.
+    /// Path to the redis-server executable. If None, searches PATH for `redis-server`, then
+    /// `valkey-server`.
     pub redis_server_path: Option<PathBuf>,
     /// Path to the FalkorDB module (.so file). If None, searches common
     /// locations and (when `auto_download` is enabled) downloads it; with the
@@ -413,11 +415,23 @@ impl EmbeddedServer {
             )));
         }
 
-        // Try to find in PATH
-        which::which("redis-server")
-            .map_err(|_| FalkorDBError::EmbeddedServerError(
-                "redis-server not found in PATH. Please install Redis or specify the path in EmbeddedConfig".to_string()
-            ))
+        Self::find_server_in(std::env::var_os("PATH"))
+    }
+
+    /// The first server executable on the given search path: Redis's `redis-server`, else Valkey's
+    /// `valkey-server`, which loads the FalkorDB module too.
+    fn find_server_in(search_path: Option<std::ffi::OsString>) -> FalkorResult<PathBuf> {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        ["redis-server", "valkey-server"]
+            .into_iter()
+            .find_map(|name| which::which_in(name, search_path.as_ref(), &cwd).ok())
+            .ok_or_else(|| {
+                FalkorDBError::EmbeddedServerError(
+                    "neither redis-server nor valkey-server found in PATH. Install Redis or Valkey, \
+                     or set `redis_server_path` in EmbeddedConfig"
+                        .to_string(),
+                )
+            })
     }
 
     /// Pre-flight the redis-server version: the FalkorDB module requires
@@ -1610,18 +1624,43 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_find_redis_server_in_path() {
-        // Test the PATH lookup when redis_server_path is None
-        let config = EmbeddedConfig {
-            redis_server_path: None,
-            ..Default::default()
+    fn test_find_server_prefers_redis_server_then_valkey_server() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin_dir = |name: &str, binaries: &[&str]| {
+            let dir = std::env::temp_dir()
+                .join(format!("test_find_server_{name}_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            for binary in binaries {
+                let path = dir.join(binary);
+                fs::write(&path, "#!/bin/sh\n").unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            dir
+        };
+        let found = |dir: &PathBuf| {
+            EmbeddedServer::find_server_in(Some(dir.clone().into_os_string()))
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
         };
 
-        // This will either find redis-server in PATH or error appropriately
-        let result = EmbeddedServer::find_redis_server(&config);
-        // Can't assert ok/err as it depends on system, but should not panic
-        let _ = result;
+        let valkey_only = bin_dir("valkey", &["valkey-server"]);
+        assert_eq!(found(&valkey_only).as_deref(), Ok("valkey-server"));
+
+        let both = bin_dir("both", &["redis-server", "valkey-server"]);
+        assert_eq!(found(&both).as_deref(), Ok("redis-server"));
+
+        let neither = bin_dir("neither", &[]);
+        assert!(matches!(
+            found(&neither),
+            Err(FalkorDBError::EmbeddedServerError(message))
+                if message.contains("redis-server") && message.contains("valkey-server")
+        ));
+
+        for dir in [valkey_only, both, neither] {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[cfg(all(feature = "embedded", not(feature = "embedded-bundle")))]

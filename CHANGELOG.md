@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The embedded server falls back to Valkey's `valkey-server` when no `redis-server` is in `PATH`.
   Valkey installs its server as `valkey-server`, so on a host with Valkey but not Redis the embedded
   client failed to start unless `redis_server_path` was set
+  ([#435](https://github.com/FalkorDB/falkordb-rs/pull/435))
 
 ### Fixed
 

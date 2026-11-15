@@ -698,9 +698,9 @@
 //! #### Redis Cluster
 //!
 //! Point the client at any node of a Redis Cluster running FalkorDB. While the client is built it
-//! sees that the node reports `redis_mode:cluster`, discovers the other nodes from it, and from then
-//! on sends each graph command to the node that owns the graph's hash slot, following the cluster's
-//! redirects when slots move. The sync client and both async connection strategies work this way.
+//! sees that the node reports `redis_mode:cluster` (`server_mode:cluster` on Valkey), discovers the
+//! other nodes from it, and from then on sends each graph command to the node that owns the graph's
+//! hash slot, following the cluster's redirects when slots move. The sync client and both async connection strategies work this way.
 //! New connections can start from any node found then, so they do not need the configured node to
 //! be up. TLS works with a `rediss://` URL and the system's root certificates. TLS settings made on a
 //! connection info, such as a private root, a client certificate or not checking host names, are

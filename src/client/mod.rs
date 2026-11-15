@@ -301,7 +301,7 @@ pub(crate) enum FalkorClientProvider {
         /// only built when a replica connection actually succeeds.
         sentinel_replica: Option<redis::sentinel::SentinelClient>,
         /// The nodes of the Redis Cluster connections go through, set when the server reports
-        /// `redis_mode:cluster`.
+        /// `redis_mode:cluster` (Redis) or `server_mode:cluster` (Valkey).
         cluster: Option<ClusterSeeds>,
         #[cfg(feature = "embedded-core")]
         #[allow(dead_code)]
@@ -1168,7 +1168,7 @@ impl FalkorClientProvider {
         let deadline = Self::setup_deadline(self.connect_timeout());
         let mut conn = self.get_connection_by_deadline(None, deadline)?;
         conn.set_timeouts(Self::remaining(deadline)?)?;
-        let mode = conn.redis_mode()?;
+        let mode = conn.server_mode()?;
         Self::remaining(deadline)?;
         let reply = match mode.as_deref() {
             Some("sentinel") => {
@@ -1214,7 +1214,7 @@ impl FalkorClientProvider {
             let mut conn = self
                 .get_async_connection_with_timeouts(connect_timeout, connect_timeout)
                 .await?;
-            FalkorResult::Ok(match conn.redis_mode().await?.as_deref() {
+            FalkorResult::Ok(match conn.server_mode().await?.as_deref() {
                 Some("sentinel") => ProbeReply::Sentinel(
                     conn.execute_command(None, "SENTINEL", Some("MASTERS"), None)
                         .await
@@ -3615,11 +3615,15 @@ EESc65rWTgIgPNOki3CMgUOKKB0XwmbpdKyGZTwcCxFzdhRYGsa/txs=
         }
     }
 
-    /// A server whose `INFO server` reports `redis_mode:cluster`.
-    fn spawn_cluster_mode_server() -> String {
-        let port = spawn_fake_resp_server(|command| {
+    /// The `INFO server` field naming the server's mode: Redis reports `redis_mode`, Valkey
+    /// `server_mode`.
+    const MODE_FIELDS: [&str; 2] = ["redis_mode", "server_mode"];
+
+    /// A server whose `INFO server` reports `<mode_field>:cluster`.
+    fn spawn_cluster_mode_server(mode_field: &'static str) -> String {
+        let port = spawn_fake_resp_server(move |command| {
             if command.contains("\r\nINFO\r\n") {
-                let body = "# Server\r\nredis_mode:cluster\r\n";
+                let body = format!("# Server\r\n{mode_field}:cluster\r\n");
                 format!("${}\r\n{body}\r\n", body.len())
             } else {
                 "+OK\r\n".to_string()
@@ -3630,23 +3634,25 @@ EESc65rWTgIgPNOki3CMgUOKKB0XwmbpdKyGZTwcCxFzdhRYGsa/txs=
 
     #[test]
     fn test_detect_topology_recognizes_a_cluster_node() {
-        let url = spawn_cluster_mode_server();
-        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
-        let info = redis::ConnectionInfo::from_str(&url).unwrap();
-        let topology = provider
-            .detect_topology(&info)
-            .expect("a cluster node is detected");
-        assert_eq!(topology.name(), "cluster");
-        provider.apply_topology(topology);
-        #[cfg(feature = "tokio")]
-        assert!(provider.has_cluster());
+        for mode_field in MODE_FIELDS {
+            let url = spawn_cluster_mode_server(mode_field);
+            let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+            let info = redis::ConnectionInfo::from_str(&url).unwrap();
+            let topology = provider
+                .detect_topology(&info)
+                .expect("a cluster node is detected");
+            assert_eq!(topology.name(), "cluster", "{mode_field}");
+            provider.apply_topology(topology);
+            #[cfg(feature = "tokio")]
+            assert!(provider.has_cluster(), "{mode_field}");
+        }
     }
 
-    /// A Sentinel whose `INFO server` reports `redis_mode:sentinel`, monitoring one master.
-    fn spawn_sentinel_mode_server() -> String {
-        let port = spawn_fake_resp_server(|command| {
+    /// A Sentinel whose `INFO server` reports `<mode_field>:sentinel`, monitoring one master.
+    fn spawn_sentinel_mode_server(mode_field: &'static str) -> String {
+        let port = spawn_fake_resp_server(move |command| {
             if command.contains("\r\nINFO\r\n") {
-                let body = "# Server\r\nredis_mode:sentinel\r\n";
+                let body = format!("# Server\r\n{mode_field}:sentinel\r\n");
                 format!("${}\r\n{body}\r\n", body.len())
             } else if command.contains("\r\nMASTERS\r\n") {
                 "*1\r\n*2\r\n$4\r\nname\r\n$8\r\nmymaster\r\n".to_string()
@@ -3659,45 +3665,53 @@ EESc65rWTgIgPNOki3CMgUOKKB0XwmbpdKyGZTwcCxFzdhRYGsa/txs=
 
     #[test]
     fn test_detect_topology_recognizes_a_sentinel() {
-        let url = spawn_sentinel_mode_server();
-        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
-        let info = redis::ConnectionInfo::from_str(&url).unwrap();
-        let topology = provider
-            .detect_topology(&info)
-            .expect("a Sentinel is detected");
-        assert_eq!(topology.name(), "sentinel");
-        provider.apply_topology(topology);
-        assert!(provider.has_sentinel_replica());
+        for mode_field in MODE_FIELDS {
+            let url = spawn_sentinel_mode_server(mode_field);
+            let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+            let info = redis::ConnectionInfo::from_str(&url).unwrap();
+            let topology = provider
+                .detect_topology(&info)
+                .expect("a Sentinel is detected");
+            assert_eq!(topology.name(), "sentinel", "{mode_field}");
+            provider.apply_topology(topology);
+            assert!(provider.has_sentinel_replica(), "{mode_field}");
+        }
     }
 
     #[cfg(feature = "tokio")]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_detect_topology_async_recognizes_a_sentinel() {
-        let url = spawn_sentinel_mode_server();
-        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
-        let info = redis::ConnectionInfo::from_str(&url).unwrap();
-        assert_eq!(
-            provider
-                .detect_topology_async(&info, None)
-                .await
-                .map(|topology| topology.name()),
-            Ok("sentinel")
-        );
+        for mode_field in MODE_FIELDS {
+            let url = spawn_sentinel_mode_server(mode_field);
+            let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+            let info = redis::ConnectionInfo::from_str(&url).unwrap();
+            assert_eq!(
+                provider
+                    .detect_topology_async(&info, None)
+                    .await
+                    .map(|topology| topology.name()),
+                Ok("sentinel"),
+                "{mode_field}"
+            );
+        }
     }
 
     #[cfg(feature = "tokio")]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_detect_topology_async_recognizes_a_cluster_node() {
-        let url = spawn_cluster_mode_server();
-        let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
-        let info = redis::ConnectionInfo::from_str(&url).unwrap();
-        assert_eq!(
-            provider
-                .detect_topology_async(&info, None)
-                .await
-                .map(|topology| topology.name()),
-            Ok("cluster")
-        );
+        for mode_field in MODE_FIELDS {
+            let url = spawn_cluster_mode_server(mode_field);
+            let mut provider = provider_for(&url, std::time::Duration::from_secs(2));
+            let info = redis::ConnectionInfo::from_str(&url).unwrap();
+            assert_eq!(
+                provider
+                    .detect_topology_async(&info, None)
+                    .await
+                    .map(|topology| topology.name()),
+                Ok("cluster"),
+                "{mode_field}"
+            );
+        }
     }
 
     #[test]

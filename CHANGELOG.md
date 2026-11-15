@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still answer with those, but both now say primary and replica elsewhere, so a server that switched
   would have left the client finding no master or replica. The Sentinel replica client that redis-rs
   builds for the async read-only pool still checks for `master` and `slave` only
+  ([#433](https://github.com/FalkorDB/falkordb-rs/pull/433))
 
 ## [0.11.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.1...v0.11.2) - 2026-11-09
 

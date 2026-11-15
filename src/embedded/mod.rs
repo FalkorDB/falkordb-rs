@@ -579,13 +579,35 @@ impl EmbeddedServer {
         Some(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// Where an already-installed FalkorDB module is looked for in runtime-download mode.
+    const SYSTEM_MODULE_PATHS: [&str; 4] = [
+        "/usr/lib/redis/modules/falkordb.so",
+        "/usr/local/lib/redis/modules/falkordb.so",
+        "/opt/homebrew/lib/redis/modules/falkordb.so",
+        "./falkordb.so",
+    ];
+
+    fn find_falkordb_module(
+        config: &EmbeddedConfig,
+        server: &ServerBinary,
+    ) -> FalkorResult<PathBuf> {
+        Self::find_falkordb_module_in(config, server, &Self::SYSTEM_MODULE_PATHS)
+    }
+
+    /// [`Self::find_falkordb_module`] with the system locations given, so tests
+    /// don't depend on what is installed on the host.
     // `return`s are load-bearing across feature combinations (the download path
     // below is compiled out under `embedded-bundle`), so the bundle branch's
     // explicit return can look "needless" in the bundle-only expansion.
     #[allow(clippy::needless_return)]
-    fn find_falkordb_module(
+    fn find_falkordb_module_in(
         config: &EmbeddedConfig,
         server: &ServerBinary,
+        #[cfg_attr(
+            not(all(feature = "embedded", not(feature = "embedded-bundle"))),
+            allow(unused_variables)
+        )]
+        system_paths: &[&str],
     ) -> FalkorResult<PathBuf> {
         // Resolution order: macOS libomp prerequisite → explicit path → cache
         // (if auto_download) → system locations → download (if auto_download) → error.
@@ -677,13 +699,7 @@ impl EmbeddedServer {
             // Step 4: Use an already-installed module from a common system location.
             #[cfg(feature = "tracing")]
             tracing::debug!("Searching for FalkorDB module in common system locations");
-            let common_paths = [
-                PathBuf::from("/usr/lib/redis/modules/falkordb.so"),
-                PathBuf::from("/usr/local/lib/redis/modules/falkordb.so"),
-                PathBuf::from("/opt/homebrew/lib/redis/modules/falkordb.so"),
-                PathBuf::from("./falkordb.so"),
-            ];
-            for path in common_paths {
+            for path in system_paths.iter().map(PathBuf::from) {
                 if path.exists() {
                     #[cfg(feature = "tracing")]
                     tracing::info!(
@@ -1474,7 +1490,7 @@ mod tests {
     #[cfg(all(feature = "embedded", not(feature = "embedded-bundle")))]
     #[test]
     #[cfg(unix)]
-    fn test_start_refuses_valkey_with_old_module_before_spawning() {
+    fn test_find_module_refuses_old_module_on_valkey_before_download() {
         // Module resolution checks for libomp first; skip if it is absent.
         #[cfg(target_os = "macos")]
         if provision::check_macos_libomp().is_err() {
@@ -1483,25 +1499,24 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("test_valkey_4x_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let spawned = dir.join("spawned");
         // Named redis-server but reports Valkey: the check goes by `--version`.
-        let fake = write_fake_redis(
-            &dir,
-            "Valkey server v=9.1.2 sha=0",
-            &format!("touch '{}'; exit 1", spawned.display()),
-        );
+        let valkey = ServerBinary {
+            path: PathBuf::from("redis-server"),
+            version: Some("Valkey server v=9.1.2 sha=0".to_string()),
+        };
 
-        let err = EmbeddedServer::start(EmbeddedConfig {
-            redis_server_path: Some(fake),
-            falkordb_version: Some("v4.18.10".to_string()),
-            auto_download: true,
-            // Empty, so nothing is cached and the check runs before the download.
-            cache_dir: Some(dir.join("cache")),
-            ..Default::default()
-        })
-        .err()
-        .expect("start should refuse a 4.x module on Valkey")
+        // No system locations and an empty cache, so the check runs before the download.
+        let err = EmbeddedServer::find_falkordb_module_in(
+            &EmbeddedConfig {
+                falkordb_version: Some("v4.18.10".to_string()),
+                auto_download: true,
+                cache_dir: Some(dir.join("cache")),
+                ..Default::default()
+            },
+            &valkey,
+            &[],
+        )
+        .expect_err("a 4.x module must be refused on Valkey")
         .to_string();
         assert!(
             err.contains("is Valkey")
@@ -1509,7 +1524,6 @@ mod tests {
                 && err.contains("`falkordb_version`"),
             "unexpected error: {err}"
         );
-        assert!(!spawned.exists(), "the server must not be spawned");
         let _ = fs::remove_dir_all(&dir);
     }
 

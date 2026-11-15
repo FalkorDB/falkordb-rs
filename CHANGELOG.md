@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed with `MOVED`, and a Sentinel was sent graph commands it doesn't know. Either field is now
   read
   ([#431](https://github.com/FalkorDB/falkordb-rs/pull/431))
+- Accept the `primary` and `replica` role names when the sync client resolves a Sentinel's master
+  or replica. Each candidate node is asked its role, and only `master` or `slave` was accepted.
+  Redis and Valkey still answer with those, but both now say primary and replica elsewhere, so a
+  server that switched would have left the client finding no master or replica. The async client's
+  Sentinel connections, primary and replica alike, are resolved by redis-rs, which still accepts
+  only `master` and `slave`
+  ([#433](https://github.com/FalkorDB/falkordb-rs/pull/433))
 
 ## [0.11.2](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.1...v0.11.2) - 2026-11-09
 

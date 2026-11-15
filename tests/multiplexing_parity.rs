@@ -64,42 +64,20 @@ fn strategies() -> [ConnectionStrategy; 3] {
     ]
 }
 
-/// Probe whether the FalkorDB server is accepting TCP connections. Returns `true` if a
-/// socket can be opened to the configured host/port, `false` otherwise (which means the
-/// test should be skipped rather than failed).
-async fn server_is_available() -> bool {
-    let (host, port) = target();
-    // Bound the probe so an unroutable FALKORDB_HOST can't stall the suite on the OS
-    // TCP timeout; a slow/unreachable server is treated as "skip".
-    matches!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            tokio::net::TcpStream::connect((host.as_str(), port)),
-        )
-        .await,
-        Ok(Ok(_))
-    )
-}
-
-/// Build a client for the given strategy, or `None` when the server is genuinely
-/// unavailable (skip silently). Panics on any build failure that occurs *after* the
-/// server has been confirmed reachable, so a code or configuration bug is never silently
-/// masked as "no server".
+/// Build a client for the given strategy, or `None` when `SKIP_INTEGRATION_TESTS` is set. Panics
+/// when the server can't be reached, so a test never passes without having run.
 async fn build_client(strategy: ConnectionStrategy) -> Option<FalkorAsyncClient> {
     if skip_if_no_server() {
         return None;
     }
-    if !server_is_available().await {
-        return None;
-    }
-    let conn_info = get_test_connection_info()?;
+    let conn_info = get_test_connection_info().expect("valid connection info");
     Some(
         FalkorClientBuilder::new_async()
             .with_connection_info(conn_info)
             .with_connection_strategy(strategy)
             .build()
             .await
-            .expect("Client build failed despite server being reachable"),
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)"),
     )
 }
 

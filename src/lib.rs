@@ -913,7 +913,8 @@
 //!
 //! #### Choosing a module-provisioning mode
 //!
-//! The `redis-server` binary is **never** downloaded — it must be installed on the host (see
+//! The server binary (`redis-server` or `valkey-server`) is **never** downloaded — it must be
+//! installed on the host (see
 //! Requirements). Only the FalkorDB `falkordb.so` **module** is provisioned, and there are two
 //! features for that:
 //!
@@ -943,10 +944,15 @@
 //!
 //! #### Requirements
 //!
-//! - `redis-server` (**version 8.0 or newer**) must be installed and available in PATH (or you can
-//!   specify a custom path). Without a `redis-server`, Valkey's `valkey-server` is used if it is in
-//!   PATH. Neither is downloaded automatically — install one from your package manager (e.g.
-//!   `brew install redis`, `apt-get install redis-server`).
+//! - `redis-server` or `valkey-server` (**version 8.0 or newer**, for either) must be installed and
+//!   available in PATH (or you can specify a custom path). PATH is searched for `redis-server`
+//!   first, then `valkey-server`. Neither is downloaded automatically — install one from your
+//!   package manager (e.g. `brew install redis`, `apt-get install redis-server`).
+//! - With `valkey-server`, the module must be FalkorDB **6.x**: Valkey reports itself to modules as
+//!   Redis 7.2, and FalkorDB before 6.0 refuses to load below Redis 8.0. The default module is
+//!   older, so set `falkordb_version` to a 6.x release (e.g. `"v6.0.4"`) or `falkordb_module_path`
+//!   to a 6.x module; otherwise the embedded server refuses to start on Valkey. FalkorDB 6.x
+//!   modules are published for Linux only.
 //! - The `falkordb.so` module is provisioned automatically: downloaded at runtime with `embedded`
 //!   (when `auto_download` is enabled, the default) or embedded at build time with
 //!   `embedded-bundle`. You can also point `falkordb_module_path` at an existing module, or disable
@@ -1009,7 +1015,7 @@
 //! ```
 //!
 //! The embedded server:
-//! - Spawns a `redis-server` process with the FalkorDB module loaded
+//! - Spawns a `redis-server` (or `valkey-server`) process with the FalkorDB module loaded
 //! - Uses Unix socket for communication (no network port)
 //! - Automatically cleans up when the client is dropped
 //! - Can be configured with custom paths, database directory, and socket location

@@ -19,9 +19,11 @@
 //! against a pinned SHA-256 checksum and cached locally, so the embedded server
 //! "just works" without a pre-installed module.
 //!
-//! The `redis-server` binary is **not** downloaded — it is located on the host
-//! via `PATH` or `redis_server_path`. Install it from your package manager
-//! (e.g. `brew install redis`, `apt-get install redis-server`).
+//! The server binary is **not** downloaded — it is located on the host via
+//! `redis_server_path` or `PATH` (`redis-server`, else `valkey-server`). Install
+//! one from your package manager (e.g. `brew install redis`,
+//! `apt-get install redis-server`). A `valkey-server` needs a FalkorDB 6.x
+//! module (Linux only): set `falkordb_version` or `falkordb_module_path`.
 //!
 //! # Using an already-installed FalkorDB
 //!

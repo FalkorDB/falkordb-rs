@@ -48,11 +48,10 @@ fn test_client_connection() {
 
     let conn_info = get_test_connection_info().expect("valid connection info");
 
-    let client = FalkorClientBuilder::new()
+    FalkorClientBuilder::new()
         .with_connection_info(conn_info)
-        .build();
-
-    assert!(client.is_ok(), "Failed to create client");
+        .build()
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
 }
 
 #[test]
@@ -727,12 +726,11 @@ mod async_tests {
 
         let conn_info = get_test_connection_info().expect("valid connection info");
 
-        let client = falkordb::FalkorClientBuilder::new_async()
+        falkordb::FalkorClientBuilder::new_async()
             .with_connection_info(conn_info)
             .build()
-            .await;
-
-        assert!(client.is_ok(), "Failed to create async client");
+            .await
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
     }
 
     #[tokio::test]

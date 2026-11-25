@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FalkorClientBuilder::with_schema_hash`, on by default, controls whether queries send the
   `SCHEMA_HASH` argument (see the Fixed entry below). Turn it off only for a proxy or other
   middleware that rejects or rewrites arguments it doesn't know
-  ([#PR](https://github.com/FalkorDB/falkordb-rs/pull/PR))
+  ([#441](https://github.com/FalkorDB/falkordb-rs/pull/441))
 
 ### Fixed
 
@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection the sync client used to open for them. Older servers ignore the argument and the
   client works as before (FalkorDB#3757,
   [#439](https://github.com/FalkorDB/falkordb-rs/issues/439))
-  ([#PR](https://github.com/FalkorDB/falkordb-rs/pull/PR))
+  ([#441](https://github.com/FalkorDB/falkordb-rs/pull/441))
 
 ## [0.11.3](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.2...v0.11.3) - 2026-11-15
 

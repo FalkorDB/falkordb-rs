@@ -92,6 +92,78 @@ fn fresh_graph(
     graph
 }
 
+/// Whether the cluster's nodes answer `SCHEMA_HASH`: a FalkorDB module of 6.2.0 or later.
+fn cluster_has_schema_hash() -> bool {
+    let url = std::env::var("FALKORDB_CLUSTER_URL")
+        .expect("FALKORDB_CLUSTER_URL")
+        .replacen("falkor://", "redis://", 1);
+    let mut conn = redis::Client::open(url)
+        .and_then(|client| client.get_connection())
+        .expect("a cluster node");
+    let modules: Vec<std::collections::HashMap<String, redis::Value>> = redis::cmd("MODULE")
+        .arg("LIST")
+        .query(&mut conn)
+        .expect("MODULE LIST");
+    modules
+        .iter()
+        .find(|module| {
+            module.get("name").is_some_and(|name| {
+                redis::from_redis_value_ref::<String>(name).is_ok_and(|name| name == "graph")
+            })
+        })
+        .and_then(|graph| graph.get("ver"))
+        .and_then(|version| redis::from_redis_value_ref::<i64>(version).ok())
+        .expect("the graph module's version")
+        >= 60200
+}
+
+#[test]
+fn schema_hash_recreate_on_a_cluster() {
+    // One client caches a graph's names, another drops and recreates it with other names; on
+    // every node, the first client must decode the new names (FalkorDB 6.2.0 and later), or the
+    // cached ones as before on older servers.
+    let Some(info) = cluster_info() else { return };
+    let build = || {
+        FalkorClientBuilder::new()
+            .with_connection_info(info.clone())
+            .build()
+            .expect("cluster client")
+    };
+    let (a, b) = (build(), build());
+    let expected = if cluster_has_schema_hash() {
+        ("Movie", "title")
+    } else {
+        ("Person", "name")
+    };
+    for i in 0..GRAPHS {
+        let name = graph_name("rs_cluster_schema_hash", i);
+        let mut graph = fresh_graph(&a, &name);
+        graph
+            .query("CREATE (:Person {name: 'Alice'})")
+            .execute()
+            .expect("create");
+        let mut other = b.select_graph(&name);
+        other.delete().expect("delete");
+        other
+            .query("CREATE (:Movie {title: 'Heat'})")
+            .execute()
+            .expect("recreate");
+
+        let row = graph
+            .ro_query("MATCH (n) RETURN n")
+            .execute()
+            .expect("read")
+            .data
+            .next()
+            .expect("a row")
+            .expect("row parses");
+        let node = row.get_at(0).and_then(|v| v.as_node()).expect("a node");
+        assert_eq!(node.labels, vec![expected.0], "graph {i}");
+        assert!(node.properties.contains_key(expected.1), "graph {i}");
+        graph.delete().expect("delete");
+    }
+}
+
 #[test]
 fn sync_client_routes_commands_across_cluster_nodes() {
     let Some(info) = cluster_info() else { return };

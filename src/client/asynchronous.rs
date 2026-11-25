@@ -69,6 +69,8 @@ pub struct FalkorAsyncClientInner {
     /// When set, the raw query text is recorded as a span field (opt-in via `with_query_logging`).
     #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
     query_logging: bool,
+    /// Whether queries send `SCHEMA_HASH` (on by default, see `with_schema_hash`).
+    schema_hash: bool,
     /// Client-wide default read preference for read-only queries (overridable per query).
     read_preference: ReadPreference,
 }
@@ -89,6 +91,11 @@ impl FalkorAsyncClientInner {
     #[cfg(any(feature = "tracing", feature = "metrics"))]
     pub(crate) fn strategy(&self) -> ConnectionStrategy {
         self.strategy
+    }
+
+    /// Whether queries send `SCHEMA_HASH` (on by default, see `with_schema_hash`).
+    pub(crate) fn schema_hash(&self) -> bool {
+        self.schema_hash
     }
 
     /// Whether raw query text may be recorded on spans (opt-in; `false` by default).
@@ -212,6 +219,7 @@ pub struct FalkorAsyncClient {
 }
 
 impl FalkorAsyncClient {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create(
         mut client: FalkorClientProvider,
         connection_info: FalkorConnectionInfo,
@@ -219,6 +227,7 @@ impl FalkorAsyncClient {
         max_inflight: Option<NonZeroUsize>,
         retry_policy: RetryPolicy,
         query_logging: bool,
+        schema_hash: bool,
         read_preference: ReadPreference,
     ) -> FalkorResult<Self> {
         // A multiplexed ConnectionManager built from a Sentinel-resolved client pins to a
@@ -262,6 +271,7 @@ impl FalkorAsyncClient {
                 readonly,
                 retry_policy,
                 query_logging,
+                schema_hash,
                 read_preference,
             }),
             _connection_info: connection_info,
@@ -625,6 +635,7 @@ pub(crate) fn create_empty_inner_async_client() -> Arc<FalkorAsyncClientInner> {
         readonly: None,
         retry_policy: RetryPolicy::disabled(),
         query_logging: false,
+        schema_hash: true,
         read_preference: ReadPreference::Primary,
     })
 }
@@ -937,6 +948,7 @@ mod tests {
             readonly: Some(readonly),
             retry_policy: RetryPolicy::disabled(),
             query_logging: false,
+            schema_hash: true,
             read_preference: ReadPreference::Primary,
         });
 

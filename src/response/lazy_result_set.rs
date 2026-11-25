@@ -3,8 +3,9 @@
  * Licensed under the MIT License.
  */
 
+use crate::graph_schema::SchemaHandle;
 use crate::parser::ParserTypeMarker;
-use crate::{parser::parse_type, FalkorResult, FalkorValue, GraphSchema, Row};
+use crate::{parser::parse_type, FalkorResult, FalkorValue, Row};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -16,19 +17,19 @@ use std::sync::Arc;
 pub struct LazyResultSet<'a> {
     header: Arc<[String]>,
     data: VecDeque<redis::Value>,
-    graph_schema: &'a mut GraphSchema,
+    graph_schema: SchemaHandle<'a>,
 }
 
 impl<'a> LazyResultSet<'a> {
     pub(crate) fn new(
         header: Arc<[String]>,
         data: Vec<redis::Value>,
-        graph_schema: &'a mut GraphSchema,
+        graph_schema: impl Into<SchemaHandle<'a>>,
     ) -> Self {
         Self {
             header,
             data: data.into(),
-            graph_schema,
+            graph_schema: graph_schema.into(),
         }
     }
 
@@ -52,9 +53,13 @@ impl<'a> LazyResultSet<'a> {
     pub fn into_values_lossy(mut self) -> impl Iterator<Item = Vec<FalkorValue>> + 'a {
         std::iter::from_fn(move || {
             self.data.pop_front().map(|current_result| {
-                parse_type(ParserTypeMarker::Array, current_result, self.graph_schema)
-                    .and_then(FalkorValue::into_vec)
-                    .unwrap_or_else(|err| vec![FalkorValue::Unparseable(err.to_string())])
+                parse_type(
+                    ParserTypeMarker::Array,
+                    current_result,
+                    self.graph_schema.get(),
+                )
+                .and_then(FalkorValue::into_vec)
+                .unwrap_or_else(|err| vec![FalkorValue::Unparseable(err.to_string())])
             })
         })
     }
@@ -72,7 +77,7 @@ impl Iterator for LazyResultSet<'_> {
         Some(crate::response::row::parse_row(
             &self.header,
             current_result,
-            self.graph_schema,
+            self.graph_schema.get(),
         ))
     }
 }

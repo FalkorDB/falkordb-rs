@@ -174,6 +174,18 @@ To opt back into the pre-0.7 behavior (bare `Vec<FalkorValue>` rows, parse error
 [`examples/rows.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/rows.rs). Upgrading from 0.6? See the
 [0.7 migration guide](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.7.md).
 
+#### Label and property names
+
+Replies name labels, relationship types and property keys by id, and the client caches each
+graph's names to decode them. On FalkorDB 6.2.0 and later, every query sends the hash of the
+names it has cached (`SCHEMA_HASH`), and the server sends the current names back whenever that
+hash is out of date. A reply then always decodes with the right names, even after another
+client drops and recreates the graph under the same key, and no extra round trip is needed to
+fetch them. Older servers ignore the argument; there the client fetches the names when it meets
+an id it doesn't know, which can't notice that a graph was recreated.
+`FalkorClientBuilder::with_schema_hash(false)` turns the argument off, for a proxy or other
+middleware that rejects arguments it doesn't know.
+
 #### Type-safe query parameters
 
 Pass Rust values straight into a query — the client encodes them as Cypher literals and escapes

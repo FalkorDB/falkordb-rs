@@ -11,6 +11,7 @@ use crate::graph::query_builder::{
     unwrap_query_response,
 };
 use crate::graph::HasGraphSchema;
+use crate::graph_schema::{reply_schema, take_schema_element};
 use crate::{
     FalkorDBError, FalkorParams, FalkorResult, GraphSchema, IntoFalkorParam, IntoFalkorParams,
     QueryResult, ReadPreference, Row, SyncGraph,
@@ -236,10 +237,11 @@ impl<'a, G> BatchBuilder<'a, G> {
 
 /// Builds the pipeline, pre-filling a result slot for every query that fails to encode (those are
 /// never sent), and recording the original index of each *submitted* command so replies can be
-/// woven back into submission order.
+/// woven back into submission order. Every query carries the same `SCHEMA_HASH`, when given.
 fn prepare(
     graph_name: &str,
     queries: &[BatchQuery],
+    schema_hash: Option<i64>,
 ) -> (redis::Pipeline, Vec<usize>, Vec<Option<BatchItemResult>>) {
     let mut pipe = redis::pipe();
     let mut submitted = Vec::with_capacity(queries.len());
@@ -254,6 +256,9 @@ fn prepare(
                     .arg("--compact");
                 if let Some(timeout) = query.timeout {
                     pipe.arg("timeout").arg(timeout);
+                }
+                if let Some(hash) = schema_hash {
+                    pipe.arg("SCHEMA_HASH").arg(hash);
                 }
                 submitted.push(index);
             }
@@ -285,18 +290,34 @@ fn check_reply_count(
     Ok(())
 }
 
-/// Parses each reply, in submission order, under the graph schema.
+/// Parses each reply, in submission order. A reply with a schema element decodes with the names it
+/// carries, or with `sent` (the schema whose hash the batch sent) when that hash is still current; a
+/// reply without one decodes under `graph_schema`, refreshing it on a miss. Also returns the names
+/// the replies carried, for the caller to offer to the cache.
 fn parse_replies(
     replies: Vec<redis::Value>,
+    sent: &GraphSchema,
     graph_schema: &mut GraphSchema,
-) -> Vec<BatchItemResult> {
-    replies
+) -> (Vec<BatchItemResult>, Vec<GraphSchema>) {
+    let mut new_names = Vec::new();
+    let items = replies
         .into_iter()
         .map(|reply| {
-            unwrap_query_response(reply)
-                .and_then(|res| dispatch_query_response(res, &mut *graph_schema, build_vec_rows))
+            let mut res = unwrap_query_response(reply)?;
+            match take_schema_element(&mut res)? {
+                Some(element) => {
+                    let mut reply = reply_schema(sent, element)?;
+                    let result = dispatch_query_response(res, &mut reply.schema, build_vec_rows);
+                    if reply.new_names {
+                        new_names.push(reply.schema);
+                    }
+                    result
+                }
+                None => dispatch_query_response(res, &mut *graph_schema, build_vec_rows),
+            }
         })
-        .collect()
+        .collect();
+    (items, new_names)
 }
 
 /// Puts the parsed replies into their original slots and returns the fully-populated, in-order
@@ -324,7 +345,12 @@ fn weave_replies(
     graph_schema: &mut GraphSchema,
 ) -> BatchResult {
     check_reply_count(submitted, &replies)?;
-    fill_slots(slots, submitted, parse_replies(replies, graph_schema))
+    let sent = graph_schema.snapshot();
+    let (parsed, new_names) = parse_replies(replies, &sent, graph_schema);
+    for names in &new_names {
+        graph_schema.offer(names);
+    }
+    fill_slots(slots, submitted, parsed)
 }
 
 impl BatchBuilder<'_, SyncGraph> {
@@ -346,7 +372,10 @@ impl BatchBuilder<'_, SyncGraph> {
             "batch",
         )?;
 
-        let (pipe, submitted, slots) = prepare(self.graph.graph_name(), &self.queries);
+        let schema_hash = client
+            .schema_hash()
+            .then(|| self.graph.get_graph_schema_mut().request_hash());
+        let (pipe, submitted, slots) = prepare(self.graph.graph_name(), &self.queries, schema_hash);
         if submitted.is_empty() {
             return Ok(slots
                 .into_iter()
@@ -384,7 +413,9 @@ impl BatchBuilder<'_, crate::AsyncGraph> {
             "batch",
         )?;
 
-        let (pipe, submitted, slots) = prepare(self.graph.graph_name(), &self.queries);
+        let sent = self.graph.schema_snapshot();
+        let schema_hash = client.schema_hash().then(|| sent.request_hash());
+        let (pipe, submitted, slots) = prepare(self.graph.graph_name(), &self.queries, schema_hash);
         if submitted.is_empty() {
             return Ok(slots
                 .into_iter()
@@ -400,12 +431,13 @@ impl BatchBuilder<'_, crate::AsyncGraph> {
         let replies = conn?.execute_pipeline(&pipe).await?;
 
         check_reply_count(&submitted, &replies)?;
-        let parsed = self
+        let (parsed, new_names) = self
             .graph
             .parse_with_schema(replies, |replies, schema| {
-                Ok(parse_replies(replies, schema))
+                Ok(parse_replies(replies, &sent, schema))
             })
             .await?;
+        self.graph.offer_reply_schemas(&new_names);
         fill_slots(slots, &submitted, parsed)
     }
 }
@@ -449,7 +481,7 @@ mod tests {
         q.with_params([("a", 1), ("b", 2)])
             .with_raw_param("c", "timestamp()");
         let queries = vec![q];
-        let (pipe, submitted, slots) = prepare("g", &queries);
+        let (pipe, submitted, slots) = prepare("g", &queries, None);
         assert_eq!(submitted, vec![0], "query with bulk + raw params encodes");
         assert_eq!(pipe.len(), 1);
         assert!(slots[0].is_none());
@@ -473,7 +505,7 @@ mod tests {
             BatchQuery::read("RETURN 3"),
         ];
 
-        let (pipe, submitted, slots) = prepare("g", &queries);
+        let (pipe, submitted, slots) = prepare("g", &queries, None);
 
         assert_eq!(submitted, vec![0, 2], "the middle query must be skipped");
         assert_eq!(
@@ -489,11 +521,130 @@ mod tests {
         assert!(slots[2].is_none());
     }
 
+    /// The arguments of each command in `pipe`, as text.
+    fn pipeline_args(pipe: &redis::Pipeline) -> Vec<Vec<String>> {
+        pipe.cmd_iter()
+            .map(|cmd| {
+                cmd.args_iter()
+                    .map(|arg| match arg {
+                        redis::Arg::Simple(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                        _ => "<cursor>".to_string(),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn prepare_sends_the_schema_hash_last_on_every_query() {
+        let mut timed = BatchQuery::read("RETURN 2");
+        timed.with_timeout(1000);
+        let queries = vec![BatchQuery::write("RETURN 1"), timed];
+
+        let (pipe, _, _) = prepare("g", &queries, Some(-5));
+        assert_eq!(
+            pipeline_args(&pipe),
+            [
+                vec![
+                    "GRAPH.QUERY",
+                    "g",
+                    "RETURN 1",
+                    "--compact",
+                    "SCHEMA_HASH",
+                    "-5"
+                ],
+                vec![
+                    "GRAPH.RO_QUERY",
+                    "g",
+                    "RETURN 2",
+                    "--compact",
+                    "timeout",
+                    "1000",
+                    "SCHEMA_HASH",
+                    "-5"
+                ],
+            ]
+        );
+
+        let (pipe, _, _) = prepare("g", &queries, None);
+        assert!(pipeline_args(&pipe)
+            .iter()
+            .all(|args| !args.iter().any(|arg| arg == "SCHEMA_HASH")));
+    }
+
+    #[test]
+    fn weave_replies_decodes_each_reply_with_its_own_names() {
+        // One hash went out for the whole batch. The first reply brings new names and decodes with
+        // them; the second reply's hash matches what was sent, so it decodes with the names sent.
+        // Afterwards the cache holds the newest names.
+        let bulk = |text: &str| redis::Value::BulkString(text.as_bytes().to_vec());
+        let header = redis::Value::Array(vec![redis::Value::Array(vec![
+            redis::Value::Int(1),
+            bulk("n"),
+        ])]);
+        let node_reply = |label: i64, element: redis::Value| {
+            redis::Value::Array(vec![
+                header.clone(),
+                redis::Value::Array(vec![redis::Value::Array(vec![redis::Value::Array(vec![
+                    redis::Value::Int(8),
+                    redis::Value::Array(vec![
+                        redis::Value::Int(1),
+                        redis::Value::Array(vec![redis::Value::Int(label)]),
+                        redis::Value::Array(vec![]),
+                    ]),
+                ])])]),
+                redis::Value::Array(vec![]),
+                element,
+            ])
+        };
+        let element = |hash: i64, labels: Option<&[&str]>| {
+            let mut pairs = vec![bulk("hash"), redis::Value::Int(hash)];
+            if let Some(labels) = labels {
+                pairs.extend([
+                    bulk("labels"),
+                    redis::Value::Array(labels.iter().map(|label| bulk(label)).collect()),
+                    bulk("relationshipTypes"),
+                    redis::Value::Array(vec![]),
+                    bulk("propertyKeys"),
+                    redis::Value::Array(vec![]),
+                ]);
+            }
+            redis::Value::Array(pairs)
+        };
+
+        let mut schema = GraphSchema::new("test", create_empty_inner_sync_client());
+        // Fill the cache with hash 1 = [Sent].
+        let (_, new_names) = parse_replies(
+            vec![node_reply(0, element(1, Some(&["Sent"])))],
+            &schema.snapshot(),
+            &mut schema,
+        );
+        schema.offer(&new_names[0]);
+        assert_eq!(schema.request_hash(), 1);
+
+        let replies = vec![
+            node_reply(1, element(2, Some(&["Sent", "Added"]))),
+            node_reply(0, element(1, None)),
+        ];
+        let out = weave_replies(vec![None, None], &[0, 1], replies, &mut schema).expect("woven");
+        let label = |item: &BatchItemResult| {
+            item.as_ref().expect("decodes").data[0]
+                .get_at(0)
+                .and_then(crate::FalkorValue::as_node)
+                .expect("a node")
+                .labels
+                .clone()
+        };
+        assert_eq!(label(&out[0]), vec!["Added"]);
+        assert_eq!(label(&out[1]), vec!["Sent"]);
+        assert_eq!(schema.request_hash(), 2);
+    }
+
     #[test]
     fn prepare_all_encode_errors_pipelines_nothing() {
         let mut q = BatchQuery::write("RETURN 1");
         q.with_param("invalid name!", 1);
-        let (pipe, submitted, slots) = prepare("g", &[q]);
+        let (pipe, submitted, slots) = prepare("g", &[q], None);
         assert!(submitted.is_empty());
         assert_eq!(pipe.len(), 0);
         assert!(matches!(slots[0], Some(Err(_))));
@@ -592,7 +743,7 @@ mod proptest {
         #[test]
         fn skip_and_weave_preserves_submission_order(good_flags in prop::collection::vec(any::<bool>(), 0..16)) {
             let queries = batch_of(&good_flags);
-            let (pipe, submitted, slots) = prepare("g", &queries);
+            let (pipe, submitted, slots) = prepare("g", &queries, None);
 
             let expected_submitted: Vec<usize> = good_flags
                 .iter()

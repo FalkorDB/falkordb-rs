@@ -166,6 +166,18 @@
 //! [`examples/rows.rs`](https://github.com/FalkorDB/falkordb-rs/blob/main/examples/rows.rs). Upgrading from 0.6? See the
 //! [0.7 migration guide](https://github.com/FalkorDB/falkordb-rs/blob/main/docs/migrating-to-0.7.md).
 //!
+//! #### Label and property names
+//!
+//! Replies name labels, relationship types and property keys by id, and the client caches each
+//! graph's names to decode them. On FalkorDB 6.2.0 and later, every query sends the hash of the
+//! names it has cached (`SCHEMA_HASH`), and the server sends the current names back whenever that
+//! hash is out of date. A reply then always decodes with the right names, even after another
+//! client drops and recreates the graph under the same key, and no extra round trip is needed to
+//! fetch them. Older servers ignore the argument; there the client fetches the names when it meets
+//! an id it doesn't know, which can't notice that a graph was recreated.
+//! `FalkorClientBuilder::with_schema_hash(false)` turns the argument off, for a proxy or other
+//! middleware that rejects arguments it doesn't know.
+//!
 //! #### Type-safe query parameters
 //!
 //! Pass Rust values straight into a query — the client encodes them as Cypher literals and escapes
@@ -1211,6 +1223,31 @@ pub(crate) mod test_utils {
     /// `redis://` URL of the test server, for tests that build a `redis::Client` directly.
     pub(crate) fn test_redis_url() -> String {
         format!("redis://{}", test_server_authority())
+    }
+
+    /// Whether the test server answers `SCHEMA_HASH`: a FalkorDB module of 6.2.0 or later. Older
+    /// servers ignore the argument, and tests check the behaviour the client had before.
+    pub(crate) fn server_has_schema_hash() -> bool {
+        let mut conn = redis::Client::open(test_redis_url())
+            .and_then(|client| client.get_connection())
+            .expect("a FalkorDB server must be reachable");
+        let modules: Vec<std::collections::HashMap<String, redis::Value>> = redis::cmd("MODULE")
+            .arg("LIST")
+            .query(&mut conn)
+            .expect("MODULE LIST");
+        let graph = modules
+            .iter()
+            .find(|module| {
+                module.get("name").is_some_and(|name| {
+                    redis::from_redis_value_ref::<String>(name).is_ok_and(|name| name == "graph")
+                })
+            })
+            .expect("the graph module is loaded");
+        graph
+            .get("ver")
+            .and_then(|version| redis::from_redis_value_ref::<i64>(version).ok())
+            .expect("the graph module's version")
+            >= 60200
     }
 
     /// Connection info for the test server; see [`test_server_url`].

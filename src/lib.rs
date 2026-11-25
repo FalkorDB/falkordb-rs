@@ -169,9 +169,10 @@
 //! #### Label and property names
 //!
 //! Replies name labels, relationship types and property keys by id, and the client caches each
-//! graph's names to decode them. On FalkorDB 6.2.0 and later, every query sends the hash of the
-//! names it has cached (`SCHEMA_HASH`), and the server sends the current names back whenever that
-//! hash is out of date. A reply then always decodes with the right names, even after another
+//! graph's names to decode them. On FalkorDB 6.2.0 and later, every `GRAPH.QUERY` and
+//! `GRAPH.RO_QUERY` the client sends (queries, procedure calls and batches, but not `explain` or
+//! `profile`) carries the hash of the names it has cached (`SCHEMA_HASH`), and the server sends
+//! the current names back whenever that hash is out of date. A reply then always decodes with the right names, even after another
 //! client drops and recreates the graph under the same key, and no extra round trip is needed to
 //! fetch them. Older servers ignore the argument; there the client fetches the names when it meets
 //! an id it doesn't know, which can't notice that a graph was recreated.

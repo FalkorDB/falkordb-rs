@@ -321,7 +321,7 @@ jobs:
   # downgrade the caller's token.
   report-scheduled-failure:
     name: Report scheduled failure
-    needs: [falkordb-version, integration-tests, integration-tests-tokio, integration-tests-cluster, integration-tests-valkey]
+    needs: [falkordb-version, integration-tests, integration-tests-pre-schema-hash, integration-tests-tokio, integration-tests-cluster, integration-tests-valkey]
     # `cancelled` as well as `failure`: a job stopped by its own timeout, or by
     # GitHub's six hour ceiling, reports `cancelled`, and a nightly that hangs is
     # exactly the case this alert exists for.

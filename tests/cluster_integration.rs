@@ -142,6 +142,18 @@ fn schema_hash_recreate_on_a_cluster() {
             .query("CREATE (:Person {name: 'Alice'})")
             .execute()
             .expect("create");
+        // Read the node so the names are cached on every server: a write without RETURN only
+        // brings them back with `SCHEMA_HASH`.
+        let row = graph
+            .ro_query("MATCH (n) RETURN n")
+            .execute()
+            .expect("read")
+            .data
+            .next()
+            .expect("a row")
+            .expect("row parses");
+        let node = row.get_at(0).and_then(|v| v.as_node()).expect("a node");
+        assert_eq!(node.labels, vec!["Person"], "graph {i}");
         let mut other = b.select_graph(&name);
         other.delete().expect("delete");
         other

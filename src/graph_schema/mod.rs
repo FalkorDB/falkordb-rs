@@ -219,12 +219,14 @@ impl GraphSchema {
     /// of the cached one, the reply came from an older version of the graph (a replica that is
     /// behind, or two replies that crossed) and is skipped. Otherwise the graph grew or was
     /// recreated, and the reply replaces the cache. Names from a refresh (no hash) are always
-    /// replaced.
+    /// replaced, and so is anything by an empty schema (hash 0): it starts every list, but it
+    /// means the graph was deleted or recreated without names, not that the reply is older.
     pub(crate) fn offer(
         &mut self,
         reply: &GraphSchema,
     ) {
-        if self.hash.is_some() && (self.hash == reply.hash || reply.is_prefix_of(self)) {
+        let older = reply.hash != Some(0) && reply.is_prefix_of(self);
+        if self.hash.is_some() && (self.hash == reply.hash || older) {
             return;
         }
         self.hash = reply.hash;

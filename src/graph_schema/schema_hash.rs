@@ -554,6 +554,23 @@ mod tests {
     }
 
     #[test]
+    fn offer_takes_an_empty_schema() {
+        // An empty schema starts every list, but it is not an older version of this graph: the
+        // graph was deleted or recreated without names. Keeping the old names would make every
+        // later request send their stale hash.
+        let cache = after_offer(
+            Some((2, names(&["Person"], &["KNOWS"], &["name"]))),
+            0,
+            SchemaNames::default(),
+        );
+        assert_eq!(cache.hash, Some(0));
+        assert_eq!(cache.request_hash(), 0);
+        assert!(cache.labels().is_empty());
+        assert!(cache.relationships().is_empty());
+        assert!(cache.properties().is_empty());
+    }
+
+    #[test]
     fn adopt_reply_offers_only_new_names() {
         let mut cache = cached(1, names(&["A"], &[], &[]));
         let before = std::sync::Arc::clone(&cache.labels);

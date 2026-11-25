@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `FalkorClientBuilder::with_schema_hash`, on by default, controls whether queries send the
-  `SCHEMA_HASH` argument (see the Fixed entry below). Turn it off only for a proxy or other
-  middleware that rejects or rewrites arguments it doesn't know
+  `SCHEMA_HASH` argument (see the Fixed entry below). Turn it off only for a proxy that rejects
+  or rewrites arguments it doesn't know
   ([#441](https://github.com/FalkorDB/falkordb-rs/pull/441))
 
 ### Fixed

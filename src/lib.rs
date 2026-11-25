@@ -175,8 +175,8 @@
 //! client drops and recreates the graph under the same key, and no extra round trip is needed to
 //! fetch them. Older servers ignore the argument; there the client fetches the names when it meets
 //! an id it doesn't know, which can't notice that a graph was recreated.
-//! `FalkorClientBuilder::with_schema_hash(false)` turns the argument off, for a proxy or other
-//! middleware that rejects arguments it doesn't know.
+//! `FalkorClientBuilder::with_schema_hash(false)` turns the argument off, for a proxy that rejects
+//! arguments it doesn't know.
 //!
 //! #### Type-safe query parameters
 //!

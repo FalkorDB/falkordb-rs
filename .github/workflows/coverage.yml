@@ -117,6 +117,18 @@ jobs:
           FALKORDB_CLUSTER_URL: falkor://127.0.0.1:7001
         run: just coverage
       
+      # TEMPORARY diagnostics (to be removed): which test binaries exist, and which objects the
+      # report reads.
+      - name: Coverage diagnostics
+        run: |
+          rustc -vV
+          ls -la target/llvm-cov-target/debug/deps | grep -E ' falkordb-[0-9a-f]+$| [a-z_]+-[0-9a-f]+$' | head -40 || true
+          cargo llvm-cov report --codecov --output-path /tmp/diag.json -v 2>&1 | tr ' ' '\n' | grep -A1 -- '-object' | grep -v -- '-object' | head -40
+          for bin in target/llvm-cov-target/debug/deps/falkordb-*; do
+            [ -x "$bin" ] && [ -f "$bin" ] || continue
+            echo "== $bin"; readelf -S --wide "$bin" 2>/dev/null | grep -E 'llvm_cov|llvm_prf' || echo "   (no __llvm_cov sections)"
+          done
+
       # The exact report Codecov receives, to compare with Codecov's figures.
       - name: Keep the coverage report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

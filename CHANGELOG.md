@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `udf_list`'s docs give the two shapes of its raw reply: FalkorDB 4.x over RESP3 sends each
   library as a map, other servers and RESP2 as a flat array of pairs
   ([#442](https://github.com/FalkorDB/falkordb-rs/pull/442))
+- Restore the coverage report. Since the CI runners moved to Rust 1.100 (Nov 22), Cargo puts
+  test binaries in a new build-dir layout that cargo-llvm-cov 0.8 doesn't search, so the report
+  left out every unit test and Codecov showed about 30% instead of 96%. CI now installs
+  cargo-llvm-cov 0.9.2, and `just coverage` fails if the report lacks the library's unit tests
+  ([#442](https://github.com/FalkorDB/falkordb-rs/pull/442))
 - CI runs the server-backed suites, standalone and cluster, against FalkorDB 4.x and 6.x, each
   over RESP2 and RESP3, and the standalone suite against 6.0.4 too. `FALKORDB_PROTOCOL` selects the
   protocol of the test connections, `just test-local-matrix` runs the whole matrix locally, and

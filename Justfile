@@ -220,6 +220,14 @@ coverage:
     FALKORDB_EMBEDDED_MODULE_PATH="$fixture_dir/falkordb-fixture.so" \
         cargo llvm-cov nextest --no-report --lib --features embedded-bundle
     cargo llvm-cov report --codecov --output-path codecov.json
+    # A report without the library's own test binaries still looks plausible (about a third of
+    # the code, from what the integration tests link), so check that their code is in it.
+    # cargo-llvm-cov before 0.9 misses them with Cargo 1.100's build-dir layout.
+    if ! jq -e '.coverage | keys | any(endswith("src/response/row_proptest.rs"))' codecov.json >/dev/null; then
+        echo "error: codecov.json has no coverage from the library's unit tests;" \
+            "update cargo-llvm-cov to 0.9 or later ($(cargo llvm-cov --version))" >&2
+        exit 1
+    fi
 
 # Generate an HTML coverage report and open it.
 coverage-html:

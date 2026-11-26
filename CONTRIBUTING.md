@@ -60,7 +60,7 @@ just db-down        # stop and remove the container
 
 # Or let a single recipe manage the container lifecycle end-to-end.
 just test-local       # start DB, populate, run the full suite, tear down
-just coverage-local   # same, but produce Codecov JSON
+just coverage-local   # same, but produce Codecov JSON (needs cargo-llvm-cov 0.9 or later)
 just bench-local      # start DB, run all benchmarks, tear down
 ```
 

@@ -90,9 +90,13 @@ jobs:
           done
           redis-cli -h 127.0.0.1 -p 6379 ping
       
-      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, cargo-llvm-cov, nextest
+      # cargo-llvm-cov is pinned: 0.8.x does not find test binaries in Cargo 1.100's build-dir
+      # layout (`build/<package>/<hash>/out/`), so with Rust 1.100 it reported only what the
+      # examples and integration tests link, and dropped every unit test (#442). `just coverage`
+      # fails if that happens again.
+      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10; just, cargo-llvm-cov, nextest
         with:
-          tool: just,cargo-llvm-cov,nextest
+          tool: just,cargo-llvm-cov@0.9.2,nextest
       
       - name: Populate test graph
         run: pip install falkordb && just db-populate
@@ -117,18 +121,6 @@ jobs:
           FALKORDB_CLUSTER_URL: falkor://127.0.0.1:7001
         run: just coverage
       
-      # TEMPORARY diagnostics (to be removed): which test binaries exist, and which objects the
-      # report reads.
-      - name: Coverage diagnostics
-        run: |
-          rustc -vV
-          ls -la target/llvm-cov-target/debug/deps | grep -E ' falkordb-[0-9a-f]+$| [a-z_]+-[0-9a-f]+$' | head -40 || true
-          cargo llvm-cov report --codecov --output-path /tmp/diag.json -v 2>&1 | tr ' ' '\n' | grep -A1 -- '-object' | grep -v -- '-object' | head -40
-          for bin in target/llvm-cov-target/debug/deps/falkordb-*; do
-            [ -x "$bin" ] && [ -f "$bin" ] || continue
-            echo "== $bin"; readelf -S --wide "$bin" 2>/dev/null | grep -E 'llvm_cov|llvm_prf' || echo "   (no __llvm_cov sections)"
-          done
-
       # The exact report Codecov receives, to compare with Codecov's figures.
       - name: Keep the coverage report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

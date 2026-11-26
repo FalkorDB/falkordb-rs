@@ -1750,6 +1750,9 @@ mod temporal_values {
 mod async_schema_refresh {
     use super::*;
 
+    /// A client that fetches names on an unknown id, as it does on a server older than FalkorDB
+    /// 6.2.0: these tests are about that fetch, which `SCHEMA_HASH` makes unnecessary on newer
+    /// servers.
     async fn new_client() -> Option<falkordb::FalkorAsyncClient> {
         if skip_if_no_server() {
             return None;
@@ -1757,6 +1760,7 @@ mod async_schema_refresh {
         Some(
             FalkorClientBuilder::new_async()
                 .with_connection_info(get_test_connection_info().expect("valid connection info"))
+                .with_schema_hash(false)
                 .build()
                 .await
                 .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)"),
@@ -1984,6 +1988,465 @@ mod connection_recovery {
                 .list_graphs()
                 .await
                 .unwrap_or_else(|err| panic!("command {attempt} after the outage failed: {err}"));
+        }
+    }
+}
+
+/// `SCHEMA_HASH` (FalkorDB 6.2.0 and later): each query sends the hash of the names the client has
+/// cached, and the reply carries the current names whenever that hash is out of date. Older servers
+/// ignore the argument; there the tests check the behaviour the client always had.
+mod schema_hash {
+    use super::*;
+    use falkordb::{FalkorSyncClient, FalkorValue, Node, Row, SyncGraph};
+
+    /// Whether the test server answers `SCHEMA_HASH`: a FalkorDB module of 6.2.0 or later.
+    fn server_has_schema_hash() -> bool {
+        let (host, port) = test_server_address();
+        let mut conn = redis::Client::open(format!("redis://{host}:{port}"))
+            .and_then(|client| client.get_connection())
+            .expect("a FalkorDB server must be reachable");
+        let modules: Vec<std::collections::HashMap<String, redis::Value>> = redis::cmd("MODULE")
+            .arg("LIST")
+            .query(&mut conn)
+            .expect("MODULE LIST");
+        let graph = modules
+            .iter()
+            .find(|module| {
+                module.get("name").is_some_and(|name| {
+                    redis::from_redis_value_ref::<String>(name).is_ok_and(|name| name == "graph")
+                })
+            })
+            .expect("the graph module is loaded");
+        graph
+            .get("ver")
+            .and_then(|version| redis::from_redis_value_ref::<i64>(version).ok())
+            .expect("the graph module's version")
+            >= 60200
+    }
+
+    fn connection_info(protocol: Option<&str>) -> FalkorConnectionInfo {
+        let (host, port) = test_server_address();
+        let query = protocol.map_or(String::new(), |protocol| format!("?protocol={protocol}"));
+        FalkorConnectionInfo::try_from(format!("falkor://{host}:{port}{query}").as_str())
+            .expect("valid connection info")
+    }
+
+    fn sync_client(
+        schema_hash: bool,
+        protocol: Option<&str>,
+    ) -> FalkorSyncClient {
+        FalkorClientBuilder::new()
+            .with_connection_info(connection_info(protocol))
+            .with_schema_hash(schema_hash)
+            .build()
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)")
+    }
+
+    fn only_node(rows: Vec<Row>) -> Node {
+        assert_eq!(rows.len(), 1, "expected one row");
+        match rows.into_iter().next().unwrap().into_values().remove(0) {
+            FalkorValue::Node(node) => node,
+            other => panic!("expected a node, got {other:?}"),
+        }
+    }
+
+    fn read_node(graph: &mut SyncGraph) -> Node {
+        only_node(
+            graph
+                .query("MATCH (n) RETURN n")
+                .execute()
+                .expect("query")
+                .data
+                .collect::<FalkorResult<_>>()
+                .expect("rows decode"),
+        )
+    }
+
+    fn string(value: &str) -> FalkorValue {
+        FalkorValue::String(value.to_string())
+    }
+
+    /// Client `a` caches `(:Person {name})` for `name`, then client `b` drops the graph and
+    /// recreates it as `(:Movie {title})`, so ids 0 now mean `Movie` and `title`. Returns what `a`
+    /// decodes afterwards.
+    fn read_after_recreate(
+        name: &str,
+        a: &FalkorSyncClient,
+    ) -> Node {
+        let b = sync_client(true, None);
+        let mut graph = a.select_graph(name);
+        let _ = graph.delete();
+        graph
+            .query("CREATE (:Person {name: 'Alice'})")
+            .execute()
+            .expect("create");
+        let before = read_node(&mut graph);
+        assert_eq!(before.labels, vec!["Person"]);
+        assert_eq!(before.properties.get("name"), Some(&string("Alice")));
+
+        let mut other = b.select_graph(name);
+        other.delete().expect("delete");
+        other
+            .query("CREATE (:Movie {title: 'Heat'})")
+            .execute()
+            .expect("recreate");
+
+        let after = read_node(&mut graph);
+        let _ = graph.delete();
+        after
+    }
+
+    /// What a client that does not get names with its replies decodes after the recreate: the
+    /// cached ids still look known, so it uses the old names.
+    fn assert_stale(node: &Node) {
+        assert_eq!(node.labels, vec!["Person"]);
+        assert_eq!(node.properties.get("name"), Some(&string("Heat")));
+    }
+
+    fn assert_fresh(node: &Node) {
+        assert_eq!(node.labels, vec!["Movie"]);
+        assert_eq!(node.properties.get("title"), Some(&string("Heat")));
+        assert_eq!(node.properties.len(), 1);
+    }
+
+    #[test]
+    fn sync_decodes_a_recreated_graph_with_its_new_names() {
+        if skip_if_no_server() {
+            return;
+        }
+        let node = read_after_recreate("schema_hash_recreate_sync", &sync_client(true, None));
+        if server_has_schema_hash() {
+            assert_fresh(&node);
+        } else {
+            assert_stale(&node);
+        }
+    }
+
+    #[test]
+    fn sync_decodes_a_recreated_graph_over_resp3() {
+        if skip_if_no_server() {
+            return;
+        }
+        #[allow(irrefutable_let_patterns)]
+        let FalkorConnectionInfo::Redis(info) = connection_info(Some("resp3")) else {
+            panic!("a Redis connection");
+        };
+        assert_eq!(
+            info.redis_settings().protocol(),
+            redis::ProtocolVersion::RESP3
+        );
+        let node = read_after_recreate(
+            "schema_hash_recreate_resp3",
+            &sync_client(true, Some("resp3")),
+        );
+        if server_has_schema_hash() {
+            assert_fresh(&node);
+        } else {
+            assert_stale(&node);
+        }
+    }
+
+    #[test]
+    fn schema_hash_off_keeps_the_old_behaviour() {
+        if skip_if_no_server() {
+            return;
+        }
+        let node = read_after_recreate("schema_hash_recreate_off", &sync_client(false, None));
+        assert_stale(&node);
+    }
+
+    #[test]
+    fn recreating_with_the_same_names_still_decodes() {
+        if skip_if_no_server() {
+            return;
+        }
+        let client = sync_client(true, None);
+        let mut graph = client.select_graph("schema_hash_same_names");
+        let _ = graph.delete();
+        graph
+            .query("CREATE (:Person {name: 'Alice'})")
+            .execute()
+            .expect("create");
+        assert_eq!(read_node(&mut graph).labels, vec!["Person"]);
+
+        let other = sync_client(true, None);
+        let mut recreated = other.select_graph("schema_hash_same_names");
+        recreated.delete().expect("delete");
+        recreated
+            .query("CREATE (:Person {name: 'Bob'})")
+            .execute()
+            .expect("recreate");
+
+        let node = read_node(&mut graph);
+        assert_eq!(node.labels, vec!["Person"]);
+        assert_eq!(node.properties.get("name"), Some(&string("Bob")));
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn a_write_that_adds_names_decodes_them() {
+        if skip_if_no_server() {
+            return;
+        }
+        for schema_hash in [true, false] {
+            let client = sync_client(schema_hash, None);
+            let mut graph = client.select_graph("schema_hash_write_adds_names");
+            let _ = graph.delete();
+            let rows: Vec<Row> = graph
+                .query(
+                    "CREATE (a:Author {name: 'Le Guin'})-[w:WROTE {year: 1969}]->\
+                     (b:Book {title: 'The Left Hand of Darkness'}) RETURN a, w, b",
+                )
+                .execute()
+                .expect("create")
+                .data
+                .collect::<FalkorResult<_>>()
+                .expect("rows decode");
+            let values = rows.into_iter().next().expect("one row").into_values();
+            let [FalkorValue::Node(author), FalkorValue::Edge(wrote), FalkorValue::Node(book)] =
+                values.as_slice()
+            else {
+                panic!("expected node, edge, node: {values:?}");
+            };
+            assert_eq!(author.labels, vec!["Author"]);
+            assert_eq!(author.properties.get("name"), Some(&string("Le Guin")));
+            assert_eq!(wrote.relationship_type, "WROTE");
+            assert_eq!(wrote.properties.get("year"), Some(&FalkorValue::I64(1969)));
+            assert_eq!(book.labels, vec!["Book"]);
+            assert_eq!(
+                book.properties.get("title"),
+                Some(&string("The Left Hand of Darkness"))
+            );
+            let _ = graph.delete();
+        }
+    }
+
+    #[test]
+    fn a_batch_reads_names_added_earlier_in_the_batch() {
+        if skip_if_no_server() {
+            return;
+        }
+        let client = sync_client(true, None);
+        let mut graph = client.select_graph("schema_hash_batch");
+        let _ = graph.delete();
+        graph
+            .query("CREATE (:Gone {old: 1})")
+            .execute()
+            .expect("create");
+        read_node(&mut graph);
+        // Another client recreates the graph, so ids 0 now mean `Seed` and `k`.
+        let other = sync_client(true, None);
+        let mut recreated = other.select_graph("schema_hash_batch");
+        recreated.delete().expect("delete");
+        recreated
+            .query("CREATE (:Seed {k: 1})")
+            .execute()
+            .expect("recreate");
+        let supported = server_has_schema_hash();
+
+        // A batch that only reads names the cache has under other ids: nothing in it can trigger
+        // a refresh, so only the names in its reply can make it right.
+        let mut batch = graph.batch();
+        batch.ro_query("MATCH (n:Seed) RETURN n");
+        let mut results = batch.execute().expect("batch");
+        let seed = only_node(results.pop().unwrap().expect("seed read").data);
+        if supported {
+            assert_eq!(seed.labels, vec!["Seed"]);
+            assert_eq!(seed.properties.get("k"), Some(&FalkorValue::I64(1)));
+        } else {
+            // Without names in the replies, the cached ids decode with the old names.
+            assert_eq!(seed.labels, vec!["Gone"]);
+            assert_eq!(seed.properties.get("old"), Some(&FalkorValue::I64(1)));
+        }
+
+        // A write that adds names, then reads of them, in one batch.
+        let mut batch = graph.batch();
+        batch.query("CREATE (:Added {fresh: 'yes'})");
+        batch.ro_query("MATCH (n:Added) RETURN n");
+        batch.ro_query("MATCH (n:Seed) RETURN n");
+        let mut results = batch.execute().expect("batch");
+        assert_eq!(results.len(), 3);
+        let seed = only_node(results.pop().unwrap().expect("seed read").data);
+        let added = only_node(results.pop().unwrap().expect("added read").data);
+        assert_eq!(seed.labels, vec!["Seed"]);
+        assert_eq!(added.labels, vec!["Added"]);
+        assert_eq!(added.properties.get("fresh"), Some(&string("yes")));
+
+        // The cache took the batch's names: a later query decodes the new label too.
+        let node = only_node(
+            graph
+                .query("MATCH (n:Added) RETURN n")
+                .execute()
+                .expect("query")
+                .data
+                .collect::<FalkorResult<_>>()
+                .expect("rows decode"),
+        );
+        assert_eq!(node.labels, vec!["Added"]);
+        let _ = graph.delete();
+    }
+
+    #[test]
+    fn procedures_decode_with_schema_hash() {
+        if skip_if_no_server() {
+            return;
+        }
+        let client = sync_client(true, None);
+        let mut graph = client.select_graph("schema_hash_procedures");
+        let _ = graph.delete();
+        graph
+            .query("CREATE (:Indexed {k: 1})")
+            .execute()
+            .expect("create");
+        graph
+            .create_index(
+                falkordb::IndexType::Range,
+                falkordb::EntityType::Node,
+                "Indexed",
+                &["k"],
+                None,
+            )
+            .expect("index");
+        let indices = graph.list_indices().expect("list indices").data;
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].index_label, "Indexed");
+        let _ = graph.delete();
+    }
+
+    #[cfg(feature = "tokio")]
+    mod asynchronous {
+        use super::*;
+        use futures::TryStreamExt;
+
+        async fn async_client(schema_hash: bool) -> falkordb::FalkorAsyncClient {
+            FalkorClientBuilder::new_async()
+                .with_connection_info(connection_info(None))
+                .with_schema_hash(schema_hash)
+                .build()
+                .await
+                .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)")
+        }
+
+        async fn read_node(graph: &mut falkordb::AsyncGraph) -> Node {
+            only_node(
+                graph
+                    .query("MATCH (n) RETURN n")
+                    .execute()
+                    .await
+                    .expect("query")
+                    .data
+                    .try_collect()
+                    .await
+                    .expect("rows decode"),
+            )
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn async_decodes_a_recreated_graph_with_its_new_names() {
+            if skip_if_no_server() {
+                return;
+            }
+            let client = async_client(true).await;
+            let mut graph = client.select_graph("schema_hash_recreate_async");
+            let _ = graph.delete().await;
+            graph
+                .query("CREATE (:Person {name: 'Alice'})")
+                .execute()
+                .await
+                .expect("create");
+            assert_eq!(read_node(&mut graph).await.labels, vec!["Person"]);
+
+            let other = async_client(true).await;
+            let mut recreated = other.select_graph("schema_hash_recreate_async");
+            recreated.delete().await.expect("delete");
+            recreated
+                .query("CREATE (:Movie {title: 'Heat'})")
+                .execute()
+                .await
+                .expect("recreate");
+
+            let node = read_node(&mut graph).await;
+            if server_has_schema_hash() {
+                assert_fresh(&node);
+            } else {
+                assert_stale(&node);
+            }
+            let _ = graph.delete().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn async_batch_reads_names_added_earlier_in_the_batch() {
+            if skip_if_no_server() {
+                return;
+            }
+            let client = async_client(true).await;
+            let mut graph = client.select_graph("schema_hash_batch_async");
+            let _ = graph.delete().await;
+            graph
+                .query("CREATE (:Gone {old: 1})")
+                .execute()
+                .await
+                .expect("create");
+            read_node(&mut graph).await;
+            let other = async_client(true).await;
+            let mut recreated = other.select_graph("schema_hash_batch_async");
+            recreated.delete().await.expect("delete");
+            recreated
+                .query("CREATE (:Seed {k: 1})")
+                .execute()
+                .await
+                .expect("recreate");
+
+            let mut batch = graph.batch();
+            batch.ro_query("MATCH (n:Seed) RETURN n");
+            let mut results = batch.execute().await.expect("batch");
+            let seed = only_node(results.pop().unwrap().expect("seed read").data);
+            if server_has_schema_hash() {
+                assert_eq!(seed.labels, vec!["Seed"]);
+            } else {
+                assert_eq!(seed.labels, vec!["Gone"]);
+            }
+
+            let mut batch = graph.batch();
+            batch.query("CREATE (:Added {fresh: 'yes'})");
+            batch.ro_query("MATCH (n:Added) RETURN n");
+            batch.ro_query("MATCH (n:Seed) RETURN n");
+            let mut results = batch.execute().await.expect("batch");
+            let seed = only_node(results.pop().unwrap().expect("seed read").data);
+            let added = only_node(results.pop().unwrap().expect("added read").data);
+            assert_eq!(seed.labels, vec!["Seed"]);
+            assert_eq!(added.labels, vec!["Added"]);
+            assert_eq!(added.properties.get("fresh"), Some(&string("yes")));
+            let _ = graph.delete().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn async_procedures_decode_with_schema_hash() {
+            if skip_if_no_server() {
+                return;
+            }
+            let client = async_client(true).await;
+            let mut graph = client.select_graph("schema_hash_procedures_async");
+            let _ = graph.delete().await;
+            graph
+                .query("CREATE (:Indexed {k: 1})")
+                .execute()
+                .await
+                .expect("create");
+            graph
+                .create_index(
+                    falkordb::IndexType::Range,
+                    falkordb::EntityType::Node,
+                    "Indexed",
+                    &["k"],
+                    None,
+                )
+                .await
+                .expect("index");
+            let indices = graph.list_indices().await.expect("list indices").data;
+            assert_eq!(indices.len(), 1);
+            assert_eq!(indices[0].index_label, "Indexed");
+            let _ = graph.delete().await;
         }
     }
 }

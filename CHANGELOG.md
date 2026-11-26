@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `FalkorClientBuilder::with_schema_hash`, on by default, controls whether queries send the
+  `SCHEMA_HASH` argument (see the Fixed entry below). Turn it off only for a proxy that rejects
+  or rewrites arguments it doesn't know
+  ([#441](https://github.com/FalkorDB/falkordb-rs/pull/441))
+
+### Fixed
+
+- Decode the right label, relationship-type and property names after another client drops a graph
+  and recreates it under the same key, on FalkorDB 6.2.0 or later. Compact replies name these by
+  id, and a recreated graph reuses ids 0, 1, 2 for other names; the cached ids still looked known,
+  so the client decoded them with the old names, without any error. Queries, procedure calls and
+  batches now send `SCHEMA_HASH` with the hash of the names the client has cached, and the server
+  sends the current names back whenever that hash is out of date, so each reply decodes with the
+  names it was produced with. Those replies never fetch names with `DB.LABELS`,
+  `DB.RELATIONSHIPTYPES` or `DB.PROPERTYKEYS`, which also saves the extra round trips, and the
+  connection the sync client used to open for them. Older servers ignore the argument and the
+  client works as before (FalkorDB#3757,
+  [#439](https://github.com/FalkorDB/falkordb-rs/issues/439))
+  ([#441](https://github.com/FalkorDB/falkordb-rs/pull/441))
+
 ## [0.11.3](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.2...v0.11.3) - 2026-11-15
 
 ### Added

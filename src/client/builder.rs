@@ -22,6 +22,7 @@ pub struct FalkorClientBuilder<const R: char> {
     tcp_settings: Option<redis::io::tcp::TcpSettings>,
     retry_policy: RetryPolicy,
     query_logging: bool,
+    schema_hash: bool,
     read_preference: ReadPreference,
     response_timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
@@ -122,6 +123,29 @@ impl<const R: char> FalkorClientBuilder<R> {
     ) -> Self {
         Self {
             query_logging: enabled,
+            ..self
+        }
+    }
+
+    /// Whether queries send FalkorDB's `SCHEMA_HASH` argument. **On by default.**
+    ///
+    /// Compact replies name labels, relationship types and property keys by id, so the client
+    /// caches each graph's names. With `SCHEMA_HASH`, each query sends the hash of the names it has
+    /// cached, and FalkorDB 6.2.0 and later reply with the current names whenever that hash is out
+    /// of date. Replies always decode with the right names, even after another client drops and
+    /// recreates the graph under the same key, and the client never needs a separate round trip
+    /// to fetch names. Older servers ignore the argument, and the client fetches names on an
+    /// unknown id as before.
+    ///
+    /// Turn it off only for something between the client and the server that rejects or rewrites
+    /// unknown arguments. Without it a recreated graph can decode with stale names, as it could in
+    /// earlier releases.
+    pub fn with_schema_hash(
+        self,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            schema_hash: enabled,
             ..self
         }
     }
@@ -383,6 +407,7 @@ impl FalkorClientBuilder<'S'> {
             tcp_settings: None,
             retry_policy: RetryPolicy::disabled(),
             query_logging: false,
+            schema_hash: true,
             read_preference: ReadPreference::Primary,
             response_timeout: None,
             connect_timeout: Some(DEFAULT_CONNECT_TIMEOUT),
@@ -416,6 +441,7 @@ impl FalkorClientBuilder<'S'> {
             self.strategy.connection_count().get(),
             self.retry_policy,
             self.query_logging,
+            self.schema_hash,
             self.read_preference,
         )
     }
@@ -437,6 +463,7 @@ impl FalkorClientBuilder<'A'> {
             tcp_settings: None,
             retry_policy: RetryPolicy::disabled(),
             query_logging: false,
+            schema_hash: true,
             read_preference: ReadPreference::Primary,
             response_timeout: None,
             connect_timeout: Some(DEFAULT_CONNECT_TIMEOUT),
@@ -544,6 +571,7 @@ impl FalkorClientBuilder<'A'> {
             self.max_inflight,
             self.retry_policy,
             self.query_logging,
+            self.schema_hash,
             self.read_preference,
         )
         .await

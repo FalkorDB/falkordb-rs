@@ -12,6 +12,12 @@ use crate::{
 };
 use std::{collections::HashMap, sync::Arc};
 
+mod schema_hash;
+
+#[cfg(all(test, feature = "tokio"))]
+pub(crate) use schema_hash::SchemaNames;
+pub(crate) use schema_hash::{reply_schema, take_schema_element, SchemaElement};
+
 pub(crate) fn get_refresh_command(schema_type: SchemaType) -> &'static str {
     match schema_type {
         SchemaType::Labels => "DB.LABELS",
@@ -84,7 +90,13 @@ pub struct GraphSchema {
     /// needed it report that failure instead of a bare missing id.
     refresh_failure: Option<(SchemaType, String)>,
     graph_name: String,
-    version: i64,
+    /// The server's hash of these names (`SCHEMA_HASH`, FalkorDB 6.2.0 and later), or `None` when
+    /// nothing is cached or the names came from a `DB.LABELS`-style refresh. A request sends it,
+    /// or 0 when it is `None`.
+    hash: Option<i64>,
+    /// Set on a schema whose names the server confirmed for one reply: an id it lacks is a server
+    /// error, never a reason to refresh.
+    pinned: bool,
     labels: Arc<IdMap>,
     properties: Arc<IdMap>,
     relationships: Arc<IdMap>,
@@ -112,7 +124,8 @@ impl GraphSchema {
             missing: Vec::new(),
             refresh_failure: None,
             graph_name: graph_name.to_string(),
-            version: 0,
+            hash: None,
+            pinned: false,
             labels: Arc::new(IdMap::new()),
             properties: Arc::new(IdMap::new()),
             relationships: Arc::new(IdMap::new()),
@@ -121,7 +134,7 @@ impl GraphSchema {
 
     /// Clears all cached schemas, this will cause a refresh when next attempting to parse a compact query.
     pub fn clear(&mut self) {
-        self.version = 0;
+        self.hash = None;
         self.labels = Arc::new(IdMap::new());
         self.properties = Arc::new(IdMap::new());
         self.relationships = Arc::new(IdMap::new());
@@ -160,17 +173,125 @@ impl GraphSchema {
     /// Returns a cheap, isolated in-memory clone of the current id maps (`Arc` refcount bumps)
     /// with fresh `missing` / `refresh_failure` state, suitable for read-lock parsing or storing
     /// inside an owned [`RowStream`](crate::RowStream).
-    #[cfg(feature = "tokio")]
     pub(crate) fn snapshot(&self) -> Self {
         Self {
             client: None,
             missing: Vec::new(),
             refresh_failure: self.refresh_failure.clone(),
             graph_name: self.graph_name.clone(),
-            version: self.version,
+            hash: self.hash,
+            pinned: self.pinned,
             labels: Arc::clone(&self.labels),
             properties: Arc::clone(&self.properties),
             relationships: Arc::clone(&self.relationships),
+        }
+    }
+
+    /// The server's hash of these names, or `None` when there is none to send.
+    pub(crate) fn hash(&self) -> Option<i64> {
+        self.hash
+    }
+
+    /// The value a request sends as `SCHEMA_HASH`: the cached hash, or 0 when there is none.
+    pub(crate) fn request_hash(&self) -> i64 {
+        self.hash.unwrap_or(0)
+    }
+
+    /// A schema holding the names a reply carried, in id order, under the reply's `hash`.
+    pub(crate) fn from_reply_names(
+        graph_name: &str,
+        hash: i64,
+        names: schema_hash::SchemaNames,
+    ) -> Self {
+        fn by_id(names: Vec<String>) -> Arc<IdMap> {
+            Arc::new((0..).zip(names).collect())
+        }
+        Self {
+            client: None,
+            missing: Vec::new(),
+            refresh_failure: None,
+            graph_name: graph_name.to_string(),
+            hash: Some(hash),
+            pinned: true,
+            labels: by_id(names.labels),
+            properties: by_id(names.property_keys),
+            relationships: by_id(names.relationship_types),
+        }
+    }
+
+    /// Takes `reply`'s names and hash unless this cache already holds them, or a newer schema
+    /// that they start. Names are only ever appended, so when each of `reply`'s lists is a prefix
+    /// of the cached one, the reply came from an older version of the graph (a replica that is
+    /// behind, or two replies that crossed) and is skipped. Otherwise the graph grew or was
+    /// recreated, and the reply replaces the cache. Names from a refresh (no hash) are always
+    /// replaced.
+    ///
+    /// An empty schema (hash 0) starts every list too, so on its own it can't tell an older reply
+    /// from a graph that was deleted or recreated without names. `sent_hash` is the hash the
+    /// request carried: while the cache still holds it, no newer reply has landed, so the empty
+    /// schema is the newer one and replaces the cache.
+    pub(crate) fn offer(
+        &mut self,
+        reply: &GraphSchema,
+        sent_hash: Option<i64>,
+    ) {
+        let wiped = reply.hash == Some(0) && self.hash == sent_hash;
+        let older = !wiped && reply.is_prefix_of(self);
+        if self.hash.is_some() && (self.hash == reply.hash || older) {
+            return;
+        }
+        self.hash = reply.hash;
+        self.labels = Arc::clone(&reply.labels);
+        self.properties = Arc::clone(&reply.properties);
+        self.relationships = Arc::clone(&reply.relationships);
+    }
+
+    /// Whether each of this schema's lists starts the matching list of `other`. Both hold names by
+    /// position (ids 0, 1, 2, ...), as every schema with a hash does.
+    fn is_prefix_of(
+        &self,
+        other: &GraphSchema,
+    ) -> bool {
+        [
+            SchemaType::Labels,
+            SchemaType::Properties,
+            SchemaType::Relationships,
+        ]
+        .into_iter()
+        .all(|schema_type| {
+            let (mine, theirs) = (
+                self.get_id_map_by_schema_type(schema_type),
+                other.get_id_map_by_schema_type(schema_type),
+            );
+            mine.len() <= theirs.len() && mine.iter().all(|(id, name)| theirs.get(id) == Some(name))
+        })
+    }
+
+    /// The schema a reply carrying `element` decodes with, given the schema whose hash the
+    /// request sent (`sent`, or this cache when `None`). New names are offered to this cache.
+    pub(crate) fn adopt_reply(
+        &mut self,
+        sent: Option<&GraphSchema>,
+        element: SchemaElement,
+    ) -> FalkorResult<GraphSchema> {
+        let sent_hash = sent.map_or(self.hash, |sent| sent.hash);
+        let reply = schema_hash::reply_schema(sent.unwrap_or(self), element)?;
+        if reply.new_names {
+            self.offer(&reply.schema, sent_hash);
+        }
+        Ok(reply.schema)
+    }
+
+    /// Splits the schema element off a reply and returns the schema the rest of it decodes with:
+    /// for a reply without one (a server older than 6.2.0, or a client that does not send
+    /// `SCHEMA_HASH`) this cache, refreshed on a miss as before.
+    pub(crate) fn for_reply(
+        &mut self,
+        res: &mut Vec<redis::Value>,
+    ) -> FalkorResult<SchemaHandle<'_>> {
+        match take_schema_element(res)? {
+            Some(element) => self.adopt_reply(None, element).map(SchemaHandle::Owned),
+            None => Ok(SchemaHandle::Borrowed(self)),
         }
     }
 
@@ -184,6 +305,10 @@ impl GraphSchema {
         &mut self,
         raw_rows: &[redis::Value],
     ) {
+        // A pinned schema neither refreshes nor records a miss, so the scan would find nothing.
+        if self.pinned {
+            return;
+        }
         for row in raw_rows {
             if let redis::Value::Array(cells) = row {
                 for cell in cells {
@@ -376,6 +501,8 @@ impl GraphSchema {
             })
             .collect::<FalkorResult<HashMap<i64, String>>>()?;
 
+        // The refreshed names may not be the ones the hash stood for.
+        self.hash = None;
         *match schema_type {
             SchemaType::Labels => &mut self.labels,
             SchemaType::Properties => &mut self.properties,
@@ -392,6 +519,9 @@ impl GraphSchema {
         &mut self,
         schema_type: SchemaType,
     ) -> FalkorResult<()> {
+        if self.pinned {
+            return Err(FalkorDBError::MissingSchemaId(schema_type));
+        }
         let Some(client) = self.client.clone() else {
             if let Some((_, failure)) = self
                 .refresh_failure
@@ -494,6 +624,27 @@ impl GraphSchema {
                 Ok(out_map)
             },
         )
+    }
+}
+
+/// The schema a parse decodes with: the graph's own cache, or a schema that belongs to one reply.
+pub(crate) enum SchemaHandle<'a> {
+    Borrowed(&'a mut GraphSchema),
+    Owned(GraphSchema),
+}
+
+impl SchemaHandle<'_> {
+    pub(crate) fn get(&mut self) -> &mut GraphSchema {
+        match self {
+            SchemaHandle::Borrowed(schema) => schema,
+            SchemaHandle::Owned(schema) => schema,
+        }
+    }
+}
+
+impl<'a> From<&'a mut GraphSchema> for SchemaHandle<'a> {
+    fn from(schema: &'a mut GraphSchema) -> Self {
+        SchemaHandle::Borrowed(schema)
     }
 }
 

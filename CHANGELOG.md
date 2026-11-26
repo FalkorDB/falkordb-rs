@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.4](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.3...v0.11.4) - 2026-11-26
+
 ### Added
 
 - `FalkorClientBuilder::with_schema_hash`, on by default, controls whether queries send the

@@ -16,6 +16,10 @@ port := env_var_or_default("FALKORDB_PORT", "6379")
 # integration`). CI runs every suite over both; tests about the wire format check both anyway.
 protocol := env_var_or_default("FALKORDB_PROTOCOL", "resp2")
 
+# Exported, so a recipe that runs another one (`test-local` runs `just test`) keeps the protocol
+# chosen on its command line.
+export FALKORDB_PROTOCOL := protocol
+
 # Docker image and container name used by the `db-*` helpers.
 image := "falkordb/falkordb:edge"
 container := "falkordb-rs-dev"
@@ -499,6 +503,11 @@ test-local-matrix:
         [ "$line" = 4 ] && port=6380 || port=6381
         container="falkordb-rs-dev-${line}x"
         echo "=== FalkorDB ${line}.x: ${image}"
+        # `docker run` reuses a local image, which for `latest` may be an old 6.x.
+        if ! docker pull --quiet "$image"; then
+            failed+=("${line}.x pull")
+            continue
+        fi
         if just image="$image" port="$port" container="$container" db-up \
             && just port="$port" db-populate \
             && just port="$port" check-server-line "$line"; then

@@ -32,5 +32,33 @@ if ./falkordb-image.sh 5 >/dev/null 2>&1; then
     fail=1
 fi
 
+# The 4.x listing comes from Docker Hub in pages. A fake `curl` serves page 1 (v4.22.3) and either
+# page 2 (v4.30.0) or a failure for it: a partial listing must fall back to the pinned tag, not
+# pick from the pages that arrived.
+fake=$(mktemp -d)
+trap 'rm -rf "$fake"' EXIT
+cat >"$fake/curl" <<'FAKE'
+#!/usr/bin/env bash
+url="${*: -1}"
+case "$url" in
+    *page=2*)
+        [ "${FAIL_PAGE_2:-}" = 1 ] && exit 22
+        echo '{"next": null, "results": [{"name": "v4.30.0"}]}' ;;
+    *)
+        echo '{"next": "https://hub.docker.com/next?page=2", "results": [{"name": "v4.22.3"}]}' ;;
+esac
+FAKE
+chmod +x "$fake/curl"
+expect_line_4() {
+    local expected=$1 actual
+    actual=$(CURL="$fake/curl" ./falkordb-image.sh 4 2>/dev/null)
+    if [ "$actual" != "$expected" ]; then
+        echo "FAIL: line 4 with FAIL_PAGE_2=${FAIL_PAGE_2:-0}: expected '$expected', got '$actual'" >&2
+        fail=1
+    fi
+}
+FAIL_PAGE_2=0 expect_line_4 falkordb/falkordb:v4.30.0
+FAIL_PAGE_2=1 expect_line_4 falkordb/falkordb:v4.22.4
+
 [ "$fail" -eq 0 ] && echo "falkordb-image: all cases passed"
 exit "$fail"

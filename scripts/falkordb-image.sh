@@ -25,14 +25,17 @@ pick() {
 }
 
 # Every tag name of the repository that starts with `v<major>.`, following the API's pagination.
+# Fails if any page can't be fetched or read, so a partial listing is never picked from. (The
+# caller runs this in a condition, where `set -e` doesn't apply, hence the explicit returns.)
+# `CURL` replaces curl in the self-test.
 hub_tags() {
     local major=$1
     local url="https://hub.docker.com/v2/repositories/${REPOSITORY}/tags?page_size=100&name=v${major}."
     while [ -n "$url" ] && [ "$url" != "null" ]; do
         local page
-        page=$(curl -fsS --max-time 20 "$url")
-        jq -r '.results[].name' <<<"$page"
-        url=$(jq -r '.next' <<<"$page")
+        page=$("${CURL:-curl}" -fsS --max-time 20 "$url") || return 1
+        jq -r '.results[].name' <<<"$page" || return 1
+        url=$(jq -r '.next' <<<"$page") || return 1
     done
 }
 

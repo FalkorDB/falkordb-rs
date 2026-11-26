@@ -621,23 +621,3 @@ mod asynchronous {
         .await;
     }
 }
-
-// TEMPORARY (reverted before merge): proves each CI axis can fail on the cluster legs too.
-#[test]
-fn proof_fails_only_over_resp3_on_a_cluster() {
-    if cluster_url().is_none() {
-        return;
-    }
-    assert_ne!(
-        common::test_protocol(),
-        redis::ProtocolVersion::RESP3,
-        "proof: this is a RESP3 leg"
-    );
-}
-
-#[test]
-fn proof_fails_only_on_4x_on_a_cluster() {
-    let Some(url) = cluster_url() else { return };
-    let version = common::server_module_version(&url);
-    assert!(version >= 60000, "proof: this is a 4.x leg ({version})");
-}

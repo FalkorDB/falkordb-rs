@@ -187,6 +187,11 @@ impl GraphSchema {
         }
     }
 
+    /// The server's hash of these names, or `None` when there is none to send.
+    pub(crate) fn hash(&self) -> Option<i64> {
+        self.hash
+    }
+
     /// The value a request sends as `SCHEMA_HASH`: the cached hash, or 0 when there is none.
     pub(crate) fn request_hash(&self) -> i64 {
         self.hash.unwrap_or(0)
@@ -219,13 +224,19 @@ impl GraphSchema {
     /// of the cached one, the reply came from an older version of the graph (a replica that is
     /// behind, or two replies that crossed) and is skipped. Otherwise the graph grew or was
     /// recreated, and the reply replaces the cache. Names from a refresh (no hash) are always
-    /// replaced, and so is anything by an empty schema (hash 0): it starts every list, but it
-    /// means the graph was deleted or recreated without names, not that the reply is older.
+    /// replaced.
+    ///
+    /// An empty schema (hash 0) starts every list too, so on its own it can't tell an older reply
+    /// from a graph that was deleted or recreated without names. `sent_hash` is the hash the
+    /// request carried: while the cache still holds it, no newer reply has landed, so the empty
+    /// schema is the newer one and replaces the cache.
     pub(crate) fn offer(
         &mut self,
         reply: &GraphSchema,
+        sent_hash: Option<i64>,
     ) {
-        let older = reply.hash != Some(0) && reply.is_prefix_of(self);
+        let wiped = reply.hash == Some(0) && self.hash == sent_hash;
+        let older = !wiped && reply.is_prefix_of(self);
         if self.hash.is_some() && (self.hash == reply.hash || older) {
             return;
         }
@@ -263,9 +274,10 @@ impl GraphSchema {
         sent: Option<&GraphSchema>,
         element: SchemaElement,
     ) -> FalkorResult<GraphSchema> {
+        let sent_hash = sent.map_or(self.hash, |sent| sent.hash);
         let reply = schema_hash::reply_schema(sent.unwrap_or(self), element)?;
         if reply.new_names {
-            self.offer(&reply.schema);
+            self.offer(&reply.schema, sent_hash);
         }
         Ok(reply.schema)
     }
@@ -293,6 +305,10 @@ impl GraphSchema {
         &mut self,
         raw_rows: &[redis::Value],
     ) {
+        // A pinned schema neither refreshes nor records a miss, so the scan would find nothing.
+        if self.pinned {
+            return;
+        }
         for row in raw_rows {
             if let redis::Value::Array(cells) = row {
                 for cell in cells {

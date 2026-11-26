@@ -348,7 +348,7 @@ fn weave_replies(
     let sent = graph_schema.snapshot();
     let (parsed, new_names) = parse_replies(replies, &sent, graph_schema);
     for names in &new_names {
-        graph_schema.offer(names);
+        graph_schema.offer(names, sent.hash());
     }
     fill_slots(slots, submitted, parsed)
 }
@@ -437,7 +437,7 @@ impl BatchBuilder<'_, crate::AsyncGraph> {
                 Ok(parse_replies(replies, &sent, schema))
             })
             .await?;
-        self.graph.offer_reply_schemas(&new_names);
+        self.graph.offer_reply_schemas(&new_names, sent.hash());
         fill_slots(slots, &submitted, parsed)
     }
 }
@@ -619,7 +619,7 @@ mod tests {
             &schema.snapshot(),
             &mut schema,
         );
-        schema.offer(&new_names[0]);
+        schema.offer(&new_names[0], None);
         assert_eq!(schema.request_hash(), 1);
 
         let replies = vec![

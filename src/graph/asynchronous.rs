@@ -96,7 +96,7 @@ impl AsyncGraph {
             Some(element) => {
                 let mut reply = crate::graph_schema::reply_schema(sent, element)?;
                 if reply.new_names {
-                    self.graph_schema.write().offer(&reply.schema);
+                    self.graph_schema.write().offer(&reply.schema, sent.hash());
                 }
                 parse(res, &mut reply.schema)
             }
@@ -105,16 +105,18 @@ impl AsyncGraph {
     }
 
     /// Offers names that replies carried to the shared cache, which keeps the newest schema.
+    /// `sent_hash` is the hash the requests carried.
     pub(crate) fn offer_reply_schemas(
         &self,
         schemas: &[GraphSchema],
+        sent_hash: Option<i64>,
     ) {
         if schemas.is_empty() {
             return;
         }
         let mut cache = self.graph_schema.write();
         for schema in schemas {
-            cache.offer(schema);
+            cache.offer(schema, sent_hash);
         }
     }
 
@@ -853,13 +855,13 @@ mod tests {
         graph
             .graph_schema
             .write()
-            .offer(&GraphSchema::from_reply_names("g", 1, names("Sent")));
+            .offer(&GraphSchema::from_reply_names("g", 1, names("Sent")), None);
         let sent = graph.schema_snapshot();
         // Another clone's reply moves the cache on before this request's reply lands.
-        graph
-            .graph_schema
-            .write()
-            .offer(&GraphSchema::from_reply_names("g", 2, names("Other")));
+        graph.graph_schema.write().offer(
+            &GraphSchema::from_reply_names("g", 2, names("Other")),
+            Some(1),
+        );
 
         // The hash this request sent is still current on the server it reached.
         let label = graph
@@ -878,6 +880,44 @@ mod tests {
         // A reply without an element decodes with the cache.
         let label = graph.decode_reply(vec![], &sent, label_zero).await;
         assert_eq!(label.unwrap(), "New");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_a_crossing_empty_reply_keeps_newer_names() {
+        // Two clones of a fresh graph both send hash 0. The `CREATE` reply lands first with
+        // names; the `RETURN 1` reply ran on the still-empty graph and lands second. It decodes
+        // with no names, and the cache keeps the newer ones.
+        let handle = open_empty_async_test_graph("crossing_empty_reply").await;
+        let graph = &handle.inner;
+        let bulk = |text: &str| redis::Value::BulkString(text.as_bytes().to_vec());
+        let created = redis::Value::Array(vec![
+            bulk("hash"),
+            redis::Value::Int(7),
+            bulk("labels"),
+            redis::Value::Array(vec![bulk("Person")]),
+            bulk("relationshipTypes"),
+            redis::Value::Array(vec![]),
+            bulk("propertyKeys"),
+            redis::Value::Array(vec![bulk("name")]),
+        ]);
+        let empty = redis::Value::Array(vec![bulk("hash"), redis::Value::Int(0)]);
+        let label_zero = |_: Vec<redis::Value>, schema: &mut GraphSchema| {
+            schema.parse_single_id(0, SchemaType::Labels)
+        };
+
+        let first = graph.schema_snapshot();
+        let second = graph.schema_snapshot();
+        let label = graph.decode_reply(vec![created], &first, label_zero).await;
+        assert_eq!(label.unwrap(), "Person");
+        let label = graph.decode_reply(vec![empty], &second, label_zero).await;
+        assert!(matches!(
+            label,
+            Err(crate::FalkorDBError::MissingSchemaId(SchemaType::Labels))
+        ));
+
+        let cache = graph.schema_snapshot();
+        assert_eq!(cache.request_hash(), 7);
+        assert_eq!(cache.labels().get(&0).map(String::as_str), Some("Person"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

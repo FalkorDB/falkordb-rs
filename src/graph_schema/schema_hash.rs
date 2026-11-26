@@ -360,7 +360,10 @@ mod tests {
         cached_names: SchemaNames,
     ) -> GraphSchema {
         let mut schema = GraphSchema::new("g", create_empty_inner_sync_client());
-        schema.offer(&GraphSchema::from_reply_names("g", hash, cached_names));
+        schema.offer(
+            &GraphSchema::from_reply_names("g", hash, cached_names),
+            None,
+        );
         schema
     }
 
@@ -476,7 +479,11 @@ mod tests {
             Some((hash, cached_names)) => cached(hash, cached_names),
             None => GraphSchema::new("g", create_empty_inner_sync_client()),
         };
-        cache.offer(&GraphSchema::from_reply_names("g", reply_hash, reply));
+        let sent_hash = cache.hash;
+        cache.offer(
+            &GraphSchema::from_reply_names("g", reply_hash, reply),
+            sent_hash,
+        );
         cache
     }
 
@@ -491,11 +498,11 @@ mod tests {
     fn offer_replaces_names_from_a_refresh() {
         let mut cache = GraphSchema::new("g", create_empty_inner_sync_client());
         cache.labels = std::sync::Arc::new([(0, "Refreshed".to_string())].into());
-        cache.offer(&GraphSchema::from_reply_names(
-            "g",
-            1,
-            names(&["Refreshed"], &[], &[]),
-        ));
+        let sent_hash = cache.hash;
+        cache.offer(
+            &GraphSchema::from_reply_names("g", 1, names(&["Refreshed"], &[], &[])),
+            sent_hash,
+        );
         assert_eq!(cache.hash, Some(1));
     }
 
@@ -504,11 +511,11 @@ mod tests {
         let cache = cached(1, names(&["A"], &[], &[]));
         let before = std::sync::Arc::clone(&cache.labels);
         let mut cache = cache;
-        cache.offer(&GraphSchema::from_reply_names(
-            "g",
-            1,
-            names(&["A"], &[], &[]),
-        ));
+        let sent_hash = cache.hash;
+        cache.offer(
+            &GraphSchema::from_reply_names("g", 1, names(&["A"], &[], &[])),
+            sent_hash,
+        );
         assert!(std::sync::Arc::ptr_eq(&before, &cache.labels));
     }
 
@@ -571,6 +578,67 @@ mod tests {
     }
 
     #[test]
+    fn a_crossing_empty_reply_keeps_newer_names() {
+        // Two requests on a fresh cache both send 0. The one that created names lands first; the
+        // other ran on the still-empty graph and lands second. Its empty schema is older than the
+        // cache, not a sign that the graph was wiped.
+        let mut cache = GraphSchema::new("g", create_empty_inner_sync_client());
+        let sent = cache.snapshot();
+        cache
+            .adopt_reply(Some(&sent), full_element())
+            .expect("names");
+        let decoded = cache
+            .adopt_reply(
+                Some(&sent),
+                SchemaElement {
+                    hash: 0,
+                    names: None,
+                },
+            )
+            .expect("empty");
+        assert_eq!(decoded.hash, Some(0));
+        assert_eq!(cache.hash, Some(HASH));
+        assert_eq!(cache.labels().len(), 2);
+    }
+
+    #[test]
+    fn an_empty_reply_to_a_moved_cache_keeps_it() {
+        // The request sent hash 1; by the time its empty reply lands, another reply moved the
+        // cache to hash 2. The empty schema may predate that reply, so the cache keeps it.
+        let mut cache = cached(1, names(&["A"], &[], &[]));
+        let sent = cache.snapshot();
+        cache.adopt_reply(None, full_element()).expect("names");
+        cache
+            .adopt_reply(
+                Some(&sent),
+                SchemaElement {
+                    hash: 0,
+                    names: Some(SchemaNames::default()),
+                },
+            )
+            .expect("empty");
+        assert_eq!(cache.hash, Some(HASH));
+    }
+
+    #[test]
+    fn an_empty_reply_to_the_hash_sent_replaces_the_cache() {
+        // The cache still holds what the request sent, so the empty schema is newer: the graph was
+        // deleted or recreated without names.
+        let mut cache = cached(1, names(&["A"], &[], &[]));
+        cache
+            .adopt_reply(
+                None,
+                SchemaElement {
+                    hash: 0,
+                    names: Some(SchemaNames::default()),
+                },
+            )
+            .expect("empty");
+        assert_eq!(cache.hash, Some(0));
+        assert!(cache.labels().is_empty());
+    }
+
+    #[test]
     fn adopt_reply_offers_only_new_names() {
         let mut cache = cached(1, names(&["A"], &[], &[]));
         let before = std::sync::Arc::clone(&cache.labels);
@@ -597,11 +665,11 @@ mod tests {
         // later hash-only reply still decodes with the names that were sent.
         let mut cache = cached(1, names(&["Sent"], &[], &[]));
         let sent = cache.snapshot();
-        cache.offer(&GraphSchema::from_reply_names(
-            "g",
-            2,
-            names(&["Sent", "Added"], &[], &[]),
-        ));
+        let sent_hash = cache.hash;
+        cache.offer(
+            &GraphSchema::from_reply_names("g", 2, names(&["Sent", "Added"], &[], &[])),
+            sent_hash,
+        );
         let mut decoded = cache
             .adopt_reply(
                 Some(&sent),

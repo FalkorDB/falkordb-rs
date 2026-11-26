@@ -1067,8 +1067,9 @@ mod tests {
         );
     }
 
-    /// A query FalkorDB logs on any machine: it logs queries that take 10 ms or more.
-    const SLOW_QUERY: &str = "UNWIND range(1, 5000000) AS x RETURN count(x)";
+    /// A query FalkorDB logs on any machine: it logs queries that take 10 ms or more, and this one
+    /// takes about 25 ms on 6.x and 100 ms on 4.x on a fast machine.
+    const SLOW_QUERY: &str = "UNWIND range(1, 1000000) AS x RETURN count(x)";
 
     #[rstest::rstest]
     fn test_slowlog(
@@ -1085,6 +1086,9 @@ mod tests {
         graph
             .inner
             .query(SLOW_QUERY)
+            // Well above the 10 ms FalkorDB logs from, on 4.x and 6.x alike, but a slow runner
+            // can take longer than the server's default 1 s query timeout.
+            .with_timeout(60_000)
             .execute()
             .expect("Could not run the slow query");
 

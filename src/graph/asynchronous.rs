@@ -1755,7 +1755,7 @@ mod tests {
         protocol: redis::ProtocolVersion
     ) {
         // FalkorDB logs queries that take 10 ms or more; this one does on any machine.
-        const SLOW_QUERY: &str = "UNWIND range(1, 5000000) AS x RETURN count(x)";
+        const SLOW_QUERY: &str = "UNWIND range(1, 1000000) AS x RETURN count(x)";
         let mut graph = crate::test_utils::TestAsyncGraphHandle {
             inner: crate::test_utils::create_async_test_client_for(protocol)
                 .await
@@ -1765,6 +1765,9 @@ mod tests {
         graph
             .inner
             .query(SLOW_QUERY)
+            // Well above the 10 ms FalkorDB logs from, on 4.x and 6.x alike, but a slow runner
+            // can take longer than the server's default 1 s query timeout.
+            .with_timeout(60_000)
             .execute()
             .await
             .expect("Could not run the slow query");

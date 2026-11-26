@@ -49,16 +49,17 @@ case "$url" in
 esac
 FAKE
 chmod +x "$fake/curl"
+# `fail_page_2` goes into the environment of the resolver itself, which runs the fake curl.
 expect_line_4() {
-    local expected=$1 actual
-    actual=$(CURL="$fake/curl" ./falkordb-image.sh 4 2>/dev/null)
+    local fail_page_2=$1 expected=$2 actual
+    actual=$(FAIL_PAGE_2="$fail_page_2" CURL="$fake/curl" ./falkordb-image.sh 4 2>/dev/null)
     if [ "$actual" != "$expected" ]; then
-        echo "FAIL: line 4 with FAIL_PAGE_2=${FAIL_PAGE_2:-0}: expected '$expected', got '$actual'" >&2
+        echo "FAIL: line 4 with page 2 failing=$fail_page_2: expected '$expected', got '$actual'" >&2
         fail=1
     fi
 }
-FAIL_PAGE_2=0 expect_line_4 falkordb/falkordb:v4.30.0
-FAIL_PAGE_2=1 expect_line_4 falkordb/falkordb:v4.22.4
+expect_line_4 0 falkordb/falkordb:v4.30.0
+expect_line_4 1 falkordb/falkordb:v4.22.4
 
 [ "$fail" -eq 0 ] && echo "falkordb-image: all cases passed"
 exit "$fail"

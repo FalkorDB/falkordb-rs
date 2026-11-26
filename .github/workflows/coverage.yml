@@ -117,6 +117,14 @@ jobs:
           FALKORDB_CLUSTER_URL: falkor://127.0.0.1:7001
         run: just coverage
       
+      # The exact report Codecov receives, to compare with Codecov's figures.
+      - name: Keep the coverage report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codecov-json
+          path: codecov.json
+          retention-days: 14
+
       - name: Upload coverage reports to Codecov
         # Dependabot-authored PRs cannot access repository secrets, regardless of
         # who triggers a re-run. The generated report remains validated by the

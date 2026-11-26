@@ -477,7 +477,7 @@ check-server-line line:
     #!/usr/bin/env bash
     set -euo pipefail
     redis-cli -h {{quote(host)}} -p {{quote(port)}} INFO server | grep -E '^(redis|valkey)_version' || true
-    version=$(redis-cli -h {{quote(host)}} -p {{quote(port)}} MODULE LIST \
+    version=$(redis-cli --raw -h {{quote(host)}} -p {{quote(port)}} MODULE LIST \
         | awk 'prev == "name" { name = $0 } prev == "ver" && name == "graph" { print; exit } { prev = $0 }')
     echo "FalkorDB module ${version:-unknown}, tests over {{protocol}}"
     case {{quote(line)}} in edge) major=6 ;; any) exit 0 ;; *) major={{quote(line)}} ;; esac

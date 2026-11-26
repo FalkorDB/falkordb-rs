@@ -1067,36 +1067,42 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore] // Requires running FalkorDB server with slowlog configured
-    fn test_slowlog() {
-        let mut graph = open_empty_test_graph("test_slowlog");
+    /// A query FalkorDB logs on any machine: it logs queries that take 10 ms or more, and this one
+    /// takes about 25 ms on 6.x and 100 ms on 4.x on a fast machine.
+    const SLOW_QUERY: &str = "UNWIND range(1, 1000000) AS x RETURN count(x)";
 
+    #[rstest::rstest]
+    fn test_slowlog(
+        #[values(redis::ProtocolVersion::RESP2, redis::ProtocolVersion::RESP3)]
+        protocol: redis::ProtocolVersion
+    ) {
+        // Entries have a fifth element (the query's parameters, nil here), and over RESP3 the
+        // timestamp is a double.
+        let mut graph = crate::test_utils::TestSyncGraphHandle {
+            inner: crate::test_utils::create_test_client_for(protocol)
+                .select_graph(format!("test_slowlog_{protocol:?}")),
+        };
+        let _ = graph.inner.delete();
         graph
             .inner
-            .query("UNWIND range(0, 500) AS x RETURN x")
+            .query(SLOW_QUERY)
+            // Well above the 10 ms FalkorDB logs from, on 4.x and 6.x alike, but a slow runner
+            // can take longer than the server's default 1 s query timeout.
+            .with_timeout(60_000)
             .execute()
-            .expect("Could not generate the fast query");
-        graph
-            .inner
-            .query("UNWIND range(0, 100000) AS x RETURN x")
-            .execute()
-            .expect("Could not generate the slow query");
+            .expect("Could not run the slow query");
 
         let slowlog = graph
             .inner
             .slowlog()
             .expect("Could not get slowlog entries");
-
-        assert_eq!(slowlog.len(), 2);
-        assert_eq!(
-            slowlog[0].arguments,
-            "UNWIND range(0, 500) AS x RETURN x".to_string()
-        );
-        assert_eq!(
-            slowlog[1].arguments,
-            "UNWIND range(0, 100000) AS x RETURN x".to_string()
-        );
+        let entry = slowlog
+            .iter()
+            .find(|entry| entry.arguments == SLOW_QUERY)
+            .unwrap_or_else(|| panic!("the slow query is logged: {slowlog:?}"));
+        assert_eq!(entry.command, "GRAPH.QUERY");
+        assert!(entry.time_taken >= 10.0, "{entry:?}");
+        assert!(entry.timestamp > 1_600_000_000, "{entry:?}");
 
         graph
             .inner

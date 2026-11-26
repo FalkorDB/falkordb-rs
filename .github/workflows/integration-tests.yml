@@ -6,16 +6,24 @@ on:
   push:
     branches: [ "main" ]
     tags: [ "v*" ]
-  # Daily run against the `edge` image to catch breaking changes in upcoming
-  # FalkorDB releases before they reach a stable release.
+  # Daily run against the `edge` image (and the newest 4.x) to catch breaking changes in
+  # upcoming FalkorDB releases before they reach a stable release.
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       falkordb_image_tag:
-        description: "FalkorDB Docker image tag to test against (defaults to latest)"
+        description: "One FalkorDB Docker image tag to test against instead of the release lines (e.g. 6.2.1)"
         required: false
-        default: "latest"
+        default: ""
+      falkordb_lines:
+        description: "Release lines to test when no tag is given: 4, 6, edge, comma-separated"
+        required: false
+        default: "4,6"
+
+# Read-only by default; `report-scheduled-failure` asks for what it needs.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -30,37 +38,89 @@ env:
   FALKORDB_PORT: 6379
 
 jobs:
-  # Single source of truth for the FalkorDB image tag. It cannot be a plain
-  # `env:` variable because GitHub does not allow the `env` context in
-  # `jobs.<id>.services.<id>.image`, so it is resolved once here and consumed
-  # via `needs.falkordb-version.outputs.version`.
-  falkordb-version:
-    name: Resolve FalkorDB version
+  # The FalkorDB servers to test against, as a JSON matrix: one entry per release line, with the
+  # image and the major version `check-server-line` expects. Resolved here once, because the
+  # `env` context is not available in `jobs.<id>.services.<id>.image`.
+  #
+  # - pull requests, pushes and tags: the newest 4.x release and `latest` (6.x);
+  # - the nightly run: the newest 4.x release and `edge`;
+  # - a manual run: the given tag alone, or the given lines.
+  #
+  # `standalone` adds FalkorDB 6.0.4 for the standalone job: it predates SCHEMA_HASH like 4.x,
+  # but runs the 6.x engine, which deployments still use.
+  falkordb-servers:
+    name: Resolve FalkorDB servers
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.resolve.outputs.version }}
+      servers: ${{ steps.resolve.outputs.servers }}
+      standalone: ${{ steps.resolve.outputs.standalone }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
+        with:
+          tool: just
+
+      - name: Self-test the release-line resolver
+        run: just test-falkordb-image
+
       - id: resolve
+        # The inputs reach the shell as data only.
         env:
-          # Released `latest` for pull requests, pushes and tags; `edge` for the
-          # scheduled daily run; an explicit tag on manual dispatch.
-          FALKORDB_VERSION: ${{ github.event.inputs.falkordb_image_tag || (github.event_name == 'schedule' && 'edge' || 'latest') }}
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.inputs.falkordb_image_tag }}
+          REQUESTED_LINES: ${{ github.event.inputs.falkordb_lines }}
         run: |
-          echo "Testing against falkordb/falkordb:$FALKORDB_VERSION"
-          echo "version=$FALKORDB_VERSION" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          entry() { jq -cn --arg line "$1" --arg major "$2" --arg image "$3" '{line: $line, major: $major, image: $image}'; }
+          entries=()
+          if [ -n "${TAG:-}" ]; then
+            entries+=("$(entry "$TAG" any "falkordb/falkordb:$TAG")")
+          else
+            if [ "$EVENT" = schedule ]; then lines="4,edge"; else lines="${REQUESTED_LINES:-4,6}"; fi
+            IFS=, read -ra wanted <<<"$lines"
+            for line in "${wanted[@]}"; do
+              line="${line// /}"
+              case "$line" in
+                4) entries+=("$(entry 4.x 4 "$(just falkordb-image 4)")") ;;
+                6) entries+=("$(entry 6.x 6 "$(just falkordb-image 6)")") ;;
+                edge) entries+=("$(entry edge 6 "$(just falkordb-image edge)")") ;;
+                *) echo "::error::unknown release line '$line'" >&2; exit 1 ;;
+              esac
+            done
+          fi
+          servers=$(printf '%s\n' "${entries[@]}" | jq -cs .)
+          standalone="$servers"
+          if [ -z "${TAG:-}" ]; then
+            standalone=$(jq -c --argjson extra "$(entry 6.0 6 falkordb/falkordb:6.0.4)" '. + [$extra]' <<<"$servers")
+          fi
+          echo "servers: $servers"
+          echo "standalone: $standalone"
+          echo "servers=$servers" >> "$GITHUB_OUTPUT"
+          echo "standalone=$standalone" >> "$GITHUB_OUTPUT"
 
   integration-tests:
+    name: integration-tests (${{ matrix.server.line }}, ${{ matrix.protocol }})
     runs-on: ubuntu-latest
-    needs: falkordb-version
+    needs: falkordb-servers
 
     # Without this the job inherits the six hour default, so a hung suite
     # holds a runner all morning and then reports `cancelled`, not `failure`.
     timeout-minutes: 30
+    strategy:
+      # A failure on one leg must not hide the others.
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.falkordb-servers.outputs.standalone) }}
+        protocol: [resp2, resp3]
+    env:
+      FALKORDB_PROTOCOL: ${{ matrix.protocol }}
 
     services:
       falkordb:
-        # Tag resolved by the `falkordb-version` job above.
-        image: falkordb/falkordb:${{ needs.falkordb-version.outputs.version }}
+        image: ${{ matrix.server.image }}
         ports:
           - 6379:6379
         options: >-
@@ -68,12 +128,12 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      
+
       - name: Install Rust
         uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
         with:
@@ -103,6 +163,13 @@ jobs:
           done
           redis-cli -h 127.0.0.1 -p 6379 ping
 
+      # Names the server and protocol in the log, and fails if the image isn't on its release line
+      # (a `latest` that moved to 7.0 must not silently replace the 6.x leg).
+      - name: Check the server's release line
+        env:
+          LINE: ${{ matrix.server.major }}
+        run: just check-server-line "$LINE"
+
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
@@ -111,8 +178,7 @@ jobs:
           cache-bin: "false"
 
       # The library tests query the shared `imdb` fixture, so it has to exist
-      # before they run. Only the coverage job populated it until now, which is
-      # part of why these tests were never run here.
+      # before they run.
       - name: Populate test graph
         run: pip install falkordb && just db-populate
 
@@ -121,84 +187,31 @@ jobs:
 
       - name: Run integration tests with all features
         run: just integration --all-features
+
       - name: Run queries from a plain dependent (no dev-dependencies)
+        if: matrix.protocol == 'resp2'
         run: just consumer-smoke
 
-  # FalkorDB before 6.2.0 has no SCHEMA_HASH: it ignores the argument and sends no schema element,
-  # so the client fetches names on an unknown id instead, as it always did. The image is pinned so
-  # that path stays tested once `latest` and `edge` have moved on.
-  integration-tests-pre-schema-hash:
-    runs-on: ubuntu-latest
-
-    # Without this the job inherits the six hour default, so a hung suite
-    # holds a runner all morning and then reports `cancelled`, not `failure`.
-    timeout-minutes: 30
-
-    services:
-      falkordb:
-        image: falkordb/falkordb:6.0.4
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-
-      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just
-        with:
-          tool: just
-
-      - name: Install redis-cli
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y redis-tools
-
-      - name: Wait for FalkorDB to be ready
-        run: |
-          for i in {1..30}; do
-            if redis-cli -h 127.0.0.1 -p 6379 ping > /dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-          redis-cli -h 127.0.0.1 -p 6379 ping
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          cache-targets: "false"
-          cache-bin: "false"
-
-      - name: Populate test graph
-        run: pip install falkordb && just db-populate
-
-      - name: Run integration tests with all features
-        run: just integration --all-features
-
   integration-tests-tokio:
+    name: integration-tests-tokio (${{ matrix.server.line }}, ${{ matrix.protocol }})
     runs-on: ubuntu-latest
-    needs: falkordb-version
+    needs: falkordb-servers
 
     # Without this the job inherits the six hour default, so a hung suite
     # holds a runner all morning and then reports `cancelled`, not `failure`.
     timeout-minutes: 30
+    strategy:
+      # A failure on one leg must not hide the others.
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.falkordb-servers.outputs.servers) }}
+        protocol: [resp2, resp3]
+    env:
+      FALKORDB_PROTOCOL: ${{ matrix.protocol }}
 
     services:
       falkordb:
-        # Tag resolved by the `falkordb-version` job above.
-        image: falkordb/falkordb:${{ needs.falkordb-version.outputs.version }}
+        image: ${{ matrix.server.image }}
         ports:
           - 6379:6379
         options: >-
@@ -206,12 +219,12 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      
+
       - name: Install Rust
         uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
         with:
@@ -241,6 +254,13 @@ jobs:
           done
           redis-cli -h 127.0.0.1 -p 6379 ping
 
+      # Names the server and protocol in the log, and fails if the image isn't on its release line
+      # (a `latest` that moved to 7.0 must not silently replace the 6.x leg).
+      - name: Check the server's release line
+        env:
+          LINE: ${{ matrix.server.major }}
+        run: just check-server-line "$LINE"
+
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Cache only dependency sources (registry/git), not target/ or ~/.cargo/bin:
@@ -249,8 +269,7 @@ jobs:
           cache-bin: "false"
 
       # The library tests query the shared `imdb` fixture, so it has to exist
-      # before they run. Only the coverage job populated it until now, which is
-      # part of why these tests were never run here.
+      # before they run.
       - name: Populate test graph
         run: pip install falkordb && just db-populate
 
@@ -260,9 +279,18 @@ jobs:
   # Runs the Redis Cluster suite against a real three-node FalkorDB cluster. A GitHub Actions
   # service container holds a single server, so the cluster is started with the `cluster-up` recipe.
   integration-tests-cluster:
+    name: integration-tests-cluster (${{ matrix.server.line }}, ${{ matrix.protocol }})
     runs-on: ubuntu-latest
-    needs: falkordb-version
+    needs: falkordb-servers
     timeout-minutes: 30
+    strategy:
+      # A failure on one leg must not hide the others.
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.falkordb-servers.outputs.servers) }}
+        protocol: [resp2, resp3]
+    env:
+      FALKORDB_PROTOCOL: ${{ matrix.protocol }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -280,24 +308,35 @@ jobs:
         with:
           tool: just,nextest
 
+      - name: Install redis-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-tools
+
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: "false"
           cache-bin: "false"
 
       - name: Start FalkorDB cluster
-        # The tag can come from a manual run's input, so it reaches the shell as data only.
+        # The image can come from a manual run's input, so it reaches the shell as data only.
         env:
-          FALKORDB_IMAGE: falkordb/falkordb:${{ needs.falkordb-version.outputs.version }}
+          FALKORDB_IMAGE: ${{ matrix.server.image }}
         run: just "image=$FALKORDB_IMAGE" cluster-up
+
+      - name: Check the cluster's release line
+        env:
+          LINE: ${{ matrix.server.major }}
+        run: just port=7001 check-server-line "$LINE"
 
       - name: Run cluster integration tests
         run: just test-cluster
 
   # Starts the embedded server on a real `valkey-server` with a FalkorDB 6.x module and runs graph
-  # queries on it. Only `falkordb/falkordb:edge` ships Valkey (`latest` is Redis), so the recipe
-  # uses it whatever the tag above resolves to. It builds the test binary in a Rust container and
-  # runs it in that image, so the runner needs only Docker, jq and just.
+  # queries on it. FalkorDB 4.x modules refuse Valkey, so this job runs on 6.x only, and over the
+  # default protocol: the server-backed jobs above cover RESP3. The recipe pins its own image
+  # (`valkey_image` in the Justfile). It builds the test binary in a Rust container and runs it in
+  # that image, so the runner needs only Docker, jq and just.
   integration-tests-valkey:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -318,10 +357,11 @@ jobs:
   # the cron line, so a failing daily run would otherwise go unnoticed. The
   # reporter is shared with the other FalkorDB clients, which all need the same
   # alert; `permissions` has to stay here because a called workflow can only
-  # downgrade the caller's token.
+  # downgrade the caller's token. A matrix job reports `failure` when any of its
+  # legs fails, so every release line and protocol is covered.
   report-scheduled-failure:
     name: Report scheduled failure
-    needs: [falkordb-version, integration-tests, integration-tests-pre-schema-hash, integration-tests-tokio, integration-tests-cluster, integration-tests-valkey]
+    needs: [falkordb-servers, integration-tests, integration-tests-tokio, integration-tests-cluster, integration-tests-valkey]
     # `cancelled` as well as `failure`: a job stopped by its own timeout, or by
     # GitHub's six hour ceiling, reports `cancelled`, and a nightly that hangs is
     # exactly the case this alert exists for.

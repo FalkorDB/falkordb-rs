@@ -90,9 +90,13 @@ jobs:
           done
           redis-cli -h 127.0.0.1 -p 6379 ping
       
-      - uses: taiki-e/install-action@88ada01c46e65c47040a0ae865537cc76fcd0e1c # just, cargo-llvm-cov, nextest
+      # cargo-llvm-cov is pinned: 0.8.x does not find test binaries in Cargo 1.100's build-dir
+      # layout (`build/<package>/<hash>/out/`), so with Rust 1.100 it reported only what the
+      # examples and integration tests link, and dropped every unit test (#442). `just coverage`
+      # fails if that happens again.
+      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10; just, cargo-llvm-cov, nextest
         with:
-          tool: just,cargo-llvm-cov,nextest
+          tool: just,cargo-llvm-cov@0.9.2,nextest
       
       - name: Populate test graph
         run: pip install falkordb && just db-populate
@@ -117,6 +121,14 @@ jobs:
           FALKORDB_CLUSTER_URL: falkor://127.0.0.1:7001
         run: just coverage
       
+      # The exact report Codecov receives, to compare with Codecov's figures.
+      - name: Keep the coverage report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codecov-json
+          path: codecov.json
+          retention-days: 14
+
       - name: Upload coverage reports to Codecov
         # Dependabot-authored PRs cannot access repository secrets, regardless of
         # who triggers a re-run. The generated report remains validated by the

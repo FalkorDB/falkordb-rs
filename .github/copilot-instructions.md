@@ -33,6 +33,14 @@ Key recipes:
 
 Tests need a running server; prefer the `*-local` wrappers, which manage Docker and the fixture.
 
+CI runs the server-backed suites against FalkorDB 4.x and 6.x, each over RESP2 and RESP3
+(`FALKORDB_PROTOCOL`). A change to how the client talks to the server runs
+`just test-local-matrix` (both lines, both protocols, standalone and cluster) before the PR. Tests
+about the wire format check both protocols in one run (`rstest` `#[values]` over
+`redis::ProtocolVersion`), and a test whose result depends on the server version asserts the
+result for each version; none is skipped or ignored for a version or a protocol. See CONTRIBUTING.md,
+"Server versions and protocols".
+
 ## Definition of done for a change
 
 1. **Design first** for non-trivial work, and **rubber-duck review** the design before coding.

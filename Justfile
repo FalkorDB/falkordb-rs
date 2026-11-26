@@ -12,6 +12,14 @@ set shell := ["bash", "-uc"]
 host := env_var_or_default("FALKORDB_HOST", "127.0.0.1")
 port := env_var_or_default("FALKORDB_PORT", "6379")
 
+# The protocol the server-backed tests speak: `resp2` or `resp3` (e.g. `just protocol=resp3
+# integration`). CI runs every suite over both; tests about the wire format check both anyway.
+protocol := env_var_or_default("FALKORDB_PROTOCOL", "resp2")
+
+# Exported, so a recipe that runs another one (`test-local` runs `just test`) keeps the protocol
+# chosen on its command line.
+export FALKORDB_PROTOCOL := protocol
+
 # Docker image and container name used by the `db-*` helpers.
 image := "falkordb/falkordb:edge"
 container := "falkordb-rs-dev"
@@ -95,12 +103,12 @@ doctest:
 
 # Run the full unit + integration suite (nextest) against a running server.
 test:
-    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
+    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} FALKORDB_PROTOCOL={{protocol}} \
         cargo nextest run --all --features {{features}}
 
 # Run only the cross-strategy parity/regression suite.
 test-parity:
-    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
+    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} FALKORDB_PROTOCOL={{protocol}} \
         cargo nextest run --features {{features}} --test multiplexing_parity
 
 # Run only the embedded-server integration suite.
@@ -163,7 +171,7 @@ test-embedded-valkey:
 # the library itself (src/graph/blocking.rs, src/graph/asynchronous.rs), so
 # selecting only --test integration_tests silently skipped them in CI.
 integration *args:
-    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
+    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} FALKORDB_PROTOCOL={{protocol}} \
         cargo test --lib --test integration_tests {{args}} --verbose
 
 # Run queries through `falkordb` built as a plain dependency (tools/consumer-smoke), without this
@@ -178,7 +186,7 @@ consumer-smoke:
 
 # Run a single test by name filter, e.g. `just test-one test_borrow_connection`.
 test-one filter:
-    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
+    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} FALKORDB_PROTOCOL={{protocol}} \
         cargo nextest run --all --features {{features}} {{filter}}
 
 # Run only the `serde` property-based tests (no server); `cases` sets PROPTEST_CASES (default 256).
@@ -207,15 +215,23 @@ coverage:
     trap 'rm -rf "$fixture_dir"' EXIT
     printf 'falkordb-embedded-bundle-fixture-module\n' > "$fixture_dir/falkordb-fixture.so"
     cargo llvm-cov clean --workspace
-    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
+    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} FALKORDB_PROTOCOL={{protocol}} \
         cargo llvm-cov nextest --no-report --all --features {{features}}
     FALKORDB_EMBEDDED_MODULE_PATH="$fixture_dir/falkordb-fixture.so" \
         cargo llvm-cov nextest --no-report --lib --features embedded-bundle
     cargo llvm-cov report --codecov --output-path codecov.json
+    # A report without the library's own test binaries still looks plausible (about a third of
+    # the code, from what the integration tests link), so check that their code is in it.
+    # cargo-llvm-cov before 0.9 misses them with Cargo 1.100's build-dir layout.
+    if ! jq -e '.coverage | keys | any(endswith("src/response/row_proptest.rs"))' codecov.json >/dev/null; then
+        echo "error: codecov.json has no coverage from the library's unit tests;" \
+            "update cargo-llvm-cov to 0.9 or later ($(cargo llvm-cov --version))" >&2
+        exit 1
+    fi
 
 # Generate an HTML coverage report and open it.
 coverage-html:
-    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} \
+    FALKORDB_HOST={{host}} FALKORDB_PORT={{port}} FALKORDB_PROTOCOL={{protocol}} \
         cargo llvm-cov nextest --all --features {{features}} --open
 
 # Spin up a server, populate the fixture, collect coverage, then tear it down.
@@ -449,13 +465,82 @@ cluster-down:
 
 # Run only the Redis Cluster integration suite against a running cluster (see `cluster-up`).
 test-cluster:
-    FALKORDB_CLUSTER_URL=falkor://127.0.0.1:7001 \
+    FALKORDB_CLUSTER_URL=falkor://127.0.0.1:7001 FALKORDB_PROTOCOL={{protocol}} \
         cargo nextest run --features {{features}} --test cluster_integration
 
 # Spin up a local cluster, run the cluster suite, tear it down.
 test-cluster-local: cluster-up
     @just test-cluster || (just cluster-down && exit 1)
     @just cluster-down
+
+# Print the Docker image of a FalkorDB release line: `4` (the newest 4.x release), `6`
+# (`latest`) or `edge`. CI builds its server matrix from this; see scripts/falkordb-image.sh.
+falkordb-image line:
+    @scripts/falkordb-image.sh {{quote(line)}}
+
+# Self-test the release-line resolver (version sort, suffixed tags); needs no network.
+test-falkordb-image:
+    scripts/test-falkordb-image.sh
+
+# Print the server on host:port and the protocol the tests will speak, and fail unless the
+# server's graph module belongs to release `line` (`4`, `6`, or `edge`, which is 6.x today).
+# `any` only prints, for a manual CI run against one explicit tag.
+check-server-line line:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    redis-cli -h {{quote(host)}} -p {{quote(port)}} INFO server | grep -E '^(redis|valkey)_version' || true
+    version=$(redis-cli --raw -h {{quote(host)}} -p {{quote(port)}} MODULE LIST \
+        | awk 'prev == "name" { name = $0 } prev == "ver" && name == "graph" { print; exit } { prev = $0 }')
+    echo "FalkorDB module ${version:-unknown}, tests over {{protocol}}"
+    case {{quote(line)}} in edge) major=6 ;; any) exit 0 ;; *) major={{quote(line)}} ;; esac
+    if [ -z "$version" ] || [ $((version / 10000)) -ne "$major" ]; then
+        echo "::error::expected a FalkorDB ${major}.x server for line {{line}}, got module version '${version}'" >&2
+        exit 1
+    fi
+
+# Run the server-backed suites for every release line (4.x, 6.x) over both protocols (RESP2,
+# RESP3), standalone and cluster, as CI does. Each line gets its own container and port
+# (falkordb-rs-dev-4x on 6380, falkordb-rs-dev-6x on 6381), so the shared falkordb-rs-dev on 6379
+# is never touched. The cluster runs in `cluster_container` on 7001-7003, one line at a time.
+test-local-matrix:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    failed=()
+    for line in 4 6; do
+        image=$(scripts/falkordb-image.sh "$line")
+        [ "$line" = 4 ] && port=6380 || port=6381
+        container="falkordb-rs-dev-${line}x"
+        echo "=== FalkorDB ${line}.x: ${image}"
+        # `docker run` reuses a local image, which for `latest` may be an old 6.x.
+        if ! docker pull --quiet "$image"; then
+            failed+=("${line}.x pull")
+            continue
+        fi
+        if just image="$image" port="$port" container="$container" db-up \
+            && just port="$port" db-populate \
+            && just port="$port" check-server-line "$line"; then
+            for protocol in resp2 resp3; do
+                just port="$port" protocol="$protocol" integration --all-features \
+                    || failed+=("${line}.x ${protocol}")
+            done
+        else
+            failed+=("${line}.x server")
+        fi
+        just container="$container" db-down
+        if just image="$image" cluster-up && just port=7001 check-server-line "$line"; then
+            for protocol in resp2 resp3; do
+                just protocol="$protocol" test-cluster || failed+=("${line}.x cluster ${protocol}")
+            done
+        else
+            failed+=("${line}.x cluster")
+        fi
+        just cluster-down
+    done
+    if [ "${#failed[@]}" -gt 0 ]; then
+        printf 'failed: %s\n' "${failed[@]}" >&2
+        exit 1
+    fi
+    echo "all release lines and protocols passed"
 
 # Stop and remove the FalkorDB container.
 db-down:

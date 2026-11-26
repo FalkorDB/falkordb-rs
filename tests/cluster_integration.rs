@@ -13,6 +13,8 @@
 //! Each test touches many graphs: graph names hash to different slots, so a client that cannot
 //! follow the cluster topology fails with `MOVED` errors on the ones owned by other nodes.
 
+mod common;
+
 use falkordb::{
     ConstraintType, EntityType, FalkorClientBuilder, FalkorConnectionInfo, FalkorDBError,
     FalkorResult,
@@ -30,9 +32,26 @@ fn cross_slot() -> FalkorDBError {
     FalkorDBError::RedisError("CROSSSLOT Keys in request don't hash to the same slot".to_string())
 }
 
+/// `FALKORDB_CLUSTER_URL`, any node of the cluster, without a protocol.
+fn cluster_url() -> Option<String> {
+    std::env::var("FALKORDB_CLUSTER_URL").ok()
+}
+
+/// Connection info for the cluster over `FALKORDB_PROTOCOL` (see `common`).
 fn cluster_info() -> Option<FalkorConnectionInfo> {
-    let url = std::env::var("FALKORDB_CLUSTER_URL").ok()?;
-    Some(FalkorConnectionInfo::try_from(url.as_str()).expect("valid FALKORDB_CLUSTER_URL"))
+    cluster_url().map(|url| common::connection_info(&url, common::test_protocol()))
+}
+
+#[test]
+fn cluster_connection_info_speaks_the_requested_protocol() {
+    let Some(url) = cluster_url() else { return };
+    for protocol in common::PROTOCOLS {
+        #[allow(irrefutable_let_patterns)]
+        let FalkorConnectionInfo::Redis(info) = common::connection_info(&url, protocol) else {
+            panic!("a Redis connection");
+        };
+        assert_eq!(info.redis_settings().protocol(), protocol);
+    }
 }
 
 fn graph_name(
@@ -94,27 +113,7 @@ fn fresh_graph(
 
 /// Whether the cluster's nodes answer `SCHEMA_HASH`: a FalkorDB module of 6.2.0 or later.
 fn cluster_has_schema_hash() -> bool {
-    let url = std::env::var("FALKORDB_CLUSTER_URL")
-        .expect("FALKORDB_CLUSTER_URL")
-        .replacen("falkor://", "redis://", 1);
-    let mut conn = redis::Client::open(url)
-        .and_then(|client| client.get_connection())
-        .expect("a cluster node");
-    let modules: Vec<std::collections::HashMap<String, redis::Value>> = redis::cmd("MODULE")
-        .arg("LIST")
-        .query(&mut conn)
-        .expect("MODULE LIST");
-    modules
-        .iter()
-        .find(|module| {
-            module.get("name").is_some_and(|name| {
-                redis::from_redis_value_ref::<String>(name).is_ok_and(|name| name == "graph")
-            })
-        })
-        .and_then(|graph| graph.get("ver"))
-        .and_then(|version| redis::from_redis_value_ref::<i64>(version).ok())
-        .expect("the graph module's version")
-        >= 60200
+    common::server_has_schema_hash(&cluster_url().expect("FALKORDB_CLUSTER_URL"))
 }
 
 #[test]

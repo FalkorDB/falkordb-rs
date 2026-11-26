@@ -3,7 +3,41 @@
  * Licensed under the MIT License.
  */
 
-use crate::{parser::redis_value_as_vec, Edge, FalkorDBError, FalkorResult, GraphSchema, Node};
+use crate::{
+    parser::{redis_value_as_vec, ParserTypeMarker},
+    Edge, FalkorDBError, FalkorResult, GraphSchema, Node,
+};
+
+/// `value` without its type marker, if it is the typed value `[marker, inner]`.
+///
+/// The server sends a path's two halves as typed arrays of typed entities:
+/// `[[6, [[8, node], ...]], [6, [[7, edge], ...]]]`. Bare arrays of bare entities are read too.
+#[cfg_attr(not(feature = "tokio"), allow(dead_code))]
+pub(crate) fn untagged(
+    value: &redis::Value,
+    marker: ParserTypeMarker,
+) -> &redis::Value {
+    match value {
+        redis::Value::Array(pair) => match pair.as_slice() {
+            [redis::Value::Int(tag), inner] if *tag == marker as i64 => inner,
+            _ => value,
+        },
+        _ => value,
+    }
+}
+
+/// The owned form of [`untagged`].
+fn into_untagged(
+    value: redis::Value,
+    marker: ParserTypeMarker,
+) -> redis::Value {
+    match value {
+        redis::Value::Array(mut pair) if matches!(pair.as_slice(), [redis::Value::Int(tag), _] if *tag == marker as i64) => {
+            pair.pop().expect("a typed value has two elements")
+        }
+        other => other,
+    }
+}
 
 /// Represents a path between two nodes, contains all the nodes, and the relationships between them along the path
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -33,21 +67,115 @@ impl Path {
             })?;
 
         Ok(Self {
-            nodes: redis_value_as_vec(nodes)?
+            nodes: redis_value_as_vec(into_untagged(nodes, ParserTypeMarker::Array))?
                 .into_iter()
-                .map(|node| Node::parse(node, graph_schema))
+                .map(|node| Node::parse(into_untagged(node, ParserTypeMarker::Node), graph_schema))
                 .collect::<FalkorResult<Vec<_>>>()?,
-            relationships: redis_value_as_vec(relationships)?
-                .into_iter()
-                .map(|edge| Edge::parse(edge, graph_schema))
-                .collect::<FalkorResult<Vec<_>>>()?,
+            relationships: redis_value_as_vec(into_untagged(
+                relationships,
+                ParserTypeMarker::Array,
+            ))?
+            .into_iter()
+            .map(|edge| Edge::parse(into_untagged(edge, ParserTypeMarker::Edge), graph_schema))
+            .collect::<FalkorResult<Vec<_>>>()?,
         })
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::graph_schema::SchemaNames;
+
+    fn int(value: i64) -> redis::Value {
+        redis::Value::Int(value)
+    }
+
+    fn array(values: Vec<redis::Value>) -> redis::Value {
+        redis::Value::Array(values)
+    }
+
+    fn bulk(text: &str) -> redis::Value {
+        redis::Value::BulkString(text.as_bytes().to_vec())
+    }
+
+    /// `RETURN p` for `p = (:A {d: 1.5})-[:R {w: 0.5}]->(:B {s: 'x'})`, as FalkorDB 4.22 and 6.2
+    /// send it with `--compact`: a typed value whose two halves are typed arrays (6) of typed
+    /// nodes (8) and edges (7).
+    pub(crate) fn server_path() -> redis::Value {
+        let node = |id, label, key, value: redis::Value| {
+            array(vec![
+                int(8),
+                array(vec![
+                    int(id),
+                    array(vec![int(label)]),
+                    array(vec![array(vec![int(key), int(2), value])]),
+                ]),
+            ])
+        };
+        let edge = array(vec![
+            int(7),
+            array(vec![
+                int(0),
+                int(0),
+                int(0),
+                int(1),
+                array(vec![array(vec![int(2), int(5), bulk("0.5")])]),
+            ]),
+        ]);
+        array(vec![
+            int(9),
+            array(vec![
+                array(vec![
+                    int(6),
+                    array(vec![node(0, 0, 0, bulk("a")), node(1, 1, 1, bulk("x"))]),
+                ]),
+                array(vec![int(6), array(vec![edge])]),
+            ]),
+        ])
+    }
+
+    #[test]
+    fn test_path_parse_reads_the_server_format() {
+        let mut graph_schema = GraphSchema::from_reply_names(
+            "test_path_server_format",
+            1,
+            SchemaNames {
+                labels: vec!["A".to_string(), "B".to_string()],
+                relationship_types: vec!["R".to_string()],
+                property_keys: vec!["d".to_string(), "s".to_string(), "w".to_string()],
+            },
+        );
+        let value = crate::parser::parse_raw_redis_value(server_path(), &mut graph_schema)
+            .expect("the path parses");
+        let crate::FalkorValue::Path(path) = value else {
+            panic!("expected a path, got {value:?}");
+        };
+        assert_eq!(
+            path.nodes
+                .iter()
+                .map(|node| node.labels.clone())
+                .collect::<Vec<_>>(),
+            [vec!["A".to_string()], vec!["B".to_string()]]
+        );
+        assert_eq!(
+            path.nodes[1].properties["s"],
+            crate::FalkorValue::String("x".into())
+        );
+        assert_eq!(path.relationships.len(), 1);
+        assert_eq!(path.relationships[0].relationship_type, "R");
+        assert_eq!(
+            (
+                path.relationships[0].src_node_id,
+                path.relationships[0].dst_node_id
+            ),
+            (0, 1)
+        );
+        assert_eq!(
+            path.relationships[0].properties["w"],
+            crate::FalkorValue::F64(0.5)
+        );
+    }
 
     #[test]
     fn test_path_default() {

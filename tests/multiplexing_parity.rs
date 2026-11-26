@@ -17,6 +17,8 @@
 
 #![cfg(feature = "tokio")]
 
+mod common;
+
 use falkordb::{ConnectionStrategy, FalkorAsyncClient, FalkorClientBuilder, FalkorConnectionInfo};
 use futures::StreamExt;
 use std::num::NonZeroU8;
@@ -36,7 +38,10 @@ fn target() -> (String, u16) {
 
 fn get_test_connection_info() -> Option<FalkorConnectionInfo> {
     let (host, port) = target();
-    FalkorConnectionInfo::try_from((host.as_str(), port)).ok()
+    Some(common::connection_info(
+        &format!("falkor://{host}:{port}"),
+        common::test_protocol(),
+    ))
 }
 
 /// A short, unique slug for a strategy (kind + connection count) so parity test cases

@@ -10,6 +10,8 @@
 //! Set FALKORDB_HOST and FALKORDB_PORT environment variables to configure.
 //! Default: localhost:6379
 
+mod common;
+
 use falkordb::{
     FalkorClientBuilder, FalkorConnectionInfo, FalkorDBError, FalkorResult, ReadPreference,
 };
@@ -23,9 +25,37 @@ fn test_server_address() -> (String, u16) {
     (host, port)
 }
 
-fn get_test_connection_info() -> FalkorResult<FalkorConnectionInfo> {
+/// `falkor://` URL of the test server, without a protocol.
+fn test_server_url() -> String {
     let (host, port) = test_server_address();
-    FalkorConnectionInfo::try_from((host.as_str(), port))
+    format!("falkor://{host}:{port}")
+}
+
+/// Connection info for the test server over `FALKORDB_PROTOCOL` (see `common`).
+fn get_test_connection_info() -> FalkorResult<FalkorConnectionInfo> {
+    Ok(common::connection_info(
+        &test_server_url(),
+        common::test_protocol(),
+    ))
+}
+
+#[test]
+fn test_connection_info_speaks_the_requested_protocol() {
+    // The helpers must select what FALKORDB_PROTOCOL names, and either protocol on request.
+    #[allow(irrefutable_let_patterns)]
+    let FalkorConnectionInfo::Redis(info) = get_test_connection_info().expect("connection info") else {
+        panic!("a Redis connection");
+    };
+    assert_eq!(info.redis_settings().protocol(), common::test_protocol());
+    for protocol in common::PROTOCOLS {
+        #[allow(irrefutable_let_patterns)]
+        let FalkorConnectionInfo::Redis(info) =
+            common::connection_info(&test_server_url(), protocol)
+        else {
+            panic!("a Redis connection");
+        };
+        assert_eq!(info.redis_settings().protocol(), protocol);
+    }
 }
 
 /// Whether the test endpoint is a Sentinel deployment, as declared by `FALKORDB_SENTINEL`.
@@ -1896,7 +1926,10 @@ mod connection_recovery {
         }
 
         fn connection_info(&self) -> FalkorConnectionInfo {
-            FalkorConnectionInfo::try_from(("127.0.0.1", self.port)).expect("proxy connection info")
+            crate::common::connection_info(
+                &format!("falkor://127.0.0.1:{}", self.port),
+                crate::common::test_protocol(),
+            )
         }
 
         fn cut(&self) {
@@ -1992,6 +2025,54 @@ mod connection_recovery {
     }
 }
 
+/// Every value type a query can return decodes the same over RESP2 and RESP3. RESP3 sends some
+/// of them natively (a `vecf32`'s elements as doubles); the client must hide that.
+#[test]
+fn values_decode_the_same_over_resp2_and_resp3() {
+    if skip_if_no_server() {
+        return;
+    }
+    use falkordb::FalkorValue;
+    const NAME: &str = "resp2_resp3_values";
+    let query = "MATCH p = (a:A)-[r:R]->(b:B) RETURN a, r, b, p, a.d, a.b, a.pt, a.v, a.l, \
+                 1.5, true, false, null, 'text', 7, [1, 'two', 3.0], {k: 1.5, f: false}";
+    let decode = |protocol: redis::ProtocolVersion| -> Vec<FalkorValue> {
+        let client = FalkorClientBuilder::new()
+            .with_connection_info(common::connection_info(&test_server_url(), protocol))
+            .build()
+            .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
+        let mut graph = client.select_graph(NAME);
+        graph
+            .ro_query(query)
+            .execute()
+            .expect("query")
+            .data
+            .next()
+            .expect("one row")
+            .expect("the row decodes")
+            .into_values()
+    };
+    let client = FalkorClientBuilder::new()
+        .with_connection_info(get_test_connection_info().expect("valid connection info"))
+        .build()
+        .expect("a FalkorDB server must be reachable (set SKIP_INTEGRATION_TESTS to skip)");
+    let mut graph = client.select_graph(NAME);
+    let _ = graph.delete();
+    graph
+        .query(
+            "CREATE (:A {d: 1.5, b: true, pt: point({latitude: 1.5, longitude: 2.5}), \
+             v: vecf32([1.5, 2.5]), l: [1, 2]})-[:R {w: 0.5, ok: false}]->(:B {s: 'x'})",
+        )
+        .execute()
+        .expect("create");
+
+    let [resp2, resp3] = common::PROTOCOLS.map(decode);
+    assert_eq!(resp2, resp3);
+    assert_eq!(resp2.len(), 17);
+    assert!(matches!(&resp2[7], FalkorValue::Vec32(v) if v.values == vec![1.5, 2.5]));
+    let _ = graph.delete();
+}
+
 /// `SCHEMA_HASH` (FalkorDB 6.2.0 and later): each query sends the hash of the names the client has
 /// cached, and the reply carries the current names whenever that hash is out of date. Older servers
 /// ignore the argument; there the tests check the behaviour the client always had.
@@ -2001,39 +2082,16 @@ mod schema_hash {
 
     /// Whether the test server answers `SCHEMA_HASH`: a FalkorDB module of 6.2.0 or later.
     fn server_has_schema_hash() -> bool {
-        let (host, port) = test_server_address();
-        let mut conn = redis::Client::open(format!("redis://{host}:{port}"))
-            .and_then(|client| client.get_connection())
-            .expect("a FalkorDB server must be reachable");
-        let modules: Vec<std::collections::HashMap<String, redis::Value>> = redis::cmd("MODULE")
-            .arg("LIST")
-            .query(&mut conn)
-            .expect("MODULE LIST");
-        let graph = modules
-            .iter()
-            .find(|module| {
-                module.get("name").is_some_and(|name| {
-                    redis::from_redis_value_ref::<String>(name).is_ok_and(|name| name == "graph")
-                })
-            })
-            .expect("the graph module is loaded");
-        graph
-            .get("ver")
-            .and_then(|version| redis::from_redis_value_ref::<i64>(version).ok())
-            .expect("the graph module's version")
-            >= 60200
+        common::server_has_schema_hash(&test_server_url())
     }
 
-    fn connection_info(protocol: Option<&str>) -> FalkorConnectionInfo {
-        let (host, port) = test_server_address();
-        let query = protocol.map_or(String::new(), |protocol| format!("?protocol={protocol}"));
-        FalkorConnectionInfo::try_from(format!("falkor://{host}:{port}{query}").as_str())
-            .expect("valid connection info")
+    fn connection_info(protocol: redis::ProtocolVersion) -> FalkorConnectionInfo {
+        common::connection_info(&test_server_url(), protocol)
     }
 
     fn sync_client(
         schema_hash: bool,
-        protocol: Option<&str>,
+        protocol: redis::ProtocolVersion,
     ) -> FalkorSyncClient {
         FalkorClientBuilder::new()
             .with_connection_info(connection_info(protocol))
@@ -2073,7 +2131,7 @@ mod schema_hash {
         name: &str,
         a: &FalkorSyncClient,
     ) -> Node {
-        let b = sync_client(true, None);
+        let b = sync_client(true, common::test_protocol());
         let mut graph = a.select_graph(name);
         let _ = graph.delete();
         graph
@@ -2109,35 +2167,17 @@ mod schema_hash {
         assert_eq!(node.properties.len(), 1);
     }
 
-    #[test]
-    fn sync_decodes_a_recreated_graph_with_its_new_names() {
+    #[rstest::rstest]
+    fn sync_decodes_a_recreated_graph_with_its_new_names(
+        #[values(redis::ProtocolVersion::RESP2, redis::ProtocolVersion::RESP3)]
+        protocol: redis::ProtocolVersion
+    ) {
         if skip_if_no_server() {
             return;
         }
-        let node = read_after_recreate("schema_hash_recreate_sync", &sync_client(true, None));
-        if server_has_schema_hash() {
-            assert_fresh(&node);
-        } else {
-            assert_stale(&node);
-        }
-    }
-
-    #[test]
-    fn sync_decodes_a_recreated_graph_over_resp3() {
-        if skip_if_no_server() {
-            return;
-        }
-        #[allow(irrefutable_let_patterns)]
-        let FalkorConnectionInfo::Redis(info) = connection_info(Some("resp3")) else {
-            panic!("a Redis connection");
-        };
-        assert_eq!(
-            info.redis_settings().protocol(),
-            redis::ProtocolVersion::RESP3
-        );
         let node = read_after_recreate(
-            "schema_hash_recreate_resp3",
-            &sync_client(true, Some("resp3")),
+            &format!("schema_hash_recreate_sync_{protocol:?}"),
+            &sync_client(true, protocol),
         );
         if server_has_schema_hash() {
             assert_fresh(&node);
@@ -2151,7 +2191,10 @@ mod schema_hash {
         if skip_if_no_server() {
             return;
         }
-        let node = read_after_recreate("schema_hash_recreate_off", &sync_client(false, None));
+        let node = read_after_recreate(
+            "schema_hash_recreate_off",
+            &sync_client(false, common::test_protocol()),
+        );
         assert_stale(&node);
     }
 
@@ -2160,7 +2203,7 @@ mod schema_hash {
         if skip_if_no_server() {
             return;
         }
-        let client = sync_client(true, None);
+        let client = sync_client(true, common::test_protocol());
         let mut graph = client.select_graph("schema_hash_same_names");
         let _ = graph.delete();
         graph
@@ -2169,7 +2212,7 @@ mod schema_hash {
             .expect("create");
         assert_eq!(read_node(&mut graph).labels, vec!["Person"]);
 
-        let other = sync_client(true, None);
+        let other = sync_client(true, common::test_protocol());
         let mut recreated = other.select_graph("schema_hash_same_names");
         recreated.delete().expect("delete");
         recreated
@@ -2189,7 +2232,7 @@ mod schema_hash {
             return;
         }
         for schema_hash in [true, false] {
-            let client = sync_client(schema_hash, None);
+            let client = sync_client(schema_hash, common::test_protocol());
             let mut graph = client.select_graph("schema_hash_write_adds_names");
             let _ = graph.delete();
             let rows: Vec<Row> = graph
@@ -2226,7 +2269,7 @@ mod schema_hash {
         if skip_if_no_server() {
             return;
         }
-        let client = sync_client(true, None);
+        let client = sync_client(true, common::test_protocol());
         let mut graph = client.select_graph("schema_hash_batch");
         let _ = graph.delete();
         graph
@@ -2235,7 +2278,7 @@ mod schema_hash {
             .expect("create");
         read_node(&mut graph);
         // Another client recreates the graph, so ids 0 now mean `Seed` and `k`.
-        let other = sync_client(true, None);
+        let other = sync_client(true, common::test_protocol());
         let mut recreated = other.select_graph("schema_hash_batch");
         recreated.delete().expect("delete");
         recreated
@@ -2291,7 +2334,7 @@ mod schema_hash {
         if skip_if_no_server() {
             return;
         }
-        let client = sync_client(true, None);
+        let client = sync_client(true, common::test_protocol());
         let mut graph = client.select_graph("schema_hash_procedures");
         let _ = graph.delete();
         graph
@@ -2320,7 +2363,7 @@ mod schema_hash {
 
         async fn async_client(schema_hash: bool) -> falkordb::FalkorAsyncClient {
             FalkorClientBuilder::new_async()
-                .with_connection_info(connection_info(None))
+                .with_connection_info(connection_info(common::test_protocol()))
                 .with_schema_hash(schema_hash)
                 .build()
                 .await

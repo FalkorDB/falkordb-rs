@@ -452,7 +452,13 @@ impl FalkorSyncClient {
     /// * `with_code`: If true, include the library source code in the result.
     ///
     /// # Returns
-    /// A [`redis::Value`] containing the list of UDF libraries and their metadata.
+    /// The server's reply as is: a [`redis::Value::Array`] with one entry per library. Its shape
+    /// depends on the server and the protocol:
+    /// - FalkorDB 6.x, and 4.x over RESP2: each library is a flat array of key-value pairs,
+    ///   `[library_name, <name>, functions, [<function>, ...], ...]`.
+    /// - FalkorDB 4.x over RESP3: each library is a [`redis::Value::Map`] with the same keys.
+    ///
+    /// [`redis::Value::into_map_iter`] reads both shapes.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "List UDF Libraries", skip_all, level = "info")
@@ -536,11 +542,11 @@ mod tests {
     use crate::FalkorValue::Node;
     use crate::{
         test_utils::{
-            create_test_client, default_on_transient_error, imdb_test_client,
-            open_empty_test_graph, retry_until_with_timeout, udf_script, TestSyncGraphHandle,
-            UdfRegistryLock, COPY_RETRY_TIMEOUT,
+            create_test_client, create_test_client_for, default_on_transient_error,
+            imdb_test_client, open_empty_test_graph, retry_until_with_timeout, udf_script,
+            TestSyncGraphHandle, UdfRegistryLock, COPY_RETRY_TIMEOUT,
         },
-        FalkorClientBuilder, FalkorValue, LazyResultSet, QueryResult,
+        FalkorClientBuilder, FalkorResult, FalkorValue,
     };
     use approx::assert_relative_eq;
     use std::{mem, num::NonZeroU8, sync::mpsc::TryRecvError};
@@ -748,37 +754,43 @@ mod tests {
         drop(borrowed_again);
     }
 
-    #[test]
-    fn test_read_vec32() {
-        let client = create_test_client();
-        let mut graph = client.select_graph("test_read_vec32");
+    #[rstest::rstest]
+    fn test_read_vec32(
+        #[values(redis::ProtocolVersion::RESP2, redis::ProtocolVersion::RESP3)]
+        protocol: redis::ProtocolVersion
+    ) {
+        // Over RESP3 the server sends each element as a native double, over RESP2 as a string.
+        let client = create_test_client_for(protocol);
+        let mut graph = TestSyncGraphHandle {
+            inner: client.select_graph(format!("test_read_vec32_{protocol:?}")),
+        };
+        let _ = graph.inner.delete();
         graph
+            .inner
             .query("CREATE (p:Document {embedding: vecf32([2.1, 0.82, 1.3]), id: '1'})")
             .execute()
             .expect("Could not create document with embedding");
-        let mut res: QueryResult<LazyResultSet> = graph
-            .query("MATCH (p:Document) RETURN p")
+        let rows: Vec<_> = graph
+            .inner
+            .query("MATCH (p:Document) RETURN p, p.embedding")
             .execute()
-            .expect("Could not get document");
-        for row in res.data.by_ref() {
-            let row = row.expect("row should parse into a Row");
-            // iterate on a node value
-            for value in row {
-                if let Node(node) = value {
-                    if let FalkorValue::Vec32(embedding) = &node.properties["embedding"] {
-                        assert_eq!(embedding.values.len(), 3);
-                        // compare each embedding value with expected value
-                        for (actual, expected) in
-                            embedding.values.iter().zip([2.1, 0.82, 1.3].iter())
-                        {
-                            assert_relative_eq!(actual, expected, epsilon = 1e-6);
-                        }
-                    } else {
-                        panic!("Could not get embedding");
-                    }
-                } else {
-                    panic!("MATCH should return a node");
-                }
+            .expect("Could not get document")
+            .data
+            .collect::<FalkorResult<_>>()
+            .expect("rows parse");
+        assert_eq!(rows.len(), 1);
+        let values = rows.into_iter().next().unwrap().into_values();
+        let Node(node) = &values[0] else {
+            panic!("MATCH should return a node");
+        };
+        // As a node property and as a value of its own.
+        for embedding in [&node.properties["embedding"], &values[1]] {
+            let FalkorValue::Vec32(embedding) = embedding else {
+                panic!("expected a vecf32, got {embedding:?}");
+            };
+            assert_eq!(embedding.values.len(), 3);
+            for (actual, expected) in embedding.values.iter().zip([2.1, 0.82, 1.3].iter()) {
+                assert_relative_eq!(actual, expected, epsilon = 1e-6);
             }
         }
     }
@@ -932,9 +944,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_config_all() {
-        let client = create_test_client();
+    #[rstest::rstest]
+    fn test_get_config_all(
+        #[values(redis::ProtocolVersion::RESP2, redis::ProtocolVersion::RESP3)]
+        protocol: redis::ProtocolVersion
+    ) {
+        let client = create_test_client_for(protocol);
         let configuration = client.config_get("*").expect("Could not get configuration");
         // The server's thread count, not this machine's: the two differ whenever the server runs
         // elsewhere or with another CPU limit, as in a container.
@@ -944,6 +959,58 @@ mod tests {
             .config_get("THREAD_COUNT")
             .expect("Could not get configuration");
         assert_eq!(single.get("THREAD_COUNT"), Some(&thread_count));
+        // FalkorDB 4.x sends this one as a RESP3 boolean; it reads as 0 or 1 either way.
+        let async_delete = configuration.get("ASYNC_DELETE").cloned().unwrap();
+        assert!(matches!(async_delete, ConfigValue::Int64(0 | 1)));
+        let single = client
+            .config_get("ASYNC_DELETE")
+            .expect("Could not get configuration");
+        assert_eq!(single.get("ASYNC_DELETE"), Some(&async_delete));
+    }
+
+    #[rstest::rstest]
+    fn test_udf_list_shape_follows_server_and_protocol(
+        #[values(redis::ProtocolVersion::RESP2, redis::ProtocolVersion::RESP3)]
+        protocol: redis::ProtocolVersion
+    ) {
+        // `udf_list` returns the server's raw reply. Each library is a flat array of key-value
+        // pairs, except from FalkorDB 4.x over RESP3, which sends a map.
+        let _registry = UdfRegistryLock::acquire();
+        let client = create_test_client_for(protocol);
+        client
+            .udf_load("rs_udf_list_shape", &udf_script("one", "1"), true)
+            .expect("Failed to load UDF library");
+        let listed = client
+            .udf_list(Some("rs_udf_list_shape"), false)
+            .expect("Failed to list UDF libraries");
+        let redis::Value::Array(libraries) = listed else {
+            panic!("expected an array of libraries, got {listed:?}");
+        };
+        let [library] = libraries.as_slice() else {
+            panic!("expected one library, got {libraries:?}");
+        };
+        let as_map = protocol == redis::ProtocolVersion::RESP3
+            && crate::test_utils::server_module_version() < 60000;
+        match library {
+            redis::Value::Map(_) => {
+                assert!(as_map, "only 4.x over RESP3 sends a map: {library:?}")
+            }
+            redis::Value::Array(_) => assert!(!as_map, "4.x over RESP3 sends a map: {library:?}"),
+            other => panic!("unexpected library shape {other:?}"),
+        }
+        // As the docs say, `into_map_iter` reads either shape.
+        let name = library
+            .clone()
+            .into_map_iter()
+            .expect("key-value pairs")
+            .find(|(key, _)| {
+                redis::from_redis_value_ref::<String>(key).is_ok_and(|key| key == "library_name")
+            })
+            .map(|(_, value)| redis::from_redis_value::<String>(value).expect("a name"));
+        assert_eq!(name.as_deref(), Some("rs_udf_list_shape"));
+        client
+            .udf_delete("rs_udf_list_shape")
+            .expect("Failed to delete UDF library");
     }
 
     #[test]

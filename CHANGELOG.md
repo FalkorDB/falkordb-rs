@@ -30,30 +30,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Read paths. FalkorDB sends a path's nodes and relationships as typed arrays of typed entities,
   and the client expected bare arrays, so any query returning a path failed with `ParsingArray`.
   The async row pre-scan now also finds the schema ids inside a path
-  ([#PR](https://github.com/FalkorDB/falkordb-rs/pull/PR))
+  ([#442](https://github.com/FalkorDB/falkordb-rs/pull/442))
 - Read `slowlog()` entries. FalkorDB sends five elements per entry (the fifth is the query's
   parameters), and the client required exactly four, so `slowlog()` failed whenever it had an
   entry to return, over either protocol. Over RESP3 the timestamp of an entry, a double, is read too
-  ([#PR](https://github.com/FalkorDB/falkordb-rs/pull/PR))
+  ([#442](https://github.com/FalkorDB/falkordb-rs/pull/442))
 - Read `vecf32` values over RESP3, which sends their elements as native doubles: a query
   returning a vector failed with `ParsingString`
-  ([#PR](https://github.com/FalkorDB/falkordb-rs/pull/PR))
+  ([#442](https://github.com/FalkorDB/falkordb-rs/pull/442))
 - Read `config_get` replies from FalkorDB 4.x over RESP3, which sends `ASYNC_DELETE`, `CMD_INFO`
   and `DELAY_INDEXING` as native boolean values: `config_get("*")` failed with `InvalidDataReceived`.
   They read as `ConfigValue::Int64` 1 or 0, as they do over RESP2
-  ([#PR](https://github.com/FalkorDB/falkordb-rs/pull/PR))
+  ([#442](https://github.com/FalkorDB/falkordb-rs/pull/442))
 
 ### Other
 
 - `udf_list`'s docs give the two shapes of its raw reply: FalkorDB 4.x over RESP3 sends each
   library as a map, other servers and RESP2 as a flat array of pairs
-  ([#PR](https://github.com/FalkorDB/falkordb-rs/pull/PR))
+  ([#442](https://github.com/FalkorDB/falkordb-rs/pull/442))
 - CI runs the server-backed suites, standalone and cluster, against FalkorDB 4.x and 6.x, each
   over RESP2 and RESP3, and the standalone suite against 6.0.4 too. `FALKORDB_PROTOCOL` selects the
   protocol of the test connections, `just test-local-matrix` runs the whole matrix locally, and
   `just falkordb-image` / `just check-server-line` resolve and check each release line's server
   ([#440](https://github.com/FalkorDB/falkordb-rs/issues/440))
-  ([#PR](https://github.com/FalkorDB/falkordb-rs/pull/PR))
+  ([#442](https://github.com/FalkorDB/falkordb-rs/pull/442))
 
 ## [0.11.3](https://github.com/FalkorDB/falkordb-rs/compare/v0.11.2...v0.11.3) - 2026-11-15
 

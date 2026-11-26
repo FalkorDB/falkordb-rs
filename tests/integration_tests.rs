@@ -2493,3 +2493,20 @@ mod schema_hash {
         }
     }
 }
+
+// TEMPORARY (reverted before merge): proves each CI axis can fail. Fails only over RESP3, and
+// only on FalkorDB 4.x, respectively.
+#[test]
+fn proof_fails_only_over_resp3() {
+    assert_ne!(
+        common::test_protocol(),
+        redis::ProtocolVersion::RESP3,
+        "proof: this is a RESP3 leg"
+    );
+}
+
+#[test]
+fn proof_fails_only_on_4x() {
+    let version = common::server_module_version(&test_server_url());
+    assert!(version >= 60000, "proof: this is a 4.x leg ({version})");
+}

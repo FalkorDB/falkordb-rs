@@ -14,7 +14,7 @@ use std::{collections::HashMap, sync::Arc};
 
 mod schema_hash;
 
-#[cfg(all(test, feature = "tokio"))]
+#[cfg(test)]
 pub(crate) use schema_hash::SchemaNames;
 pub(crate) use schema_hash::{reply_schema, take_schema_element, SchemaElement};
 
@@ -363,13 +363,21 @@ impl GraphSchema {
             ParserTypeMarker::Edge => self.scan_edge(val),
             ParserTypeMarker::Path => {
                 if let redis::Value::Array(parts) = val {
-                    if let [redis::Value::Array(nodes), redis::Value::Array(edges)] =
-                        parts.as_slice()
-                    {
-                        for node in nodes {
+                    if let [nodes, edges] = parts.as_slice() {
+                        let entities = |part, marker| match crate::value::path::untagged(
+                            part,
+                            ParserTypeMarker::Array,
+                        ) {
+                            redis::Value::Array(items) => items
+                                .iter()
+                                .map(|item| crate::value::path::untagged(item, marker))
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                        for node in entities(nodes, ParserTypeMarker::Node) {
                             self.scan_node(node);
                         }
-                        for edge in edges {
+                        for edge in entities(edges, ParserTypeMarker::Edge) {
                             self.scan_edge(edge);
                         }
                     }
@@ -1016,6 +1024,28 @@ pub(crate) mod tests {
 
     #[test]
     #[cfg(feature = "tokio")]
+    fn test_scan_rows_for_missing_ids_covers_paths() {
+        // A path as the server sends it: typed arrays of typed nodes and edges. The ids inside
+        // must be found, or a lazily decoded row would miss names the pre-scan should have fetched.
+        let mut schema = GraphSchema::new_in_memory("graph_name");
+        let rows = vec![redis::Value::Array(vec![
+            crate::value::path::tests::server_path(),
+        ])];
+        schema.scan_rows_for_missing_ids(&rows);
+        let mut missing = schema.take_missing();
+        missing.sort_by_key(|kind| *kind as u8);
+        assert_eq!(
+            missing,
+            vec![
+                SchemaType::Labels,
+                SchemaType::Properties,
+                SchemaType::Relationships
+            ]
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
     fn test_scan_rows_for_missing_ids_covers_resp3_maps() {
         let mut schema = GraphSchema::new_in_memory("graph_name");
         let edge = redis::Value::Array(vec![

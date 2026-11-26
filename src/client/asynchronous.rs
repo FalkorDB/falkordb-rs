@@ -553,7 +553,13 @@ impl FalkorAsyncClient {
     /// * `with_code`: If true, include the library source code in the result.
     ///
     /// # Returns
-    /// A [`redis::Value`] containing the list of UDF libraries and their metadata.
+    /// The server's reply as is: a [`redis::Value::Array`] with one entry per library. Its shape
+    /// depends on the server and the protocol:
+    /// - FalkorDB 6.x, and 4.x over RESP2: each library is a flat array of key-value pairs,
+    ///   `[library_name, <name>, functions, [<function>, ...], ...]`.
+    /// - FalkorDB 4.x over RESP3: each library is a [`redis::Value::Map`] with the same keys.
+    ///
+    /// [`redis::Value::into_map_iter`] reads both shapes.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(name = "List UDF Libraries", skip_all, level = "info")
@@ -1152,9 +1158,13 @@ mod tests {
         );
     }
 
+    #[rstest::rstest]
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_get_config_all() {
-        let client = create_async_test_client().await;
+    async fn test_get_config_all(
+        #[values(redis::ProtocolVersion::RESP2, redis::ProtocolVersion::RESP3)]
+        protocol: redis::ProtocolVersion
+    ) {
+        let client = crate::test_utils::create_async_test_client_for(protocol).await;
         let configuration = client
             .config_get("*")
             .await
@@ -1168,6 +1178,9 @@ mod tests {
             .await
             .expect("Could not get configuration");
         assert_eq!(single.get("THREAD_COUNT"), Some(&thread_count));
+        // FalkorDB 4.x sends this one as a RESP3 boolean; it reads as 0 or 1 either way.
+        let async_delete = configuration.get("ASYNC_DELETE").cloned().unwrap();
+        assert!(matches!(async_delete, ConfigValue::Int64(0 | 1)));
     }
 
     #[tokio::test(flavor = "multi_thread")]

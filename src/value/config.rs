@@ -91,6 +91,8 @@ impl TryFrom<&redis::Value> for ConfigValue {
                 ConfigValue::String(String::from_utf8_lossy(str_data.as_slice()).to_string())
             }
             redis::Value::SimpleString(data) => ConfigValue::String(data.to_string()),
+            // FalkorDB 4.x sends some options as RESP3 booleans, and as 1 or 0 over RESP2.
+            redis::Value::Boolean(boolean) => ConfigValue::Int64(i64::from(*boolean)),
             _ => return Err(FalkorDBError::InvalidDataReceived),
         })
     }
@@ -106,6 +108,8 @@ impl TryFrom<redis::Value> for ConfigValue {
                 String::from_utf8(str_data).map_err(|_| FalkorDBError::ParsingString)?,
             ),
             redis::Value::SimpleString(data) => ConfigValue::String(data),
+            // FalkorDB 4.x sends some options as RESP3 booleans, and as 1 or 0 over RESP2.
+            redis::Value::Boolean(boolean) => ConfigValue::Int64(i64::from(boolean)),
             _ => return Err(FalkorDBError::InvalidDataReceived),
         })
     }
@@ -235,6 +239,22 @@ mod tests {
         let result = ConfigValue::try_from(&redis_val);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), ConfigValue::String("test".to_string()));
+    }
+
+    #[test]
+    fn test_config_value_from_resp3_boolean_reads_like_resp2() {
+        // FalkorDB 4.x sends ASYNC_DELETE, CMD_INFO and DELAY_INDEXING as RESP3 booleans (`#t`,
+        // `#f`), and as `:1` / `:0` over RESP2. Both read as the same integer.
+        for (resp3, resp2) in [(true, 1), (false, 0)] {
+            assert_eq!(
+                ConfigValue::try_from(redis::Value::Boolean(resp3)).unwrap(),
+                ConfigValue::try_from(redis::Value::Int(resp2)).unwrap()
+            );
+            assert_eq!(
+                ConfigValue::try_from(&redis::Value::Boolean(resp3)).unwrap(),
+                ConfigValue::Int64(resp2)
+            );
+        }
     }
 
     #[test]

@@ -72,8 +72,36 @@ Targeted recipes are available too, e.g. `just test-parity`, `just test-embedded
 `just test-one <filter>`, `just proptest`, `just bench-one '<criterion-id>'`, and
 `just coverage-html`.
 
-The host, port, Docker image and feature set can be overridden on the command line, for
-example `just port=6380 test` or `just image=falkordb/falkordb:latest db-up`.
+The host, port, protocol, Docker image, container and feature set can be overridden on the
+command line, for example `just port=6380 test`, `just protocol=resp3 integration` or
+`just image=falkordb/falkordb:latest container=my-falkordb db-up`.
+
+### Server versions and protocols
+
+CI runs every server-backed suite (standalone, async and cluster) against FalkorDB 4.x and 6.x,
+each over RESP2 and RESP3:
+
+- `FALKORDB_PROTOCOL` (`resp2`, the default, or `resp3`; the `protocol` recipe variable) selects
+  the protocol of every test connection, including the cluster suite's. The test helpers fail if
+  a connection doesn't get the protocol they asked for.
+- Tests about the wire format (value decoding, configuration, `slowlog()`, UDF listings) check both
+  protocols in every run, whatever `FALKORDB_PROTOCOL` says, through `rstest`'s
+  `#[values(redis::ProtocolVersion::RESP2, redis::ProtocolVersion::RESP3)]`.
+- A test whose result depends on the server version asserts the result for each version, using the
+  graph module version (`server_module_version()` in `src/lib.rs`'s `test_utils`, or in
+  `tests/common`). No test returns early or is ignored for a version or a protocol.
+- `just falkordb-image 4|6|edge` prints the image CI uses for a release line, and
+  `just check-server-line <line>` checks that the server on host:port belongs to it.
+
+Before a pull request that changes how the client talks to the server, run the whole matrix:
+
+```bash
+just test-local-matrix   # 4.x and 6.x, RESP2 and RESP3, standalone and cluster
+```
+
+It runs each release line in its own container (`falkordb-rs-dev-4x` on 6380,
+`falkordb-rs-dev-6x` on 6381), so a `falkordb-rs-dev` on 6379 is left alone, and the cluster in
+the `falkordb-rs-cluster` container on 7001-7003.
 
 ### Editing the README
 
@@ -125,8 +153,10 @@ reproduced with a single command:
 | `check-deny` | `just deny` |
 | `check-proptest` | `just proptest` |
 | `check-embedded-bundle` | `just check-embedded-bundle` |
-| `integration-tests` | `just integration`, `just integration --all-features` and `just consumer-smoke` |
-| `integration-tests-tokio` | `just integration --features tokio` |
+| `integration-tests (<line>, <protocol>)` | `just check-server-line <line>`, `just protocol=<protocol> integration`, `just protocol=<protocol> integration --all-features` and `just consumer-smoke` |
+| `integration-tests-tokio (<line>, <protocol>)` | `just protocol=<protocol> integration --features tokio` |
+| `integration-tests-cluster (<line>, <protocol>)` | `just image=<image> cluster-up`, then `just protocol=<protocol> test-cluster` |
+| `Resolve FalkorDB servers` | `just test-falkordb-image`, `just falkordb-image <line>` |
 | `integration-tests-valkey` | `just test-embedded-valkey` |
 | `coverage` | `just coverage` |
 | `check-llms` | `just check-llms` |

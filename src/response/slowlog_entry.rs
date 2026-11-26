@@ -27,24 +27,35 @@ impl SlowlogEntry {
         tracing::instrument(name = "Parse Slowlog Entry", skip_all, level = "info")
     )]
     pub(crate) fn parse(value: redis::Value) -> FalkorResult<Self> {
-        let [timestamp, command, arguments, time_taken]: [redis::Value; 4] =
-            redis_value_as_vec(value).and_then(|as_vec| {
-                as_vec.try_into().map_err(|_| {
-                    FalkorDBError::ParsingArrayToStructElementCount(
-                        "Expected exactly 4 elements of slowlog entry",
-                    )
-                })
-            })?;
+        // FalkorDB sends a fifth element (nil) after these four; later ones are ignored.
+        let mut fields = redis_value_as_vec(value)?.into_iter();
+        let mut next = || {
+            fields
+                .next()
+                .ok_or(FalkorDBError::ParsingArrayToStructElementCount(
+                    "Expected at least 4 elements of slowlog entry",
+                ))
+        };
+        let (timestamp, command, arguments, time_taken) = (next()?, next()?, next()?, next()?);
 
         Ok(Self {
-            timestamp: redis_value_as_string(timestamp)
-                .ok()
-                .and_then(|timestamp| timestamp.parse().ok())
-                .ok_or(FalkorDBError::ParsingI64)?,
+            timestamp: parse_timestamp(timestamp)?,
             command: redis_value_as_string(command)?,
             arguments: redis_value_as_string(arguments)?,
             time_taken: redis_value_as_double(time_taken)?,
         })
+    }
+}
+
+/// A slowlog timestamp in seconds: a numeric string over RESP2, a whole double over RESP3.
+fn parse_timestamp(value: redis::Value) -> FalkorResult<i64> {
+    match value {
+        redis::Value::Int(seconds) => Ok(seconds),
+        redis::Value::Double(seconds) if seconds.fract() == 0.0 => Ok(seconds as i64),
+        value => redis_value_as_string(value)
+            .ok()
+            .and_then(|seconds| seconds.parse().ok())
+            .ok_or(FalkorDBError::ParsingI64),
     }
 }
 
@@ -146,6 +157,68 @@ mod tests {
         assert_eq!(parsed[0].command, "GRAPH.QUERY");
         assert_eq!(parsed[0].arguments, "MATCH (n) RETURN n");
         assert_eq!(parsed[0].time_taken, 12.5);
+    }
+
+    /// An entry as FalkorDB 4.22 and 6.2 send it over RESP2: the four fields and a trailing nil.
+    fn resp2_entry() -> redis::Value {
+        redis::Value::Array(vec![
+            redis::Value::BulkString(b"1795673671".to_vec()),
+            redis::Value::BulkString(b"GRAPH.QUERY".to_vec()),
+            redis::Value::BulkString(b"UNWIND range(1, 2000000) AS x RETURN count(x)".to_vec()),
+            redis::Value::BulkString(b"53.241".to_vec()),
+            redis::Value::Nil,
+        ])
+    }
+
+    /// The same entry over RESP3: the timestamp is a double.
+    fn resp3_entry() -> redis::Value {
+        redis::Value::Array(vec![
+            redis::Value::Double(1_795_673_671.0),
+            redis::Value::BulkString(b"GRAPH.QUERY".to_vec()),
+            redis::Value::BulkString(b"UNWIND range(1, 2000000) AS x RETURN count(x)".to_vec()),
+            redis::Value::BulkString(b"53.241".to_vec()),
+            redis::Value::Nil,
+        ])
+    }
+
+    #[test]
+    fn parse_slowlog_reads_server_entries_in_both_protocols() {
+        for entry in [resp2_entry(), resp3_entry()] {
+            let parsed = parse_slowlog(redis::Value::Array(vec![entry])).expect("parses");
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(parsed[0].timestamp, 1_795_673_671);
+            assert_eq!(parsed[0].command, "GRAPH.QUERY");
+            assert_eq!(
+                parsed[0].arguments,
+                "UNWIND range(1, 2000000) AS x RETURN count(x)"
+            );
+            assert_eq!(parsed[0].time_taken, 53.241);
+        }
+    }
+
+    #[test]
+    fn parse_slowlog_reads_an_integer_timestamp() {
+        let mut entry = redis_value_as_vec(valid_entry()).unwrap();
+        entry[0] = redis::Value::Int(1_700_000_000);
+        let parsed = SlowlogEntry::parse(redis::Value::Array(entry)).expect("parses");
+        assert_eq!(parsed.timestamp, 1_700_000_000);
+    }
+
+    #[test]
+    fn parse_slowlog_rejects_a_timestamp_that_is_not_a_whole_number() {
+        for timestamp in [
+            redis::Value::Double(1.5),
+            redis::Value::Double(f64::NAN),
+            redis::Value::BulkString(b"soon".to_vec()),
+            redis::Value::Nil,
+        ] {
+            let mut entry = redis_value_as_vec(valid_entry()).unwrap();
+            entry[0] = timestamp;
+            assert!(matches!(
+                SlowlogEntry::parse(redis::Value::Array(entry)),
+                Err(FalkorDBError::ParsingI64)
+            ));
+        }
     }
 
     #[test]

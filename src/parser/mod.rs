@@ -74,7 +74,12 @@ pub(crate) fn redis_value_as_int(value: redis::Value) -> FalkorResult<i64> {
     }
 }
 
+/// A boolean: the string `true` or `false`, as RESP2 and compact replies send it, or a native RESP3
+/// boolean.
 pub(crate) fn redis_value_as_bool(value: redis::Value) -> FalkorResult<bool> {
+    if let redis::Value::Boolean(boolean) = value {
+        return Ok(boolean);
+    }
     redis_value_as_string(value).and_then(|string_val| match string_val.as_str() {
         "true" => Ok(true),
         "false" => Ok(false),
@@ -82,12 +87,21 @@ pub(crate) fn redis_value_as_bool(value: redis::Value) -> FalkorResult<bool> {
     })
 }
 
+/// A double: a numeric string, as RESP2 sends it, or a native RESP3 double, as RESP3 sends the
+/// elements of a `vecf32`.
 pub(crate) fn redis_value_as_double(value: redis::Value) -> FalkorResult<f64> {
+    if let redis::Value::Double(double) = value {
+        return Ok(double);
+    }
     redis_value_as_string(value)
         .and_then(|string_val| string_val.parse().map_err(|_| FalkorDBError::ParsingF64))
 }
 
+/// A float, read as [`redis_value_as_double`] reads a double.
 pub(crate) fn redis_value_as_float(value: redis::Value) -> FalkorResult<f32> {
+    if let redis::Value::Double(double) = value {
+        return Ok(double as f32);
+    }
     redis_value_as_string(value)
         .and_then(|string_val| string_val.parse().map_err(|_| FalkorDBError::ParsingF32))
 }
@@ -349,6 +363,67 @@ pub(crate) trait SchemaParsable: Sized {
 
 #[cfg(test)]
 mod tests {
+    // RESP3 sends some values natively instead of as strings: `vecf32` elements (and possibly
+    // other numbers) as doubles, and booleans as booleans.
+    #[test]
+    fn resp3_doubles_and_booleans_read_like_their_resp2_strings() {
+        assert_eq!(
+            redis_value_as_double(redis::Value::Double(1.5)).unwrap(),
+            1.5
+        );
+        assert_eq!(
+            redis_value_as_float(redis::Value::Double(2.5)).unwrap(),
+            2.5
+        );
+        assert!(redis_value_as_bool(redis::Value::Boolean(true)).unwrap());
+        assert!(!redis_value_as_bool(redis::Value::Boolean(false)).unwrap());
+        // The RESP2 forms still read.
+        assert_eq!(
+            redis_value_as_double(redis::Value::BulkString(b"1.5".to_vec())).unwrap(),
+            1.5
+        );
+        assert!(redis_value_as_bool(redis::Value::BulkString(b"true".to_vec())).unwrap());
+    }
+
+    #[test]
+    fn resp3_vecf32_reads_like_resp2() {
+        let resp3 = redis::Value::Array(vec![redis::Value::Double(1.5), redis::Value::Double(2.5)]);
+        let resp2 = redis::Value::Array(vec![
+            redis::Value::BulkString(b"1.5".to_vec()),
+            redis::Value::BulkString(b"2.5".to_vec()),
+        ]);
+        let resp3 = Vec32::parse(resp3).expect("RESP3 vector");
+        assert_eq!(resp3.values, vec![1.5, 2.5]);
+        assert_eq!(resp3, Vec32::parse(resp2).expect("RESP2 vector"));
+    }
+
+    #[test]
+    fn config_reply_mixing_resp3_booleans_parses() {
+        // `GRAPH.CONFIG GET *` from FalkorDB 4.x over RESP3.
+        let pair = |key: &str, value: redis::Value| {
+            redis::Value::Array(vec![
+                redis::Value::BulkString(key.as_bytes().to_vec()),
+                value,
+            ])
+        };
+        let reply = redis::Value::Array(vec![
+            pair("TIMEOUT", redis::Value::Int(1000)),
+            pair("ASYNC_DELETE", redis::Value::Boolean(true)),
+            pair("DELAY_INDEXING", redis::Value::Boolean(false)),
+            pair(
+                "IMPORT_FOLDER",
+                redis::Value::BulkString(b"/var/lib/FalkorDB/import/".to_vec()),
+            ),
+        ]);
+        let config = parse_config_hashmap(reply).expect("parses");
+        assert_eq!(config["ASYNC_DELETE"], ConfigValue::Int64(1));
+        assert_eq!(config["DELAY_INDEXING"], ConfigValue::Int64(0));
+        assert_eq!(config["TIMEOUT"], ConfigValue::Int64(1000));
+        let single = parse_config_hashmap(pair("ASYNC_DELETE", redis::Value::Boolean(true)))
+            .expect("one option");
+        assert_eq!(single["ASYNC_DELETE"], ConfigValue::Int64(1));
+    }
+
     use super::*;
     use crate::{
         client::blocking::create_empty_inner_sync_client, graph::HasGraphSchema,

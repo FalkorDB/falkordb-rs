@@ -1215,20 +1215,53 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// The protocol the server-backed tests speak: `FALKORDB_PROTOCOL`, `resp2` (the default) or
+    /// `resp3`. CI runs the suites once per protocol; tests about the wire format run both
+    /// protocols in one run, through the `_for` helpers below.
+    pub(crate) fn test_protocol() -> redis::ProtocolVersion {
+        match std::env::var("FALKORDB_PROTOCOL").ok().as_deref() {
+            None | Some("") | Some("resp2") => redis::ProtocolVersion::RESP2,
+            Some("resp3") => redis::ProtocolVersion::RESP3,
+            Some(other) => panic!("FALKORDB_PROTOCOL must be resp2 or resp3, not {other:?}"),
+        }
+    }
+
+    /// The URL query that selects `protocol`.
+    fn protocol_query(protocol: redis::ProtocolVersion) -> &'static str {
+        match protocol {
+            redis::ProtocolVersion::RESP3 => "?protocol=resp3",
+            _ => "",
+        }
+    }
+
     /// `falkor://` URL of the test server, so a run against a server on another port never
-    /// touches whatever is listening on 6379.
+    /// touches whatever is listening on 6379. It selects [`test_protocol`].
     pub(crate) fn test_server_url() -> String {
-        format!("falkor://{}", test_server_authority())
+        test_server_url_for(test_protocol())
     }
 
-    /// `redis://` URL of the test server, for tests that build a `redis::Client` directly.
+    /// [`test_server_url`] with the given protocol.
+    pub(crate) fn test_server_url_for(protocol: redis::ProtocolVersion) -> String {
+        format!(
+            "falkor://{}{}",
+            test_server_authority(),
+            protocol_query(protocol)
+        )
+    }
+
+    /// `redis://` URL of the test server, for tests that build a `redis::Client` directly. It
+    /// selects [`test_protocol`] too.
     pub(crate) fn test_redis_url() -> String {
-        format!("redis://{}", test_server_authority())
+        format!(
+            "redis://{}{}",
+            test_server_authority(),
+            protocol_query(test_protocol())
+        )
     }
 
-    /// Whether the test server answers `SCHEMA_HASH`: a FalkorDB module of 6.2.0 or later. Older
-    /// servers ignore the argument, and tests check the behaviour the client had before.
-    pub(crate) fn server_has_schema_hash() -> bool {
+    /// The version of the test server's graph module, as `MODULE LIST` reports it: `42204` for
+    /// 4.22.4, `60201` for 6.2.1.
+    pub(crate) fn server_module_version() -> i64 {
         let mut conn = redis::Client::open(test_redis_url())
             .and_then(|client| client.get_connection())
             .expect("a FalkorDB server must be reachable");
@@ -1248,15 +1281,57 @@ pub(crate) mod test_utils {
             .get("ver")
             .and_then(|version| redis::from_redis_value_ref::<i64>(version).ok())
             .expect("the graph module's version")
-            >= 60200
+    }
+
+    /// Whether the test server answers `SCHEMA_HASH`: a FalkorDB module of 6.2.0 or later. Older
+    /// servers ignore the argument, and tests check the behaviour the client had before.
+    pub(crate) fn server_has_schema_hash() -> bool {
+        server_module_version() >= 60200
     }
 
     /// Connection info for the test server; see [`test_server_url`].
     pub(crate) fn test_connection_info() -> FalkorConnectionInfo {
-        test_server_url()
+        test_connection_info_for(test_protocol())
+    }
+
+    /// [`test_connection_info`] with the given protocol. Fails if the parsed connection info
+    /// doesn't select it, so a run can't quietly test RESP2 twice.
+    pub(crate) fn test_connection_info_for(
+        protocol: redis::ProtocolVersion
+    ) -> FalkorConnectionInfo {
+        let info: FalkorConnectionInfo = test_server_url_for(protocol)
             .as_str()
             .try_into()
-            .expect("the test server URL should parse")
+            .expect("the test server URL should parse");
+        #[allow(irrefutable_let_patterns)]
+        if let FalkorConnectionInfo::Redis(redis_info) = &info {
+            assert_eq!(
+                redis_info.redis_settings().protocol(),
+                protocol,
+                "the test connection must speak the protocol it asks for"
+            );
+        }
+        info
+    }
+
+    /// A sync client of the test server over `protocol`.
+    pub(crate) fn create_test_client_for(protocol: redis::ProtocolVersion) -> FalkorSyncClient {
+        FalkorClientBuilder::new()
+            .with_connection_info(test_connection_info_for(protocol))
+            .build()
+            .expect("Could not create client")
+    }
+
+    /// An async client of the test server over `protocol`.
+    #[cfg(feature = "tokio")]
+    pub(crate) async fn create_async_test_client_for(
+        protocol: redis::ProtocolVersion
+    ) -> FalkorAsyncClient {
+        FalkorClientBuilder::new_async()
+            .with_connection_info(test_connection_info_for(protocol))
+            .build()
+            .await
+            .expect("Could not create client")
     }
 
     pub(crate) fn create_test_client() -> FalkorSyncClient {
@@ -1754,5 +1829,39 @@ mod retry_tests {
         use super::test_utils::default_on_transient_error;
         let _: Vec<i32> =
             default_on_transient_error("could not copy", Err(crate::FalkorDBError::ParsingArray));
+    }
+}
+
+#[cfg(test)]
+mod test_server_tests {
+    use super::test_utils::{
+        server_module_version, test_connection_info, test_connection_info_for, test_protocol,
+    };
+    use crate::FalkorConnectionInfo;
+
+    fn protocol_of(info: FalkorConnectionInfo) -> redis::ProtocolVersion {
+        #[allow(irrefutable_let_patterns)]
+        let FalkorConnectionInfo::Redis(info) = info
+        else {
+            panic!("a Redis connection");
+        };
+        info.redis_settings().protocol()
+    }
+
+    #[test]
+    fn the_test_connection_speaks_the_requested_protocol() {
+        assert_eq!(protocol_of(test_connection_info()), test_protocol());
+        for protocol in [redis::ProtocolVersion::RESP2, redis::ProtocolVersion::RESP3] {
+            assert_eq!(protocol_of(test_connection_info_for(protocol)), protocol);
+        }
+    }
+
+    #[test]
+    fn server_module_version_matches_module_list() {
+        // 4.x or 6.x: CI runs the suites against both.
+        let version = server_module_version();
+        assert!((40000..70000).contains(&version), "{version}");
+        // The same server answers the same way twice, over either protocol.
+        assert_eq!(server_module_version(), version);
     }
 }
